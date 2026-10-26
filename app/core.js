@@ -44,6 +44,8 @@ const DEF = {
   // Nutzungsmeldung (immer aktiv): telemetry = 'ask' bis der Hinweis bestätigt ist, dann 'seen'
   telemetry: 'ask', installId: '', lastPing: 0, announced: false
 };
+const UPDATE_URL = (() => { try { return require('./package.json').updateUrl || ''; } catch (e) { return ''; } })();
+const cmpVer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d; } return 0; };
 const VERSION = (() => { try { return require('./package.json').version; } catch (e) { return '?'; } })();
 const WEBHOOK = (() => { try { return fs.readFileSync(path.join(__dirname, 'webhook.txt'), 'utf8').trim(); } catch (e) { return ''; } })();
 const fmtDur = sec => {
@@ -244,6 +246,39 @@ class Core extends EventEmitter {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'Stream Marathon', embeds: [{ title, color, fields, timestamp: new Date().toISOString() }] })
     }).catch(() => {});
+  }
+
+  // ---------- Update-Anzeige ----------
+  // Fragt GitHub direkt (ohne Zwischenspeicher), ob ein neues Update hochgeladen wurde,
+  // und den zwischengespeicherten Download-Server, ob es schon verteilt ist.
+  async checkLatest() {
+    if (!UPDATE_URL || typeof fetch === 'undefined') return;
+    const L = Object.assign({}, this.status.latest);
+    const get = async (url, headers) => {
+      const r = await fetch(url, { cache: 'no-store', headers: headers || {} });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    };
+    const m = /^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.*)$/.exec(UPDATE_URL);
+    if (m && Date.now() - (this._apiAt || 0) > 110000) {
+      this._apiAt = Date.now();
+      try {
+        const j = await get(`https://api.github.com/repos/${m[1]}/${m[2]}/contents/${m[4]}manifest.json?ref=${m[3]}`,
+          { Accept: 'application/vnd.github.raw+json', 'User-Agent': 'StreamMarathon' });
+        L.published = j.version; L.publishedAt = j.date; L.apiError = false;
+      } catch (e) { L.apiError = true; }
+    }
+    try {
+      const j = await get(UPDATE_URL + 'manifest.json?t=' + Date.now());
+      L.cdn = j.version; L.cdnAt = j.date; L.error = false;
+      if (!L.published || cmpVer(j.version, L.published) > 0) { L.published = j.version; L.publishedAt = j.date; }
+    } catch (e) { L.error = true; }
+    L.checkedAt = Date.now();
+    this.setStatus('latest', L);
+    // Solange ein Update verteilt wird, öfter nachsehen
+    clearTimeout(this._updT);
+    const pending = L.published && L.cdn && cmpVer(L.published, L.cdn) > 0;
+    this._updT = setTimeout(() => this.checkLatest(), pending ? 30000 : 120000);
   }
 
   // ---------- Happy Hour ----------
@@ -540,6 +575,8 @@ class Core extends EventEmitter {
       case 'hhStop': return this.hhStop();
       case 'hhToggle': return this.hhToggle();
       case 'clearTop': this.state.top = {}; return this.changed();
+      case 'checkUpdate': this._apiAt = 0; return this.checkLatest();
+      case 'restartNow': return this.emit('restart');
     }
   }
 
@@ -599,6 +636,7 @@ class Core extends EventEmitter {
         s2.listen(this.port, '::1', () => this.servers.push(s2));
         this._tick = setInterval(() => this.tick(), 250);
         this._save = setInterval(() => { if (this.state.running) this.saveStateNow(); }, 5000);
+        this.checkLatest();
         this._ka = setInterval(() => { for (const c of this.clients) { try { c.write(': ka\n\n'); } catch (e) {} } }, 15000);
         this.connIrc();
         this.connFollow();
@@ -619,7 +657,7 @@ class Core extends EventEmitter {
       if (this.state.running) { this.state.remaining = this.rem(); this.state.running = false; this.pushLog('App beendet – Timer pausiert', 0, 'info'); }
       this.saveStateNow(false);
     }
-    clearInterval(this._tick); clearInterval(this._save); clearInterval(this._ka);
+    clearInterval(this._tick); clearInterval(this._save); clearInterval(this._ka); clearTimeout(this._updT);
     try { this.irc && this.irc.close(); } catch (e) {}
     try { this.es && this.es.close(); } catch (e) {}
     for (const c of this.clients) { try { c.end(); } catch (e) {} }

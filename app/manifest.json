@@ -1,13 +1,13 @@
 {
-  "version": "1.3.6",
-  "date": "2026-10-26T23:11:19.311Z",
+  "version": "1.3.7",
+  "date": "2026-10-26T23:15:13.161Z",
   "files": {
-    "shell.js": "4f331e0b506b7308dcea4dfa79758ba85129a55b3c7df0c84d348912d8f6038c",
-    "core.js": "24f5de0747e888bf2410a17b393eec9c8524c8155119e8236a8f015ad5cee1cb",
-    "package.json": "c5dd835908fb147da73075879d02fe310acfb0890fa17ae5e67fa51d7a07b826",
+    "shell.js": "477aefc6d4552b56a5b263aba8853b7a3b62dde7f75f8585d55d7647d8ad9af4",
+    "core.js": "054f00c276357479e5e42ecf9c3e8d03e8aecfc73251a0196b49ac5537ae1718",
+    "package.json": "516612ae20a4aef47c0d51e21f6ff1f29c33955d11e63dd1396ea7ef0a800f18",
     "icon.png": "59d889eb70cb73dcdbf47a6d6e9395fb3d308987ea1da43a17bf007993269fb0",
     "ui/auth.html": "ae37ef8a740764b31ec889fdb4e9a6405300481d4c4c3dc4182f367ff0a8154e",
-    "ui/control.html": "c0992416f1accf086d637cd9a7639cf1df8e32cf2196f60adcea864fcf4ef47c",
+    "ui/control.html": "2b6e9f8aa832ed932fa1db6804cd44e707c3b58791f212e44ec3343e7475c088",
     "ui/overlay.html": "202f22afe1b78ed6abb3c68da1f276a664bd2205fdfbdc772da6bc9b4a064efd",
     "ui/widgets.html": "741ef47c05bac53ddc536eb2c05882a12f78bc2dfb3c233035e65205692cbeaf"
   }

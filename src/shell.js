@@ -33,9 +33,13 @@ module.exports = function startShell(ctx) {
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
     core = new Core(path.join(app.getPath('userData'), 'data'), { webhook: ctx.webhook });
-    try {
-      await core.listen();
-    } catch (e) {
+    // Beim Neustart nach einem Update kann der alte Prozess den Port noch kurz belegen → kurz warten
+    let listenErr = null;
+    for (let i = 0; i < 20; i++) {
+      try { await core.listen(); listenErr = null; break; }
+      catch (e) { listenErr = e; await new Promise(r => setTimeout(r, 500)); }
+    }
+    if (listenErr) {
       ctx.ready();
       dialog.showErrorBox('Stream Marathon',
         `Port ${core.cfg.port} ist schon belegt.\n\nLäuft Stream Marathon vielleicht schon? Sonst ändere den Port in\n${path.join(app.getPath('userData'), 'data', 'config.json')}`);
@@ -46,6 +50,14 @@ module.exports = function startShell(ctx) {
     if (ctx.updatedFrom) core.pushLog(`App auf Version ${core.version} aktualisiert`, 0, 'info');
     registerHotkeys();
     core.on('config', registerHotkeys);
+    core.on('restart', () => {
+      quitting = true;
+      try { globalShortcut.unregisterAll(); } catch (e) {}
+      core.shutdown(true);
+      try { app.releaseSingleInstanceLock(); } catch (e) {}
+      app.relaunch();
+      app.exit(0);
+    });
 
     win = new BrowserWindow({
       width: 1200, height: 820, minWidth: 920, minHeight: 620,
