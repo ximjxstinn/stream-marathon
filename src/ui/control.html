@@ -93,6 +93,17 @@ ol b{color:var(--text)}
 .stage{border-radius:12px;overflow:hidden;border:1px solid var(--line);background:
   conic-gradient(#202024 25%,#17171a 0 50%,#202024 0 75%,#17171a 0) 0 0/24px 24px}
 .stage iframe{width:100%;height:420px;border:0;display:block}
+.ovgrid{display:grid;grid-template-columns:minmax(300px,1fr) minmax(300px,1fr);gap:16px;align-items:start}
+.ov .stage{--sc:.8;--h:240px;height:var(--h);position:relative}
+.ov .stage.tall{--h:390px}
+.ov .stage.wide{--sc:.7;--h:52px}
+.ov .stage iframe{position:absolute;left:0;top:0;width:calc(100% / var(--sc));height:calc(var(--h) / var(--sc));transform:scale(var(--sc));transform-origin:0 0}
+.ov.off .stage{opacity:.35}
+.goalrow{display:grid;grid-template-columns:1fr 110px 90px 34px;gap:6px;margin-top:6px}
+.goalrow button{padding:6px 0}
+.hhbar{display:flex;gap:8px;margin-top:10px;width:100%;max-width:520px}
+.hhbar .btn{flex:1}
+.hhon{background:linear-gradient(90deg,#ff4fd8,var(--brand))!important}
 .seg{display:flex;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:3px}
 .seg button{flex:1;background:none;border:0;border-radius:6px;padding:6px;cursor:pointer;color:var(--muted);font-weight:600}
 .seg button.on{background:#2f2f35;color:var(--text)}
@@ -131,6 +142,7 @@ a{color:#bf94ff}
     <button data-tab="events">⚡ Events & Zeiten</button>
     <button data-tab="design">🎨 Design</button>
     <button data-tab="twitch">🟣 Twitch</button>
+    <button data-tab="overlays">🧩 Overlays</button>
     <button data-tab="general">⚙️ Allgemein</button>
   </nav>
   <div class="mini">
@@ -165,6 +177,7 @@ a{color:#bf94ff}
       <button class="btn plus" id="cPlus" style="flex:1">Hinzufügen</button>
       <button class="btn minus" id="cMinus" style="flex:1">Abziehen</button>
     </div>
+    <div class="hhbar"><button class="btn" id="bHH">⚡ Happy Hour starten</button></div>
   </div>
 
   <div class="grid2">
@@ -208,6 +221,7 @@ a{color:#bf94ff}
         <button class="btn" data-test="bits100">100 Bits</button>
         <button class="btn" data-test="bits1000">1.000 Bits</button>
         <button class="btn" data-test="raid">Raid (20)</button>
+        <button class="btn" data-test="wheel">🎡 Gift-Bombe</button>
       </div>
       <div class="hint">Tests verlängern den Timer und erscheinen im Overlay, zählen aber nicht in die Statistik.</div>
     </div>
@@ -392,6 +406,72 @@ a{color:#bf94ff}
   </div>
 </section>
 
+<!-- ================= OVERLAYS ================= -->
+<section id="overlays">
+  <h1>Overlays</h1>
+  <p class="sub">Zusätzliche Overlays für deinen Stream. Jedes ist eine eigene Browser-Quelle in OBS – einfach Adresse kopieren. Ausgeschaltete bleiben in OBS leer.</p>
+  <div class="ovgrid">
+
+    <div class="card ov" data-ov="ov_goals">
+      <h2>🎯 Ziele <label class="sw"><input type="checkbox" data-k="ov_goals"><span></span></label></h2>
+      <div class="stage"><iframe data-src="/overlay/goals?demo"></iframe></div>
+      <div class="copy" style="margin-top:10px"><input type="text" data-url="goals" readonly><button class="btn" data-copyurl>Kopieren</button></div>
+      <label class="f">Deine Ziele</label>
+      <div id="goalList"></div>
+      <button class="btn" id="bAddGoal" style="margin-top:8px">+ Ziel hinzufügen</button>
+      <div class="hint">„Stunden“ = Gesamtlänge des Marathons. Empfohlene Größe in OBS: 440 × 300.</div>
+    </div>
+
+    <div class="card ov" data-ov="ov_hh">
+      <h2>⚡ Happy Hour <label class="sw"><input type="checkbox" data-k="ov_hh"><span></span></label></h2>
+      <div class="stage"><iframe data-src="/overlay/hh?demo"></iframe></div>
+      <div class="copy" style="margin-top:10px"><input type="text" data-url="hh" readonly><button class="btn" data-copyurl>Kopieren</button></div>
+      <div class="two">
+        <div><label class="f">Multiplikator (×)</label><input type="number" data-k="hhMult" min="1" step="0.5"></div>
+        <div><label class="f">Dauer (Minuten)</label><input type="number" data-k="hhMin" min="1"></div>
+      </div>
+      <div class="hint">Während der Happy Hour bringt jedes Event mehr Zeit. Starten über die Übersicht oder per Hotkey (Allgemein). Im Stream sichtbar nur, solange sie läuft. Größe: 600 × 100.</div>
+    </div>
+
+    <div class="card ov" data-ov="ov_top">
+      <h2>🏆 Top-Supporter <label class="sw"><input type="checkbox" data-k="ov_top"><span></span></label></h2>
+      <div class="stage"><iframe data-src="/overlay/top?demo"></iframe></div>
+      <div class="copy" style="margin-top:10px"><input type="text" data-url="top" readonly><button class="btn" data-copyurl>Kopieren</button></div>
+      <div class="two">
+        <div><label class="f">Anzahl Plätze</label><input type="number" data-k="topCount" min="1" max="15"></div>
+        <div><label class="f">&nbsp;</label><button class="btn" id="bClearTop" style="width:100%">Liste leeren</button></div>
+      </div>
+      <div class="hint">Wer am meisten Zeit dazugebracht hat (Subs, Gifts, Bits, Raids, Follows). Wird beim Zurücksetzen des Timers geleert. Größe: 360 × 330.</div>
+    </div>
+
+    <div class="card ov" data-ov="ov_wheel">
+      <h2>🎡 Glücksrad <label class="sw"><input type="checkbox" data-k="ov_wheel"><span></span></label></h2>
+      <div class="stage tall"><iframe data-src="/overlay/wheel?demo"></iframe></div>
+      <div class="copy" style="margin-top:10px"><input type="text" data-url="wheel" readonly><button class="btn" data-copyurl>Kopieren</button></div>
+      <div class="two">
+        <div><label class="f">Dreht ab … Gift-Subs auf einmal</label><input type="number" data-k="wheelMin" min="1"></div>
+        <div><label class="f">&nbsp;</label><button class="btn pri" id="bSpin" style="width:100%">🎡 Test-Drehung</button></div>
+      </div>
+      <label class="f">Felder in Minuten (mit Komma getrennt, 2–12 Felder)</label>
+      <input type="text" id="wheelInput" placeholder="5, 10, 15, 30, 1, 20, 45, 60">
+      <div class="hint">Bei einer Gift-Bombe dreht sich das Rad, die Bonuszeit kommt zusätzlich zu den Gift-Subs. Größe: 400 × 440.</div>
+    </div>
+
+    <div class="card ov" data-ov="ov_ticker" style="grid-column:1/-1">
+      <h2>📰 Event-Laufband <label class="sw"><input type="checkbox" data-k="ov_ticker"><span></span></label></h2>
+      <div class="stage wide"><iframe data-src="/overlay/ticker?demo"></iframe></div>
+      <div class="copy" style="margin-top:10px"><input type="text" data-url="ticker" readonly><button class="btn" data-copyurl>Kopieren</button></div>
+      <div class="two">
+        <div><label class="f">Anzahl Events</label><input type="number" data-k="tickerCount" min="1" max="30"></div>
+        <div><label class="f">Geschwindigkeit</label><div class="rng"><input type="range" data-k="tickerSpeed" min="20" max="200"><input type="number" data-k="tickerSpeed" min="10"></div></div>
+      </div>
+      <div class="hint">Zeigt die letzten Events als Laufband. Größe: 1920 × 60, unten im Bild platzieren.</div>
+    </div>
+
+  </div>
+  <div class="hint" style="margin-top:4px">Die Vorschau zeigt Beispieldaten, solange noch nichts passiert ist. Farben und Schrift kommen aus dem Bereich „Design“.</div>
+</section>
+
 <!-- ================= ALLGEMEIN ================= -->
 <section id="general">
   <h1>Allgemein</h1>
@@ -402,6 +482,7 @@ a{color:#bf94ff}
       <div class="hk"><span>Start / Pause</span><input type="text" data-hk="hk_toggle" readonly><span class="s" id="hs_hk_toggle"></span></div>
       <div class="hk"><span>Zeit hinzufügen</span><input type="text" data-hk="hk_plus" readonly><span class="s" id="hs_hk_plus"></span></div>
       <div class="hk"><span>Zeit abziehen</span><input type="text" data-hk="hk_minus" readonly><span class="s" id="hs_hk_minus"></span></div>
+      <div class="hk"><span>Happy Hour an/aus</span><input type="text" data-hk="hk_hh" readonly><span class="s" id="hs_hk_hh"></span></div>
       <label class="f">Wie viel Zeit die Hotkeys ändern (Sekunden)</label>
       <input type="number" data-k="hkSec" class="dur" min="1"><div class="dh"></div>
       <div class="hint">Feld anklicken und Taste(n) drücken. Entf oder Rücktaste = Hotkey aus. Achtung: Eine belegte Taste geht dann im Spiel nicht mehr.</div>
@@ -579,9 +660,69 @@ $('bLogin').onclick = async () => {
 const good = v => /^verbunden/.test(v || '');
 function setDot(id, v, offWhen) { const d = $(id); d.className = 'dot' + (good(v) ? ' ok' : offWhen && offWhen.test(v || '') ? ' off' : ''); }
 
+
+// ---------- Overlays ----------
+let ovLoaded = false;
+document.querySelector('[data-tab="overlays"]').addEventListener('click', () => {
+  if (ovLoaded) return; ovLoaded = true;
+  $$('iframe[data-src]').forEach(f => f.src = f.dataset.src);
+});
+$$('[data-copyurl]').forEach(b => b.onclick = () => {
+  const el = b.previousElementSibling; el.select();
+  (navigator.clipboard ? navigator.clipboard.writeText(el.value) : Promise.reject()).catch(() => document.execCommand('copy'));
+  const t = b.textContent; b.textContent = '✔'; setTimeout(() => b.textContent = t, 1000);
+});
+$('bHH').onclick = () => act('hhToggle');
+$('bSpin').onclick = () => act('test', { kind: 'wheel' });
+$('bClearTop').onclick = () => act('clearTop');
+
+// Ziele bearbeiten
+let goalsDraft = null, goalsT = null;
+const GTYPES = { subs: 'Subs', bits: 'Bits', follows: 'Follows', raids: 'Raids', hours: 'Stunden' };
+function drawGoals(list) {
+  $('goalList').innerHTML = list.map((g, i) => `<div class="goalrow" data-i="${i}">
+    <input type="text" data-gf="label" value="${esc(g.label)}" placeholder="z. B. 24h-Stream">
+    <select data-gf="type">${Object.entries(GTYPES).map(([k, v]) => `<option value="${k}" ${g.type === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+    <input type="number" data-gf="target" value="${g.target}" min="1">
+    <button class="btn minus" data-gdel title="Entfernen">✕</button></div>`).join('') || '<div class="hint">Noch keine Ziele.</div>';
+}
+function saveGoals() { clearTimeout(goalsT); goalsT = setTimeout(() => { queue('goals', goalsDraft); }, 400); }
+$('goalList').addEventListener('input', e => {
+  const row = e.target.closest('.goalrow'); if (!row || !goalsDraft) return;
+  const g = goalsDraft[+row.dataset.i], f = e.target.dataset.gf;
+  g[f] = f === 'target' ? Number(e.target.value) || 1 : e.target.value;
+  saveGoals();
+});
+$('goalList').addEventListener('click', e => {
+  if (!e.target.matches('[data-gdel]')) return;
+  goalsDraft.splice(+e.target.closest('.goalrow').dataset.i, 1); drawGoals(goalsDraft); saveGoals();
+});
+$('bAddGoal').onclick = () => {
+  if (!goalsDraft) return; if (goalsDraft.length >= 10) return;
+  goalsDraft.push({ label: '', type: 'subs', target: 10 }); drawGoals(goalsDraft); saveGoals();
+  const rows = $('goalList').querySelectorAll('input[data-gf="label"]'); rows[rows.length - 1].focus();
+};
+// Glücksrad-Felder
+$('wheelInput').addEventListener('input', () => {
+  const f = $('wheelInput').value.split(/[,;\s]+/).map(x => parseFloat(x.replace(',', '.'))).filter(x => x > 0).map(x => Math.round(x * 60));
+  if (f.length >= 2) queue('wheelFields', f.slice(0, 12));
+});
+function renderOverlays(c) {
+  const port = location.port || 7777;
+  $$('[data-url]').forEach(el => el.value = `http://localhost:${port}/overlay/${el.dataset.url}`);
+  $$('.ov').forEach(el => el.classList.toggle('off', !c[el.dataset.ov]));
+  if (!goalsDraft) { goalsDraft = JSON.parse(JSON.stringify(c.goals)); drawGoals(goalsDraft); }
+  if (document.activeElement !== $('wheelInput') && !('wheelFields' in pending))
+    $('wheelInput').value = c.wheelFields.map(x => (x / 60).toLocaleString('de-DE', { maximumFractionDigits: 2 }).replace(',', '.')).join(', ');
+  const h = S.state.hh || {}, on = h.until && h.until > Date.now() + off;
+  $('bHH').classList.toggle('hhon', !!on);
+  $('bHH').textContent = on ? `⚡ Happy Hour läuft (×${h.mult}) – beenden` : `⚡ Happy Hour starten (${c.hhMin} Min, ×${c.hhMult})`;
+}
+
 function renderSnap() {
   const c = S.cfg, s = S.state, st = S.status;
   fillForm(c);
+  renderOverlays(c);
   $('nF').textContent = num(s.n.f); $('nS').textContent = num(s.n.s); $('nB').textContent = num(s.n.b); $('nR').textContent = num(s.n.r || 0);
   $('nAdd').textContent = dur(s.added / 1000, false); $('nLen').textContent = dur(c.startMin * 60 + s.added / 1000, false);
   const port = location.port || 7777;
@@ -593,7 +734,7 @@ function renderSnap() {
   ['dIrc', 'dIrc2', 'dIrc3'].forEach(id => setDot(id, st.irc, /kein Kanal/));
   ['dFol', 'dFol2', 'dFol3'].forEach(id => setDot(id, st.follow, /deaktiviert|nicht verbunden/));
   const hk = st.hotkeys || {};
-  ['hk_toggle', 'hk_plus', 'hk_minus'].forEach(k => {
+  ['hk_toggle', 'hk_plus', 'hk_minus', 'hk_hh'].forEach(k => {
     const v = hk[k] || ''; const el = $('hs_' + k);
     el.textContent = v; el.style.color = v === 'aktiv' ? 'var(--ok)' : v === 'aus' ? 'var(--dim)' : 'var(--warn)';
   });

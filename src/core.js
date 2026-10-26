@@ -24,7 +24,17 @@ const DEF = {
   // Twitch-Login
   clientId: '', token: '', login: '',
   // Hotkeys
-  hk_toggle: 'F9', hk_plus: 'F10', hk_minus: '', hkSec: 300,
+  hk_toggle: 'F9', hk_plus: 'F10', hk_minus: '', hkSec: 300, hk_hh: '',
+  // Zusatz-Overlays
+  ov_goals: true, goals: [
+    { label: 'Horror-Game spielen', type: 'subs', target: 25 },
+    { label: '24-Stunden-Stream', type: 'subs', target: 50 },
+    { label: 'Haare färben', type: 'bits', target: 10000 }
+  ],
+  ov_hh: true, hhMult: 2, hhMin: 30,
+  ov_top: true, topCount: 5,
+  ov_wheel: true, wheelMin: 5, wheelFields: [300, 600, 900, 1800, 60, 1200, 2700, 3600],
+  ov_ticker: true, tickerCount: 10, tickerSpeed: 60,
   // Nutzungsmeldung (immer aktiv): telemetry = 'ask' bis der Hinweis bestätigt ist, dann 'seen'
   telemetry: 'ask', installId: '', lastPing: 0, announced: false
 };
@@ -73,6 +83,8 @@ class Core extends EventEmitter {
     const saved = readJson(this.stateFile, null);
     this.state = saved && saved.state && saved.state.n ? saved.state : this.newState();
     this.log = (saved && saved.log) || [];
+    if (!this.state.hh) this.state.hh = { until: 0, mult: 1 };
+    if (!this.state.top) this.state.top = {};
     this.seen = new Set((saved && saved.seen) || []);
     this.logId = this.log.reduce((m, x) => Math.max(m, x.id), 0);
     this.status = { irc: 'aus', follow: 'aus', hotkeys: {} };
@@ -90,7 +102,7 @@ class Core extends EventEmitter {
   }
 
   newState() {
-    return { running: false, started: false, endsAt: 0, remaining: this.cfg.startMin * 60000, added: 0, ended: false, n: { f: 0, s: 0, b: 0, r: 0 } };
+    return { running: false, started: false, endsAt: 0, remaining: this.cfg.startMin * 60000, added: 0, ended: false, n: { f: 0, s: 0, b: 0, r: 0 }, hh: { until: 0, mult: 1 }, top: {} };
   }
   rem() { const s = this.state; return s.running ? Math.max(0, s.endsAt - Date.now()) : s.remaining; }
 
@@ -132,6 +144,8 @@ class Core extends EventEmitter {
       if (c.ignoreAfterEnd) { this.pushLog(text + ' (nach Ende ignoriert)', 0, 'info'); this.changed(); return; }
       s.running = true; s.endsAt = Date.now();
     }
+    let mult = 1;
+    if (sec > 0 && this.hhActive() && opt.kind !== 'manual') { mult = s.hh.mult || 2; sec *= mult; }
     let ms = Math.round(sec * 1000);
     if (c.capH > 0 && ms > 0) {
       const left = c.capH * 3600000 - (c.startMin * 60000 + s.added);
@@ -144,7 +158,9 @@ class Core extends EventEmitter {
     s.added += ms;
     if (counts && !opt.test) for (const k in counts) s.n[k] = (s.n[k] || 0) + counts[k];
     if (this.rem() > 0) s.ended = false;
+    if (opt.user && ms > 0 && !opt.test) s.top[opt.user] = (s.top[opt.user] || 0) + ms / 1000;
     let label = text;
+    if (mult > 1) label += ` (⚡ ×${mult})`;
     if (sec > 0 && ms === 0 && c.capH > 0) label += ' (Maximalzeit erreicht)';
     const e = this.pushLog(label, ms / 1000, opt.kind);
     if (ms > 0 && (!opt.manual || c.popManual)) this.pop(e);
@@ -165,11 +181,14 @@ class Core extends EventEmitter {
   }
   toggle() { this.state.running ? this.pause() : this.start(); }
   reset() {
-    this.state = this.newState(); this.seen.clear(); this.log = [];
+    this.state = this.newState(); this.seen.clear(); this.log = []; this.wheelBusy = false; this.wheelQueue = []; this.wheelGen = (this.wheelGen || 0) + 1;
     this.pushLog('Timer zurückgesetzt', 0, 'info'); this.changed();
   }
   tick() {
     const s = this.state;
+    if (s.hh.until && Date.now() >= s.hh.until) {
+      s.hh.until = 0; this.pushLog('⚡ Happy Hour vorbei', 0, 'info'); this.changed();
+    }
     if (s.running && this.rem() <= 0) {
       s.running = false; s.remaining = 0; s.ended = true;
       this.pushLog('🏁 Marathon vorbei!', 0, 'info'); this.changed();
@@ -221,6 +240,46 @@ class Core extends EventEmitter {
     }).catch(() => {});
   }
 
+  // ---------- Happy Hour ----------
+  hhActive() { const h = this.state.hh; return !!(h && h.until && Date.now() < h.until); }
+  hhStart(min) {
+    min = Math.max(1, Math.min(1440, Number(min) || 30));
+    this.state.hh = { until: Date.now() + min * 60000, mult: Math.max(1, this.cfg.hhMult || 2) };
+    this.pushLog(`⚡ Happy Hour gestartet: ${min} Min, alles ×${this.state.hh.mult}`, 0, 'info');
+    this.changed();
+  }
+  hhStop() { if (!this.hhActive()) return; this.state.hh.until = 0; this.pushLog('⚡ Happy Hour beendet', 0, 'info'); this.changed(); }
+  hhToggle() { this.hhActive() ? this.hhStop() : this.hhStart(this.cfg.hhMin); }
+
+  // ---------- Glücksrad ----------
+  spinWheel(who, count, test) {
+    const f = this.cfg.wheelFields;
+    if (!this.cfg.ov_wheel || !f || f.length < 2) return;
+    // Mehrere Gift-Bomben gleichzeitig: nacheinander drehen
+    this.wheelQueue = this.wheelQueue || [];
+    this.wheelQueue.push({ who, count, test });
+    if (!this.wheelBusy) this.nextWheel();
+  }
+  nextWheel() {
+    const job = this.wheelQueue.shift();
+    if (!job) { this.wheelBusy = false; return; }
+    this.wheelBusy = true;
+    const f = this.cfg.wheelFields.slice();
+    const index = Math.floor(Math.random() * f.length);
+    const spin = { id: Date.now(), fields: f, index, who: job.who, count: job.count, sec: f[index] };
+    const gen = this.wheelGen = this.wheelGen || 0;
+    for (const c of this.clients) this.send(c, 'wheel', spin);
+    this.pushLog(`🎡 Glücksrad für ${job.who} (${job.count} Gift-Subs)`, 0, 'info');
+    this.changed();
+    // Zeit erst gutschreiben, wenn das Rad steht (Animation ca. 6 s)
+    setTimeout(() => {
+      if (gen !== this.wheelGen) return;
+      this.addTime(f[index], (job.test ? 'Test: ' : '') + `Glücksrad für ${job.who}`, null,
+        { kind: 'wheel', user: job.test ? null : job.who, test: job.test, manual: job.test });
+      setTimeout(() => { if (gen === this.wheelGen) this.nextWheel(); }, 3500);
+    }, 6500);
+  }
+
   // ---------- Events ----------
   tierSec(plan) { const c = this.cfg; return plan === 'Prime' ? c.prime : plan === '3000' ? c.t3 : plan === '2000' ? c.t2 : c.t1; }
 
@@ -234,21 +293,25 @@ class Core extends EventEmitter {
       const id = t['msg-id'], plan = t['msg-param-sub-plan'];
       if ((id === 'sub' || id === 'resub') && c.en_sub) {
         const months = parseInt(t['msg-param-cumulative-months'], 10);
-        this.addTime(this.tierSec(plan), `${tierName(plan)}-Sub von ${who}` + (id === 'resub' && months > 1 ? ` (${months} Monate)` : ''), { s: 1 }, { kind: 'sub' });
+        this.addTime(this.tierSec(plan), `${tierName(plan)}-Sub von ${who}` + (id === 'resub' && months > 1 ? ` (${months} Monate)` : ''), { s: 1 }, { kind: 'sub', user: who });
       } else if ((id === 'subgift' || id === 'anonsubgift') && c.en_gift) {
         const giver = id === 'anonsubgift' || t.login === 'ananonymousgifter' ? 'Anonym' : who;
         const to = t['msg-param-recipient-display-name'] || 'jemandem';
-        this.addTime(this.tierSec(plan) * c.giftPct / 100, `${giver} schenkt ${to} einen ${tierName(plan)}-Sub`, { s: 1 }, { kind: 'gift' });
+        this.addTime(this.tierSec(plan) * c.giftPct / 100, `${giver} schenkt ${to} einen ${tierName(plan)}-Sub`, { s: 1 }, { kind: 'gift', user: giver });
+      } else if (id === 'submysterygift' && c.en_gift) {
+        const cnt = parseInt(t['msg-param-mass-gift-count'], 10) || 0;
+        const giver = t.login === 'ananonymousgifter' ? 'Anonym' : who;
+        if (cnt >= c.wheelMin) this.spinWheel(giver, cnt);
       } else if (id === 'raid' && c.en_raid) {
         const v = parseInt(t['msg-param-viewerCount'], 10) || 0;
         const from = t['msg-param-displayName'] || who;
-        if (v >= c.raidMin) this.addTime(v * c.raid, `Raid von ${from} mit ${num(v)} Zuschauern`, { r: 1 }, { kind: 'raid' });
+        if (v >= c.raidMin) this.addTime(v * c.raid, `Raid von ${from} mit ${num(v)} Zuschauern`, { r: 1 }, { kind: 'raid', user: from });
         else { this.pushLog(`Raid von ${from} mit ${v} Zuschauern (unter Minimum)`, 0, 'info'); this.changed(); }
       }
     }
     if (m.command === 'PRIVMSG' && t.bits && c.en_bits) {
       const b = parseInt(t.bits, 10) || 0;
-      if (b >= Math.max(1, c.bitsMin)) this.addTime(b / 100 * c.bits, `${num(b)} Bits von ${who}`, { b }, { kind: 'bits' });
+      if (b >= Math.max(1, c.bitsMin)) this.addTime(b / 100 * c.bits, `${num(b)} Bits von ${who}`, { b }, { kind: 'bits', user: who });
     }
   }
 
@@ -260,7 +323,7 @@ class Core extends EventEmitter {
       if (this.seen.has(login)) { this.pushLog(`Follow von ${ev.user_name} (schon gezählt)`, 0, 'info'); this.changed(); return; }
       this.seen.add(login);
     }
-    this.addTime(c.follow, `Follow von ${ev.user_name}`, { f: 1 }, { kind: 'follow' });
+    this.addTime(c.follow, `Follow von ${ev.user_name}`, { f: 1 }, { kind: 'follow', user: ev.user_name });
   }
 
   test(kind) {
@@ -276,6 +339,7 @@ class Core extends EventEmitter {
       bits1000: [c.bits * 10, '1.000 Bits von Tester', 'bits'],
       raid: [20 * c.raid, 'Raid von Tester mit 20 Zuschauern', 'raid']
     };
+    if (kind === 'wheel') return this.spinWheel('Tester', Math.max(c.wheelMin, 5), true);
     const m = map[kind];
     if (m) this.addTime(m[0], T + m[1], null, { test: true, manual: true, kind: m[2] });
   }
@@ -390,6 +454,21 @@ class Core extends EventEmitter {
       if (!(k in DEF) || ['token', 'login', 'installId', 'lastPing', 'announced'].includes(k)) continue;
       if (k === 'telemetry' && patch[k] !== 'seen') continue;
       const d = DEF[k], v = patch[k];
+      if (k === 'goals') {
+        if (!Array.isArray(v)) continue;
+        this.cfg.goals = v.slice(0, 10).map(g => ({
+          label: String((g && g.label) || '').slice(0, 60).trim(),
+          type: ['subs', 'bits', 'follows', 'raids', 'hours'].includes(g && g.type) ? g.type : 'subs',
+          target: Math.max(1, Math.min(1e9, Number(g && g.target) || 1))
+        }));
+        continue;
+      }
+      if (k === 'wheelFields') {
+        if (!Array.isArray(v)) continue;
+        const f = v.map(Number).filter(n => isFinite(n) && n > 0).map(n => Math.min(86400, Math.round(n))).slice(0, 12);
+        if (f.length >= 2) this.cfg.wheelFields = f;
+        continue;
+      }
       if (typeof d === 'number') { const n = Number(v); if (isFinite(n)) this.cfg[k] = Math.max(0, n); }
       else if (typeof d === 'boolean') this.cfg[k] = !!v;
       else this.cfg[k] = String(v).slice(0, 300).trim();
@@ -430,6 +509,10 @@ class Core extends EventEmitter {
       case 'logout': return this.setToken('');
       case 'clearLog': this.log = []; return this.changed();
       case 'reconnect': this.connIrc(); return this.connFollow();
+      case 'hhStart': return this.hhStart(Number(body.min) || this.cfg.hhMin);
+      case 'hhStop': return this.hhStop();
+      case 'hhToggle': return this.hhToggle();
+      case 'clearTop': this.state.top = {}; return this.changed();
     }
   }
 
@@ -446,6 +529,7 @@ class Core extends EventEmitter {
     if (req.method === 'GET') {
       if (p === '/' || p === '/control') return html('control.html');
       if (p === '/overlay') return html('overlay.html');
+      if (/^\/overlay\/(goals|hh|top|wheel|ticker)$/.test(p)) return html('widgets.html');
       if (p === '/auth') return html('auth.html');
       if (p === '/api/snap') return json(200, this.snapshot());
       if (p === '/api/authurl') return json(200, { url: this.cfg.clientId ? this.authUrl() : '' });

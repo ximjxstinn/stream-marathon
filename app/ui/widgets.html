@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Stream Marathon</title>
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@500;700;900&family=Bebas+Neue&family=Montserrat:wght@700;900&family=Luckiest+Guy&family=Russo+One&family=Orbitron:wght@700;900&family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+:root{--c:#fff;--a:#9146ff;--font:'Rubik'}
+*{box-sizing:border-box;margin:0}
+html,body{background:transparent;overflow:hidden;color:var(--c);font-family:var(--font),Rubik,"Segoe UI",sans-serif}
+.panel{background:rgba(14,14,16,.85);border:1px solid rgba(255,255,255,.13);border-radius:16px;padding:18px;margin:10px}
+.panel h3{font-size:19px;margin-bottom:12px;color:var(--a);font-weight:900}
+.sh{text-shadow:0 3px 12px rgba(0,0,0,.8),0 0 2px #000}
+.hide{display:none!important}
+
+/* Ziele */
+.g{margin-bottom:13px}.g:last-child{margin-bottom:0}
+.g .r{display:flex;justify-content:space-between;gap:10px;font-weight:700;font-size:16px;margin-bottom:6px}
+.bar{height:13px;background:rgba(255,255,255,.1);border-radius:7px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--a),#ff4fd8);border-radius:7px;transition:width .8s ease}
+.g.done .r{color:#00f593}.g.done .bar i{background:#00f593}
+.g.just{animation:goal 1.2s ease 2}
+@keyframes goal{50%{transform:scale(1.04)}}
+
+/* Happy Hour */
+#hh{display:flex;justify-content:center;padding:14px}
+.hh{background:linear-gradient(90deg,#ff4fd8,var(--a));padding:10px 26px;border-radius:999px;font-weight:900;font-size:26px;
+  box-shadow:0 0 30px rgba(255,79,216,.6);white-space:nowrap;animation:glow 1.6s ease-in-out infinite}
+.hh small{font-weight:700;opacity:.9;margin-left:10px;font-variant-numeric:tabular-nums}
+@keyframes glow{50%{box-shadow:0 0 50px rgba(255,79,216,.9)}}
+
+/* Top */
+.p{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.08);font-weight:700;font-size:17px}
+.p:last-child{border:0}
+.p b{width:30px;font-size:21px;text-align:center}.p span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.p em{font-style:normal;color:#00f593}
+.empty{color:rgba(255,255,255,.5);font-weight:600;font-size:15px}
+
+/* Glücksrad */
+#wheel{display:flex;flex-direction:column;align-items:center;padding:30px 10px 10px;transition:opacity .4s}
+#wheel.idle{opacity:0}
+.wbox{position:relative;width:300px;height:300px}
+.wheel{width:300px;height:300px;border-radius:50%;border:7px solid #fff;box-shadow:0 0 40px rgba(0,0,0,.6);position:relative;overflow:hidden}
+.wheel span{position:absolute;left:50%;top:50%;width:46%;transform-origin:0 50%;text-align:right;padding-right:12px;font-weight:900;font-size:19px;
+  color:#fff;text-shadow:0 1px 3px #000;margin-top:-12px;line-height:24px}
+.pin{position:absolute;left:50%;top:-22px;transform:translateX(-50%);border-left:18px solid transparent;border-right:18px solid transparent;border-top:34px solid #fff;filter:drop-shadow(0 2px 3px #000);z-index:2}
+.cap{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:62px;height:62px;border-radius:50%;background:#0e0e10;border:5px solid #fff;display:grid;place-items:center;font-size:26px;z-index:2}
+.wt{margin-top:14px;font-weight:900;font-size:22px;text-align:center;min-height:62px}
+.wt .res{color:#ffe14d;font-size:30px;display:block;animation:pop .6s ease}
+@keyframes pop{0%{transform:scale(.5);opacity:0}70%{transform:scale(1.15)}100%{transform:scale(1);opacity:1}}
+
+/* Laufband */
+#ticker{position:absolute;left:0;right:0;bottom:0;height:60px;background:rgba(14,14,16,.92);border-top:3px solid var(--a);display:flex;align-items:center;overflow:hidden}
+.tag{background:var(--a);height:100%;display:flex;align-items:center;padding:0 22px;font-weight:900;font-size:19px;flex:none;z-index:1}
+.track{flex:1;overflow:hidden;height:100%;display:flex;align-items:center}
+.run{display:flex;gap:50px;white-space:nowrap;font-weight:700;font-size:20px;padding-left:40px;animation:scroll linear infinite;will-change:transform}
+.run em{font-style:normal;color:#00f593;margin-left:7px}
+@keyframes scroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+</style>
+</head>
+<body>
+<div id="goals" class="panel hide"><h3>🎯 Subathon-Ziele</h3><div id="glist"></div></div>
+<div id="hh" class="hide"><div class="hh">⚡ HAPPY HOUR · ALLES ×<span id="hhx">2</span><small id="hht"></small></div></div>
+<div id="top" class="panel hide"><h3>🏆 Top-Supporter</h3><div id="tlist"></div></div>
+<div id="wheel" class="hide idle">
+  <div class="wbox"><div class="pin"></div><div class="wheel" id="wh"></div><div class="cap">🎁</div></div>
+  <div class="wt sh" id="wt"></div>
+</div>
+<div id="ticker" class="hide"><div class="tag">LIVE</div><div class="track"><div class="run" id="run"></div></div></div>
+
+<script>
+const W = location.pathname.split('/').pop();
+const DEMO = new URLSearchParams(location.search).has('demo');
+const $ = id => document.getElementById(id);
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+const num = n => Math.floor(Number(n)).toLocaleString('de-DE');
+const pad = n => String(n).padStart(2, '0');
+const dur = sec => {
+  sec = Math.round(sec); const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), x = sec % 60;
+  return '+' + ([h ? h + 'h' : '', m ? m + 'm' : '', x && !h ? x + 's' : ''].filter(Boolean).join(' ') || '0s');
+};
+const COLORS = ['#9146ff', '#ff4fd8', '#00b8ff', '#ffb31a', '#00f593', '#ff4d6d', '#6a3dff', '#ff8a00', '#1fd1c1', '#e84393', '#3d7dff', '#9bd600'];
+const ICON = { follow: '❤️', sub: '⭐', gift: '🎁', bits: '💎', raid: '🚀', wheel: '🎡' };
+const DEMO_TOP = { MaxPower: 8100, LunaFN: 5400, Bob_TTV: 3300, Kiki: 2400, Zed: 1500 };
+const DEMO_LOG = [
+  { kind: 'sub', text: 'T1-Sub von MaxPower', sec: 300 }, { kind: 'bits', text: '500 Bits von Kiki', sec: 300 },
+  { kind: 'gift', text: 'LunaFN schenkt Zed einen T1-Sub', sec: 300 }, { kind: 'follow', text: 'Follow von Zed', sec: 30 },
+  { kind: 'raid', text: 'Raid von Bob_TTV mit 42 Zuschauern', sec: 84 }
+];
+let S = null, off = 0;
+const show = (el, on) => $(el).classList.toggle('hide', !on);
+
+function goals() {
+  const c = S.cfg, s = S.state, on = c.ov_goals && c.goals.length;
+  show('goals', on); if (!on) return;
+  const len = (c.startMin * 60 + s.added / 1000) / 3600;
+  const val = { subs: s.n.s, bits: s.n.b, follows: s.n.f, raids: s.n.r || 0, hours: len };
+  const demo = DEMO && !s.n.s && !s.n.b && !s.n.f;
+  const html = c.goals.map((g, i) => {
+    let v = val[g.type] || 0;
+    if (demo) v = [g.target, g.target * .74, g.target * .64][i % 3];
+    const pct = Math.min(100, v / g.target * 100), done = v >= g.target;
+    const shown = g.type === 'hours' ? `${num(v)}/${num(g.target)} Std.` : `${num(v)}/${num(g.target)}`;
+    return `<div class="g ${done ? 'done' : ''}" data-i="${i}"><div class="r"><span>${done ? '✔ ' : ''}${esc(g.label || 'Ziel')}</span><span>${shown}</span></div><div class="bar"><i style="width:${pct}%"></i></div></div>`;
+  }).join('');
+  if ($('glist').dataset.h !== html) {
+    const before = [...$('glist').querySelectorAll('.g.done')].map(e => e.dataset.i);
+    $('glist').dataset.h = html; $('glist').innerHTML = html;
+    if ($('glist').dataset.init) $('glist').querySelectorAll('.g.done').forEach(e => { if (!before.includes(e.dataset.i)) e.classList.add('just'); });
+    $('glist').dataset.init = 1;
+  }
+}
+function hh() {
+  const c = S.cfg, h = S.state.hh || {};
+  const left = (h.until || 0) - (Date.now() + off);
+  const on = c.ov_hh && (left > 0 || DEMO);
+  show('hh', on); if (!on) return;
+  const t = Math.max(0, Math.ceil((left > 0 ? left : 30 * 60000) / 1000));
+  $('hhx').textContent = left > 0 ? h.mult : c.hhMult;
+  $('hht').textContent = 'noch ' + (t >= 3600 ? Math.floor(t / 3600) + ':' : '') + pad(Math.floor(t % 3600 / 60)) + ':' + pad(t % 60);
+}
+function topList() {
+  const c = S.cfg; show('top', c.ov_top); if (!c.ov_top) return;
+  let t = S.state.top || {};
+  if (DEMO && !Object.keys(t).length) t = DEMO_TOP;
+  const list = Object.entries(t).sort((a, b) => b[1] - a[1]).slice(0, Math.max(1, c.topCount));
+  const medal = ['🥇', '🥈', '🥉'];
+  const html = list.length ? list.map(([n, sec], i) => `<div class="p"><b>${medal[i] || i + 1}</b><span>${esc(n)}</span><em>${dur(sec)}</em></div>`).join('')
+    : '<div class="empty">Noch keine Supporter – sei der Erste!</div>';
+  if ($('tlist').innerHTML !== html) $('tlist').innerHTML = html;
+}
+function ticker() {
+  const c = S.cfg; show('ticker', c.ov_ticker); if (!c.ov_ticker) return;
+  let ev = S.log.filter(x => x.sec > 0 && ICON[x.kind]).slice(-c.tickerCount).reverse();
+  if (DEMO && !ev.length) ev = DEMO_LOG;
+  const items = ev.length ? ev.map(x => `<span>${ICON[x.kind]} ${esc(x.text.replace(/^Test: /, ''))}<em>${dur(x.sec)}</em></span>`).join('')
+    : '<span>Danke für euren Support! ❤️</span>';
+  const html = items + items; // doppelt für nahtlose Schleife
+  const run = $('run');
+  if (run.dataset.h !== html) {
+    run.dataset.h = html; run.innerHTML = html;
+    requestAnimationFrame(() => { run.style.animationDuration = Math.max(8, run.scrollWidth / 2 / Math.max(10, c.tickerSpeed)) + 's'; });
+  }
+}
+
+// Glücksrad
+function drawWheel(fields) {
+  const n = fields.length, step = 360 / n;
+  $('wh').style.background = 'conic-gradient(' + fields.map((_, i) => `${COLORS[i % COLORS.length]} ${i * step}deg ${(i + 1) * step}deg`).join(',') + ')';
+  $('wh').innerHTML = fields.map((f, i) => {
+    const a = i * step + step / 2 - 90;
+    const t = f >= 3600 ? (f / 3600).toLocaleString('de-DE') + 'h' : f >= 60 ? Math.round(f / 60) + 'm' : f + 's';
+    return `<span style="transform:rotate(${a}deg)">${t}</span>`;
+  }).join('');
+}
+let rot = 0, wheelTimer = null;
+function spin(w) {
+  if (!S || !S.cfg.ov_wheel) return;
+  drawWheel(w.fields);
+  const box = $('wheel'), wh = $('wh'), n = w.fields.length, step = 360 / n;
+  box.classList.remove('idle');
+  $('wt').innerHTML = `${esc(w.who)} schenkt ${num(w.count)} Subs!`;
+  // Feld "index" soll oben unter dem Zeiger landen
+  const target = 360 - (w.index * step + step / 2) + (Math.random() - .5) * step * .6;
+  rot = rot - (rot % 360) + 360 * 6 + target;
+  wh.style.transition = 'none'; void wh.offsetWidth;
+  wh.style.transition = 'transform 6s cubic-bezier(.12,.6,.1,1)';
+  wh.style.transform = `rotate(${rot}deg)`;
+  clearTimeout(wheelTimer);
+  setTimeout(() => { $('wt').innerHTML = `${esc(w.who)} schenkt ${num(w.count)} Subs!<span class="res">🎉 ${dur(w.sec)}!</span>`; }, 6100);
+  wheelTimer = setTimeout(() => { if (!DEMO) box.classList.add('idle'); }, 9500);
+}
+
+function render() {
+  if (!S) return;
+  if (W === 'goals') goals();
+  else if (W === 'hh') hh();
+  else if (W === 'top') topList();
+  else if (W === 'ticker') ticker();
+  else if (W === 'wheel') {
+    show('wheel', S.cfg.ov_wheel);
+    if (DEMO && !wheelTimer && S.cfg.ov_wheel) { drawWheel(S.cfg.wheelFields); $('wheel').classList.remove('idle'); $('wt').textContent = 'Dreht sich bei einer Gift-Bombe'; }
+  }
+}
+function apply(c) {
+  const r = document.documentElement.style;
+  r.setProperty('--c', c.color); r.setProperty('--a', c.accent); r.setProperty('--font', `'${c.font}'`);
+}
+const es = new EventSource('/api/stream?role=' + W);
+es.addEventListener('snap', e => {
+  const first = !S; S = JSON.parse(e.data); off = S.now - Date.now(); apply(S.cfg);
+  if (W === 'wheel' && first) drawWheel(S.cfg.wheelFields);
+  if (W === 'wheel' && DEMO && !wheelTimer) drawWheel(S.cfg.wheelFields);
+  render();
+});
+if (W === 'wheel') es.addEventListener('wheel', e => spin(JSON.parse(e.data)));
+setInterval(render, 500);
+</script>
+</body>
+</html>

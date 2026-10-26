@@ -18,7 +18,8 @@ module.exports = function startShell(ctx) {
     const actions = {
       hk_toggle: () => core.toggle(),
       hk_plus: () => core.addTime(core.cfg.hkSec, 'Hotkey', null, { manual: true, kind: 'manual' }),
-      hk_minus: () => core.addTime(-core.cfg.hkSec, 'Hotkey', null, { manual: true, kind: 'manual' })
+      hk_minus: () => core.addTime(-core.cfg.hkSec, 'Hotkey', null, { manual: true, kind: 'manual' }),
+      hk_hh: () => core.hhToggle()
     };
     for (const k in actions) {
       const acc = String(c[k] || '').trim();
