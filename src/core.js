@@ -275,10 +275,45 @@ class Core extends EventEmitter {
     } catch (e) { L.error = true; }
     L.checkedAt = Date.now();
     this.setStatus('latest', L);
+    // Sobald das Update verteilt ist: sofort selbst herunterladen und neu starten
+    if (L.cdn && cmpVer(L.cdn, this.version) > 0 && !this._installing) this.installUpdate(L.cdn);
     // Solange ein Update verteilt wird, öfter nachsehen
     clearTimeout(this._updT);
     const pending = L.published && L.cdn && cmpVer(L.published, L.cdn) > 0;
     this._updT = setTimeout(() => this.checkLatest(), pending ? 30000 : 120000);
+  }
+
+  async installUpdate(ver) {
+    this._installing = true;
+    const crypto = require('crypto');
+    const root = path.join(this.dir, '..', 'updates'), tmp = path.join(root, '.tmp-core-' + process.pid);
+    try {
+      this.setStatus('installing', { version: ver, step: 'download', pct: 0 });
+      const m = await (await fetch(UPDATE_URL + 'manifest.json?t=' + Date.now(), { cache: 'no-store' })).json();
+      if (m.version !== ver || !m.files) throw new Error('Manifest passt nicht');
+      fs.rmSync(tmp, { recursive: true, force: true }); fs.mkdirSync(tmp, { recursive: true });
+      const files = Object.entries(m.files); let i = 0;
+      for (const [file, hash] of files) {
+        if (!/^[\w.\-/]+$/.test(file) || file.includes('..') || file === 'main.js') throw new Error('ungültiger Dateiname');
+        const r = await fetch(UPDATE_URL + file + '?t=' + Date.now(), { cache: 'no-store' });
+        if (!r.ok) throw new Error('Download fehlgeschlagen');
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (crypto.createHash('sha256').update(buf).digest('hex') !== hash) throw new Error('Prüfsumme falsch');
+        fs.mkdirSync(path.dirname(path.join(tmp, file)), { recursive: true });
+        fs.writeFileSync(path.join(tmp, file), buf);
+        this.setStatus('installing', { version: ver, step: 'download', pct: Math.round(++i / files.length * 100) });
+      }
+      const dest = path.join(root, ver);
+      fs.rmSync(dest, { recursive: true, force: true });
+      fs.renameSync(tmp, dest);
+      this.setStatus('installing', { version: ver, step: 'restart', pct: 100 });
+      this.pushLog(`Update ${ver} heruntergeladen – App startet neu`, 0, 'info'); this.changed();
+      setTimeout(() => this.emit('restart'), 2500);
+    } catch (e) {
+      try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (err) {}
+      this._installing = false;
+      this.setStatus('installing', { version: ver, step: 'error' });
+    }
   }
 
   // ---------- Happy Hour ----------

@@ -540,11 +540,8 @@ a{color:#bf94ff}
         <div class="stat"><span>Deine Version</span><b id="uMine">–</b></div>
         <div class="stat"><span>Neueste Version</span><b id="uLatest">–</b></div>
       </div>
-      <div id="uSteps" class="usteps"></div>
       <div class="ubar" id="uBarWrap"><i id="uBar"></i></div>
       <div class="hint" id="uInfo" style="font-size:13px;color:var(--text)"></div>
-      <button class="btn pri" id="bRestartUpd" style="width:100%;margin-top:10px;display:none">⬇ Jetzt installieren (App startet neu)</button>
-      <div class="hint">Neue Updates erscheinen hier sofort nach dem Hochladen. GitHub braucht danach bis zu 5 Minuten zum Verteilen, dann installiert die App es automatisch (oder per Knopf sofort). Ein laufender Timer läuft dabei weiter.</div>
     </div>
     <div class="card">
       <h2>🔌 Verbindung zu OBS</h2>
@@ -699,42 +696,28 @@ $('cMinus').onclick = () => act('add', { sec: -(+$('cAmt').value || 0) * +$('cUn
 $$('[data-test]').forEach(b => b.onclick = () => act('test', { kind: b.dataset.test }));
 $('bClear').onclick = () => act('clearLog');
 $('bCheckUpd').onclick = () => act('checkUpdate');
-$('bRestartUpd').onclick = () => { $('bRestartUpd').disabled = true; $('bRestartUpd').textContent = 'Startet neu…'; act('restartNow'); };
 function renderUpdate() {
-  const mine = S.version || '?', L = (S.status && S.status.latest) || {};
+  const mine = S.version || '?', L = (S.status && S.status.latest) || {}, I = (S.status && S.status.installing) || {};
   const cmpv = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d; } return 0; };
-  const hm = ms => new Date(ms).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
   const day = ms => new Date(ms).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
   $('uMine').textContent = mine;
-  $('uLatest').textContent = L.published || (L.error ? 'nicht erreichbar' : '…');
+  $('uLatest').textContent = L.published || (L.error ? '–' : '…');
   const newer = L.published && cmpv(L.published, mine) > 0;
-  const ready = newer && L.cdn && cmpv(L.cdn, L.published) >= 0;
-  const installing = S.status && S.status.update;
   $('uLatest').style.color = newer ? 'var(--warn)' : L.published ? 'var(--ok)' : '';
-  // Schritte: 1 Hochgeladen · 2 Wird verteilt · 3 Wird installiert · 4 Fertig
-  const steps = ['Hochgeladen', 'Wird verteilt', 'Wird installiert', 'Fertig'];
-  const at = !newer ? 4 : installing ? 2 : ready ? 2 : 1;
-  $('uSteps').innerHTML = newer || L.published ? steps.map((t, i) => `<div class="${i < at ? 'done' : i === at ? 'now' : ''}">${i < at ? '✓ ' : ''}${t}</div>`).join('') : '';
   let pct = 0, info = '';
-  if (L.error && !L.published) info = '⚠ GitHub nicht erreichbar – kein Internet?';
-  else if (!newer && L.published) { pct = 100; info = `✅ Du hast die neueste Version. Letztes Update: ${day(L.publishedAt)}.`; }
-  else if (installing) { pct = 95; info = `⬇ ${installing}`; }
-  else if (ready) {
-    pct = 75;
-    info = `🟢 Update ${L.published} ist verteilt und wird automatisch installiert (spätestens in 10 Minuten) – oder jetzt per Knopf.`;
-  } else if (newer) {
+  if (!newer) { info = L.published ? `✅ Aktuell · letztes Update ${day(L.publishedAt)}` : (L.error ? '⚠ Keine Verbindung zu GitHub' : ''); }
+  else if (I.version === L.published && I.step === 'restart') { pct = 100; info = `Update ${L.published} installiert – App startet neu…`; }
+  else if (I.version === L.published && I.step === 'download') { pct = 70 + I.pct * .28; info = `Update ${L.published} wird heruntergeladen… ${I.pct} %`; }
+  else {
     const start = new Date(L.publishedAt).getTime(), total = 5 * 60000;
     const done = Math.max(0, Math.min(1, ((Date.now() + off) - start) / total));
-    pct = 10 + done * 60;
+    pct = 5 + done * 65;
     const left = Math.max(0, Math.ceil((start + total - (Date.now() + off)) / 60000));
-    info = `🟠 Update ${L.published} wurde um ${hm(start)} hochgeladen. GitHub verteilt es gerade – ` +
-      (left > 0 ? `noch ca. ${left} Min.` : 'gleich fertig.');
+    info = `Update ${L.published} kommt – ` + (left > 0 ? `noch ca. ${left} Min.` : 'gleich da…');
   }
-  if (L.checkedAt) info += ` · Geprüft: ${hm(L.checkedAt)}`;
   $('uInfo').textContent = info;
   $('uBarWrap').style.display = newer ? 'block' : 'none';
   $('uBar').style.width = pct + '%';
-  $('bRestartUpd').style.display = ready && !installing ? '' : 'none';
 }
 $('bCenter').onclick = () => { $$('[data-k=timerX]').forEach(e => e.value = 50); $$('[data-k=timerY]').forEach(e => e.value = 0); queue('timerX', 50); queue('timerY', 0); };
 // Design-Vorschau zeigt den ganzen 1920×1080-Bildschirm verkleinert
