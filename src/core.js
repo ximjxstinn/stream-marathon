@@ -19,7 +19,7 @@ const DEF = {
   title: 'SUBATHON', endText: 'MARATHON VORBEI', font: 'Rubik', format: 'hms', size: 110,
   color: '#ffffff', accent: '#9146ff', shadow: 60, outline: 0, align: 'center',
   boxOn: false, boxColor: '#000000', boxOpacity: 50, boxRadius: 16,
-  showStats: true, st_f: true, st_s: true, st_b: true, st_r: false,
+  showStats: true, st_f: true, st_s: true, st_b: true, st_r: false, statSize: 100,
   pops: true, popDur: 3.2, popManual: false, sound: false, volume: 50,
   // Twitch-Login
   clientId: '', token: '', login: '',
@@ -34,7 +34,9 @@ const DEF = {
   ov_hh: true, hhMult: 2, hhMin: 30,
   ov_top: true, topCount: 5,
   ov_wheel: true, wheelMin: 5, wheelFields: [300, 600, 900, 1800, 60, 1200, 2700, 3600],
-  ov_ticker: true, tickerCount: 10, tickerSpeed: 60,
+  ov_ticker: true, tickerCount: 10, tickerSpeed: 40,
+  // Größe der einzelnen Overlays in %
+  sz_goals: 100, sz_hh: 100, sz_top: 100, sz_wheel: 100, sz_ticker: 100,
   // Im Hauptoverlay anzeigen + Position (tl, tr, bl, br, tc, bc, ml, mr)
   m_goals: false, p_goals: 'tl', m_hh: false, p_hh: 'tc', m_top: false, p_top: 'tr',
   m_wheel: false, p_wheel: 'mr', m_ticker: false, mScale: 100,
@@ -478,6 +480,8 @@ class Core extends EventEmitter {
     }
     for (const w of ['goals', 'hh', 'top', 'wheel']) if (!['tl', 'tr', 'bl', 'br', 'tc', 'bc', 'ml', 'mr'].includes(this.cfg['p_' + w])) this.cfg['p_' + w] = DEF['p_' + w];
     this.cfg.mScale = Math.max(30, Math.min(300, this.cfg.mScale || 100));
+    for (const k of ['statSize', 'sz_goals', 'sz_hh', 'sz_top', 'sz_wheel', 'sz_ticker']) this.cfg[k] = Math.max(30, Math.min(400, this.cfg[k] || 100));
+    this.cfg.tickerSpeed = Math.max(5, Math.min(300, this.cfg.tickerSpeed || 40));
     this.cfg.channel = this.cfg.channel.toLowerCase().replace(/^#/, '').replace(/^https?:\/\/(www\.)?twitch\.tv\//, '').replace(/\/.*$/, '');
     if (!this.cfg.port || this.cfg.port < 1024 || this.cfg.port > 65535) this.cfg.port = old.port;
     this.cfg.port = Math.round(this.cfg.port);

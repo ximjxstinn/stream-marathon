@@ -136,9 +136,12 @@ function ticker() {
     : '<span>Danke für euren Support! ❤️</span>';
   const html = items + items; // doppelt für nahtlose Schleife
   const run = $('run');
-  if (run.dataset.h !== html) {
-    run.dataset.h = html; run.innerHTML = html;
-    requestAnimationFrame(() => { run.style.animationDuration = Math.max(8, run.scrollWidth / 2 / Math.max(10, c.tickerSpeed)) + 's'; });
+  if (run.dataset.h !== html) { run.dataset.h = html; run.innerHTML = html; run.dataset.sp = ''; }
+  // Geschwindigkeit sofort übernehmen (nicht erst beim nächsten Event)
+  const sp = String(c.tickerSpeed);
+  if (run.dataset.sp !== sp) {
+    run.dataset.sp = sp;
+    requestAnimationFrame(() => { run.style.animationDuration = Math.max(4, run.scrollWidth / 2 / Math.max(5, c.tickerSpeed)) + 's'; });
   }
 }
 
@@ -184,6 +187,8 @@ function render() {
 function apply(c) {
   const r = document.documentElement.style;
   r.setProperty('--c', c.color); r.setProperty('--a', c.accent); r.setProperty('--font', `'${c.font}'`);
+  const z = String((c['sz_' + W] || 100) / 100);
+  if (document.body.style.zoom !== z) document.body.style.zoom = z;
 }
 // Eine gemeinsame Live-Verbindung pro Fenster: eingebettete Seiten (Vorschauen, Overlays im
 // Hauptoverlay) hängen sich an die Verbindung der Elternseite. Browser erlauben nur 6 gleichzeitige

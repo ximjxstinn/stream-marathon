@@ -13,7 +13,7 @@ html,body{margin:0;background:transparent;overflow:hidden;color:var(--c);font-fa
 .fx{text-shadow:var(--sh);-webkit-text-stroke:var(--ol) #000;paint-order:stroke fill}
 #title{font-weight:900;letter-spacing:.18em;font-size:calc(var(--s)*.22);color:var(--a);margin-bottom:4px}
 #time{display:inline-block;font-weight:900;font-size:var(--s);line-height:1;font-variant-numeric:tabular-nums;white-space:nowrap}
-#stats{margin-top:10px;font-weight:700;font-size:calc(var(--s)*.2);display:flex;gap:calc(var(--s)*.2);justify-content:var(--just)}
+#stats{margin-top:10px;font-weight:700;font-size:calc(var(--s)*.2*var(--st,1));display:flex;gap:calc(var(--s)*.2*var(--st,1));justify-content:var(--just)}
 body.ended #time{color:#ff4d6d}
 #pops{position:relative;height:calc(var(--s)*.9);margin-top:6px;width:100%}
 /* Eingebettete Overlays */
@@ -75,6 +75,7 @@ function apply(c) {
   r.setProperty('--rad', c.boxRadius + 'px');
   r.setProperty('--pad', c.boxOn ? (c.size * .18) + 'px' : '0px');
   r.setProperty('--pd', c.popDur + 's');
+  r.setProperty('--st', (c.statSize || 100) / 100);
   $('pops').style.display = c.pops ? '' : 'none';
 }
 
@@ -94,7 +95,8 @@ function place(box, pos, w, h, bottomGap) {
 function embed(c) {
   const sc = (c.mScale || 100) / 100;
   let any = false;
-  const tickGap = c.ov_ticker && c.m_ticker ? 60 * sc : 0;
+  const sz = w => (c['sz_' + w] || 100) / 100;
+  const tickGap = c.ov_ticker && c.m_ticker ? 60 * sz('ticker') * sc : 0;
   for (const w of ['goals', 'hh', 'top', 'wheel', 'ticker']) {
     const on = c['ov_' + w] && c['m_' + w];
     let e = embeds[w];
@@ -107,11 +109,11 @@ function embed(c) {
     }
     if (w === 'ticker') {
       if (e.box.parentNode !== document.body) document.body.appendChild(e.box);
-      Object.assign(e.box.style, { left: '0', right: '0', bottom: '0', top: '', transform: '', height: 60 * sc + 'px' });
-      Object.assign(e.f.style, { width: `calc(100% / ${sc})`, height: '60px', transform: `scale(${sc})` });
+      Object.assign(e.box.style, { left: '0', right: '0', bottom: '0', top: '', transform: '', height: 60 * sz(w) * sc + 'px' });
+      Object.assign(e.f.style, { width: `calc(100% / ${sc})`, height: 60 * sz(w) + 'px', transform: `scale(${sc})` });
       continue;
     }
-    const [W, H] = EMB[w], pos = c['p_' + w];
+    const [W0, H0] = EMB[w], W = W0 * sz(w), H = H0 * sz(w), pos = c['p_' + w];
     const target = pos === 'tc' ? $('below') : document.body;
     if (e.box.parentNode !== target) target.appendChild(e.box);
     Object.assign(e.box.style, { width: W * sc + 'px', height: H * sc + 'px' });
