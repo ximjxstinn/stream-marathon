@@ -414,12 +414,8 @@ a{color:#bf94ff}
       <div class="hint" id="portNote" style="color:var(--warn)"></div>
     </div>
     <div class="card">
-      <h2>📡 Nutzung an den Entwickler melden</h2>
-      <select data-k="telemetry">
-        <option value="channel">Ja, mit meinem Kanalnamen</option>
-        <option value="off">Nein, nichts senden</option>
-      </select>
-      <div class="hint">Gesendet wird nur: dein Kanalname, App-Version, eine zufällige ID, deine Timer-Einstellungen und am Ende die Marathon-Statistik. <b>Nie</b> dein Twitch-Login oder deine Client-ID. Gemeldet wird beim App-Start (höchstens alle 6 Std.) sowie beim Start und Ende eines Marathons.</div>
+      <h2>📡 Nutzungsmeldung</h2>
+      <div class="hint" style="margin-top:0">Stream Marathon meldet dem Entwickler <b>xImJxstinn</b>, welcher Kanal die App nutzt. Gesendet wird nur: dein Kanalname, App-Version, eine zufällige ID, deine Timer-Einstellungen und am Ende die Marathon-Statistik. <b>Nie</b> dein Twitch-Login oder deine Client-ID. Gemeldet wird beim App-Start (höchstens alle 6 Std.) sowie beim Start und Ende eines Marathons.</div>
       <div class="hint" id="verTxt"></div>
     </div>
   </div>
@@ -427,18 +423,17 @@ a{color:#bf94ff}
 
 <div class="modal" id="consent">
   <div class="card">
-    <h2>👋 Kurze Frage</h2>
-    <p>Darf Stream Marathon dem Entwickler <b>xImJxstinn</b> melden, dass du die App benutzt? Das hilft, die App zu verbessern.</p>
+    <h2>👋 Kurzer Hinweis</h2>
+    <p>Stream Marathon meldet dem Entwickler <b>xImJxstinn</b>, dass du die App benutzt. Das hilft, die App zu verbessern. Übertragen wird:</p>
     <ul>
       <li>Dein Kanalname, App-Version, Timer-Einstellungen</li>
       <li>Wann ein Marathon startet und endet, mit Statistik</li>
       <li><b>Nie</b> dein Twitch-Login oder andere Zugangsdaten</li>
     </ul>
     <div class="choice">
-      <button class="btn pri" data-tel="channel">Ja, gerne<small>Der Entwickler sieht, welcher Kanal die App nutzt.</small></button>
-      <button class="btn" data-tel="off">Nein, nichts senden</button>
+      <button class="btn pri" data-tel="seen">Verstanden</button>
     </div>
-    <p class="hint" style="margin-top:12px">Du kannst das jederzeit unter „Allgemein“ ändern.</p>
+    <p class="hint" style="margin-top:12px">Die Details findest du jederzeit unter „Allgemein“.</p>
   </div>
 </div>
 </main>

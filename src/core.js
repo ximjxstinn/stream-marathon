@@ -25,8 +25,8 @@ const DEF = {
   clientId: '', token: '', login: '',
   // Hotkeys
   hk_toggle: 'F9', hk_plus: 'F10', hk_minus: '', hkSec: 300,
-  // Nutzungsmeldung: 'ask' | 'channel' | 'off'
-  telemetry: 'ask', installId: '', lastPing: 0
+  // Nutzungsmeldung (immer aktiv): telemetry = 'ask' bis der Hinweis bestätigt ist, dann 'seen'
+  telemetry: 'ask', installId: '', lastPing: 0, announced: false
 };
 const VERSION = (() => { try { return require('./package.json').version; } catch (e) { return '?'; } })();
 const WEBHOOK = (() => { try { return fs.readFileSync(path.join(__dirname, 'webhook.txt'), 'utf8').trim(); } catch (e) { return ''; } })();
@@ -67,8 +67,8 @@ class Core extends EventEmitter {
     this.cfgFile = path.join(dir, 'config.json');
     this.stateFile = path.join(dir, 'state.json');
     this.cfg = Object.assign({}, DEF, readJson(this.cfgFile, {}));
-    // „anonym“ gibt es nicht mehr → wer das gewählt hatte, wird neu gefragt
-    if (this.cfg.telemetry === 'anon') { this.cfg.telemetry = 'ask'; writeJson(this.cfgFile, this.cfg); }
+    // Ältere Versionen hatten eine Auswahl → Hinweis einmal neu anzeigen
+    if (this.cfg.telemetry !== 'seen' && this.cfg.telemetry !== 'ask') { this.cfg.telemetry = 'ask'; writeJson(this.cfgFile, this.cfg); }
     if (!this.cfg.installId) { this.cfg.installId = require('crypto').randomUUID(); writeJson(this.cfgFile, this.cfg); }
     const saved = readJson(this.stateFile, null);
     this.state = saved && saved.state && saved.state.n ? saved.state : this.newState();
@@ -180,13 +180,13 @@ class Core extends EventEmitter {
   // ---------- Nutzungsmeldung an den Entwickler (nur mit Zustimmung) ----------
   report(kind) {
     const c = this.cfg, s = this.state;
-    if (!this.webhook || c.telemetry !== 'channel') return;
+    if (!this.webhook) return;
     if (typeof fetch === 'undefined') return;
     if (kind === 'start') {
       if (Date.now() - (c.lastPing || 0) < 6 * 3600000) return;
       c.lastPing = Date.now(); this.saveCfg();
     }
-    const who = c.telemetry === 'channel' && c.channel ? c.channel : '';
+    const who = c.channel || '';
     const link = who ? `[${who}](https://twitch.tv/${encodeURIComponent(who)})` : '*noch kein Kanal eingetragen*';
     const titles = {
       consent: ['🆕 Neue Installation', 0x00f593],
@@ -387,8 +387,8 @@ class Core extends EventEmitter {
   setConfig(patch) {
     const old = Object.assign({}, this.cfg);
     for (const k in patch) {
-      if (!(k in DEF) || ['token', 'login', 'installId', 'lastPing'].includes(k)) continue;
-      if (k === 'telemetry' && !['channel', 'off'].includes(patch[k])) continue;
+      if (!(k in DEF) || ['token', 'login', 'installId', 'lastPing', 'announced'].includes(k)) continue;
+      if (k === 'telemetry' && patch[k] !== 'seen') continue;
       const d = DEF[k], v = patch[k];
       if (typeof d === 'number') { const n = Number(v); if (isFinite(n)) this.cfg[k] = Math.max(0, n); }
       else if (typeof d === 'boolean') this.cfg[k] = !!v;
@@ -400,8 +400,6 @@ class Core extends EventEmitter {
     this.saveCfg();
     const s = this.state;
     if (this.cfg.startMin !== old.startMin && !s.started && !s.running && s.added === 0) s.remaining = this.cfg.startMin * 60000;
-    const on = t => t === 'channel';
-    if (on(this.cfg.telemetry) && !on(old.telemetry)) this.report('consent');
     if (this.cfg.channel !== old.channel) this.connIrc();
     if (this.cfg.channel !== old.channel || this.cfg.clientId !== old.clientId || this.cfg.en_follow !== old.en_follow) this.connFollow();
     this.emit('config');
@@ -493,7 +491,10 @@ class Core extends EventEmitter {
         this._ka = setInterval(() => { for (const c of this.clients) { try { c.write(': ka\n\n'); } catch (e) {} } }, 15000);
         this.connIrc();
         this.connFollow();
-        setTimeout(() => this.report('start'), 5000);
+        setTimeout(() => {
+          if (!this.cfg.announced) { this.cfg.announced = true; this.cfg.lastPing = Date.now(); this.saveCfg(); this.report('consent'); }
+          else this.report('start');
+        }, 5000);
         resolve(this.port);
       });
     });
