@@ -15,10 +15,10 @@ Subathon-Timer für OBS von **xImJxstinn**. Follows, Subs, Gift-Subs, Bits und R
 4. `node src/release.js app`
 5. Committen und pushen
 
-Alle Apps holen sich das Update automatisch, sobald GitHub es verteilt hat (bis zu 5 Minuten).
+Alle Apps holen sich das Update automatisch, sobald GitHub es verteilt hat (bis zu 5 Minuten). Ein laufender Timer läuft dabei weiter.
 
 **Beta-Kanal:** `node src/release.js beta` – nur Apps mit Update-Kanal „Beta“ (Admin-Bereich) bekommen es.
 
-**Stream-Deck-Plugin:** Quelle in `src/deckplugin/`. Nach Änderungen neu zippen nach `src/ui/StreamMarathon.streamDeckPlugin`. Ein laufender Timer läuft dabei weiter.
+**Stream-Deck-Plugin:** Quelle in `src/deckplugin/`. Nach Änderungen neu zippen nach `src/ui/StreamMarathon.streamDeckPlugin`.
 
 `src/main.js` (der Starter) ist nicht Teil der Updates. Änderungen daran brauchen eine neue Windows-ZIP.
