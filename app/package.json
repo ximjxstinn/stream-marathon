@@ -1,0 +1,9 @@
+{
+  "name": "stream-marathon",
+  "productName": "Stream Marathon",
+  "version": "1.2.0",
+  "description": "Subathon-Timer für OBS mit Twitch Follows, Subs, Bits und Raids",
+  "main": "main.js",
+  "author": "xImJxstinn",
+  "updateUrl": "https://raw.githubusercontent.com/ximjxstinn/stream-marathon/main/app/"
+}

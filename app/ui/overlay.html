@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Stream Marathon Overlay</title>
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@500;700;900&family=Bebas+Neue&family=Montserrat:wght@700;900&family=Luckiest+Guy&family=Russo+One&family=Orbitron:wght@700;900&family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+:root{--c:#fff;--a:#9146ff;--s:110px;--font:'Rubik';--sh:none;--ol:0px;--box:transparent;--rad:16px;--pad:0px;--align:center;--just:center}
+*{box-sizing:border-box}
+html,body{margin:0;background:transparent;overflow:hidden;color:var(--c);font-family:var(--font),Rubik,"Segoe UI",sans-serif}
+#wrap{padding:20px;text-align:var(--align);display:flex;flex-direction:column;align-items:var(--just)}
+#box{display:inline-block;background:var(--box);border-radius:var(--rad);padding:var(--pad) calc(var(--pad)*1.6)}
+.fx{text-shadow:var(--sh);-webkit-text-stroke:var(--ol) #000;paint-order:stroke fill}
+#title{font-weight:900;letter-spacing:.18em;font-size:calc(var(--s)*.22);color:var(--a);margin-bottom:4px}
+#time{display:inline-block;font-weight:900;font-size:var(--s);line-height:1;font-variant-numeric:tabular-nums;white-space:nowrap}
+#stats{margin-top:10px;font-weight:700;font-size:calc(var(--s)*.2);display:flex;gap:calc(var(--s)*.2);justify-content:var(--just)}
+body.ended #time{color:#ff4d6d}
+#pops{position:relative;height:calc(var(--s)*.9);margin-top:6px;width:100%}
+.pop{position:absolute;left:0;right:0;font-weight:900;font-size:calc(var(--s)*.3);color:var(--a);text-align:var(--align);animation:pop var(--pd,3.2s) ease forwards}
+.pop small{display:block;font-size:.55em;color:var(--c);font-weight:700}
+@keyframes pop{0%{opacity:0;transform:translateY(20px) scale(.8)}12%{opacity:1;transform:translateY(0) scale(1.08)}20%{transform:scale(1)}80%{opacity:1}100%{opacity:0;transform:translateY(-30px)}}
+.blink{animation:bl .45s 3}
+@keyframes bl{50%{color:var(--a);transform:scale(1.04)}}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="box">
+    <div id="title" class="fx"></div>
+    <div id="time" class="fx">0:00:00</div>
+    <div id="stats" class="fx"></div>
+  </div>
+  <div id="pops"></div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const pad = n => String(n).padStart(2, '0');
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+const num = n => Number(n).toLocaleString('de-DE');
+let S = null, off = 0;
+
+function fmt(ms, f) {
+  const t = Math.ceil(ms / 1000), h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), x = t % 60;
+  if (f === 'dhms' && h >= 24) return Math.floor(h / 24) + 'T ' + pad(h % 24) + ':' + pad(m) + ':' + pad(x);
+  if (f === 'auto' && h === 0) return pad(m) + ':' + pad(x);
+  if (f === 'hhmmss') return pad(h) + ':' + pad(m) + ':' + pad(x);
+  return h + ':' + pad(m) + ':' + pad(x);
+}
+function dur(sec) {
+  sec = Math.round(sec); const a = Math.abs(sec);
+  const h = Math.floor(a / 3600), m = Math.floor(a % 3600 / 60), x = a % 60;
+  return (sec < 0 ? '−' : '+') + ([h ? h + 'h' : '', m ? m + 'm' : '', x ? x + 's' : ''].filter(Boolean).join(' ') || '0s');
+}
+function rgba(hex, a) {
+  const h = (hex || '#000000').replace('#', ''), n = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16);
+  return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`;
+}
+
+function apply(c) {
+  const r = document.documentElement.style, sh = c.shadow / 100;
+  r.setProperty('--c', c.color); r.setProperty('--a', c.accent); r.setProperty('--s', c.size + 'px');
+  r.setProperty('--font', `'${c.font}'`);
+  r.setProperty('--sh', sh > 0 ? `0 ${4 * sh}px ${18 * sh}px rgba(0,0,0,${.9 * sh}), 0 0 ${2 * sh}px rgba(0,0,0,${sh})` : 'none');
+  r.setProperty('--ol', (c.outline || 0) + 'px');
+  r.setProperty('--align', c.align);
+  r.setProperty('--just', c.align === 'left' ? 'flex-start' : c.align === 'right' ? 'flex-end' : 'center');
+  r.setProperty('--box', c.boxOn ? rgba(c.boxColor, c.boxOpacity / 100) : 'transparent');
+  r.setProperty('--rad', c.boxRadius + 'px');
+  r.setProperty('--pad', c.boxOn ? (c.size * .18) + 'px' : '0px');
+  r.setProperty('--pd', c.popDur + 's');
+  $('pops').style.display = c.pops ? '' : 'none';
+}
+
+function render() {
+  if (!S) return;
+  const c = S.cfg, s = S.state;
+  const ms = s.running ? Math.max(0, s.endsAt - (Date.now() + off)) : s.remaining;
+  $('time').textContent = fmt(ms, c.format);
+  document.body.classList.toggle('ended', s.ended);
+  const title = s.ended && c.endText ? c.endText : c.title;
+  $('title').textContent = title; $('title').style.display = title ? '' : 'none';
+  const items = [];
+  if (c.st_f) items.push('❤️ ' + num(s.n.f));
+  if (c.st_s) items.push('⭐ ' + num(s.n.s));
+  if (c.st_b) items.push('💎 ' + num(s.n.b));
+  if (c.st_r) items.push('🚀 ' + num(s.n.r || 0));
+  const html = items.map(x => `<span>${x}</span>`).join('');
+  if ($('stats').innerHTML !== html) $('stats').innerHTML = html;
+  $('stats').style.display = c.showStats && items.length ? '' : 'none';
+}
+
+// Ton
+let ac = null;
+function chime(vol) {
+  try {
+    ac = ac || new AudioContext();
+    const t = ac.currentTime;
+    [880, 1318.5].forEach((f, i) => {
+      const o = ac.createOscillator(), g = ac.createGain(), st = t + i * .12;
+      o.type = 'sine'; o.frequency.value = f;
+      g.gain.setValueAtTime(0, st); g.gain.linearRampToValueAtTime(vol * .35, st + .02); g.gain.exponentialRampToValueAtTime(.0001, st + .55);
+      o.connect(g).connect(ac.destination); o.start(st); o.stop(st + .6);
+    });
+  } catch (e) {}
+}
+
+// Einblendungen
+const q = []; let busy = false;
+function nextPop() {
+  const x = q.shift();
+  if (!x || !S) { busy = false; return; }
+  busy = true;
+  const c = S.cfg;
+  if (c.pops) {
+    const el = document.createElement('div');
+    el.className = 'pop fx';
+    el.innerHTML = esc(dur(x.sec)) + '<small>' + esc(x.text) + '</small>';
+    $('pops').appendChild(el);
+    setTimeout(() => el.remove(), c.popDur * 1000 + 100);
+  }
+  const t = $('time'); t.classList.remove('blink'); void t.offsetWidth; t.classList.add('blink');
+  if (c.sound) chime(c.volume / 100);
+  setTimeout(nextPop, Math.max(800, c.popDur * 500));
+}
+
+function connect() {
+  const es = new EventSource('/api/stream?role=overlay');
+  es.addEventListener('snap', e => { S = JSON.parse(e.data); off = S.now - Date.now(); apply(S.cfg); render(); });
+  es.addEventListener('pop', e => { q.push(JSON.parse(e.data)); if (!busy) nextPop(); });
+}
+connect();
+setInterval(render, 200);
+</script>
+</body>
+</html>

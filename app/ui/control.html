@@ -1,0 +1,647 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Stream Marathon</title>
+<style>
+:root{
+  --bg:#0e0e10;--panel:#18181b;--panel2:#1f1f23;--line:#2f2f35;--text:#efeff1;--muted:#adadb8;--dim:#7a7a85;
+  --brand:#9146ff;--brand2:#772ce8;--ok:#00f593;--warn:#ffb31a;--bad:#ff4d6d;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif;font-size:14px}
+body{display:flex;overflow:hidden}
+button,input,select{font:inherit;color:inherit}
+::-webkit-scrollbar{width:10px}::-webkit-scrollbar-thumb{background:#2f2f35;border-radius:5px}
+
+/* Seitenleiste */
+aside{width:220px;flex:none;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:18px 12px}
+.logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:16px;padding:0 8px 18px}
+.logo i{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--brand),#ff4fd8);display:grid;place-items:center;font-style:normal}
+nav button{display:flex;align-items:center;gap:10px;width:100%;background:none;border:0;border-radius:8px;padding:10px 12px;text-align:left;cursor:pointer;color:var(--muted);font-weight:600}
+nav button:hover{background:var(--panel2);color:var(--text)}
+nav button.on{background:var(--panel2);color:var(--text);box-shadow:inset 3px 0 0 var(--brand)}
+.mini{margin-top:auto;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px}
+.mini .t{font-size:24px;font-weight:800;font-variant-numeric:tabular-nums}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--warn);margin-right:6px}
+.dot.ok{background:var(--ok)}.dot.off{background:var(--dim)}
+.mini div{font-size:12px;color:var(--muted);margin-top:4px}
+
+/* Inhalt */
+main{flex:1;overflow:auto;padding:24px 28px 40px}
+section{display:none;max-width:1100px}
+section.on{display:block}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 20px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px}
+.card h2{font-size:14px;margin:0 0 12px;display:flex;align-items:center;gap:8px}
+.card h2 .sw{margin-left:auto}
+label.f{display:block;font-size:12px;color:var(--muted);margin:12px 0 5px}
+input[type=text],input[type=number],input[type=password],select{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;outline:none}
+input:focus,select:focus{border-color:var(--brand)}
+input[type=color]{width:100%;height:36px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:3px;cursor:pointer}
+input[type=range]{width:100%;accent-color:var(--brand)}
+.row{display:flex;gap:8px;align-items:center}
+.row>*{flex:1}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.three{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.hint{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.5}
+.dh{font-size:11px;color:var(--brand);margin-top:3px;min-height:14px}
+.btn{background:#2f2f35;border:0;border-radius:8px;padding:9px 12px;font-weight:700;cursor:pointer;white-space:nowrap}
+.btn:hover{background:#3f3f46}
+.btn.pri{background:var(--brand)}.btn.pri:hover{background:var(--brand2)}
+.btn.dang{background:#5c1a24}.btn.dang:hover{background:#82222f}
+.btn.plus{color:var(--ok)}.btn.minus{color:#ff8a9a}
+.btn:disabled{opacity:.4;cursor:default}
+/* Schalter */
+.sw{position:relative;width:38px;height:22px;flex:none}
+.sw input{opacity:0;width:0;height:0}
+.sw span{position:absolute;inset:0;background:#3f3f46;border-radius:11px;cursor:pointer;transition:.15s}
+.sw span:before{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.15s}
+.sw input:checked+span{background:var(--brand)}
+.sw input:checked+span:before{transform:translateX(16px)}
+.chk{display:flex;align-items:center;gap:10px;margin-top:12px;cursor:pointer}
+/* Übersicht */
+.hero{display:flex;flex-direction:column;align-items:center;padding:26px 18px}
+.big{font-size:84px;font-weight:900;font-variant-numeric:tabular-nums;line-height:1;letter-spacing:-.02em}
+.big.run{color:var(--ok)}.big.end{color:var(--bad)}
+.state{color:var(--muted);margin:8px 0 18px;font-weight:600}
+.hero .row{width:100%;max-width:520px}
+.quick{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px;width:100%;max-width:520px}
+.custom{display:flex;gap:8px;margin-top:10px;width:100%;max-width:520px}
+.custom input{width:90px;flex:none}.custom select{width:90px;flex:none}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+.stat{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px}
+.stat b{display:block;font-size:22px;margin-top:4px;font-variant-numeric:tabular-nums}
+.stat span{color:var(--muted);font-size:12px}
+.status div{padding:4px 0}
+.copy{display:flex;gap:8px}
+.copy input{font-family:Consolas,monospace;font-size:13px}
+ol{margin:10px 0 0;padding-left:20px;color:var(--muted);line-height:1.7}
+ol b{color:var(--text)}
+.tests{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+#log{list-style:none;margin:0;padding:0;max-height:340px;overflow:auto}
+#log li{display:flex;gap:10px;padding:7px 0;border-bottom:1px solid #26262c;font-size:13px}
+#log .t{color:var(--dim);font-variant-numeric:tabular-nums}
+#log .p{margin-left:auto;color:var(--ok);font-weight:700;white-space:nowrap}
+#log .p.neg{color:#ff8a9a}
+#log li.info{color:var(--muted)}
+/* Design */
+.design{display:grid;grid-template-columns:minmax(320px,420px) 1fr;gap:16px;align-items:start}
+.preview{position:sticky;top:0}
+.stage{border-radius:12px;overflow:hidden;border:1px solid var(--line);background:
+  conic-gradient(#202024 25%,#17171a 0 50%,#202024 0 75%,#17171a 0) 0 0/24px 24px}
+.stage iframe{width:100%;height:420px;border:0;display:block}
+.seg{display:flex;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:3px}
+.seg button{flex:1;background:none;border:0;border-radius:6px;padding:6px;cursor:pointer;color:var(--muted);font-weight:600}
+.seg button.on{background:#2f2f35;color:var(--text)}
+.rng{display:grid;grid-template-columns:1fr 70px;gap:10px;align-items:center}
+/* Hotkeys */
+.hk{display:grid;grid-template-columns:1fr 160px 90px;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid #26262c}
+.hk input{text-align:center;cursor:pointer;font-weight:700}
+.hk .s{font-size:12px;text-align:right}
+.toast{position:fixed;right:20px;bottom:20px;background:#00f59322;border:1px solid var(--ok);color:var(--ok);padding:8px 14px;border-radius:8px;font-weight:700;opacity:0;transition:.2s;pointer-events:none}
+.toast.on{opacity:1}
+.upd{position:fixed;left:50%;top:14px;transform:translateX(-50%);background:var(--brand);color:#fff;padding:10px 18px;border-radius:10px;font-weight:700;box-shadow:0 8px 30px #0008;display:none;z-index:20}
+.upd.on{display:block}
+.acct{display:flex;align-items:center;gap:12px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:12px}
+.acct b{flex:1}
+.step{display:flex;gap:12px;margin-top:16px}
+.step>i{flex:none;width:24px;height:24px;border-radius:50%;background:var(--brand);display:grid;place-items:center;font-style:normal;font-weight:800;font-size:12px}
+.step>div{flex:1}
+a{color:#bf94ff}
+.modal{position:fixed;inset:0;background:#000b;display:none;place-items:center;z-index:10}
+.modal.on{display:grid}
+.modal .card{max-width:480px;margin:0;padding:24px}
+.modal h2{font-size:18px}
+.modal p{color:var(--muted);line-height:1.55;margin:0 0 10px}
+.modal ul{color:var(--muted);margin:0 0 16px;padding-left:20px;line-height:1.6}
+.choice{display:flex;flex-direction:column;gap:8px}
+.choice .btn{text-align:left;padding:12px 14px}
+.choice .btn small{display:block;font-weight:400;color:var(--muted);margin-top:2px}
+</style>
+</head>
+<body>
+
+<aside>
+  <div class="logo"><i>⏱</i>Stream Marathon</div>
+  <nav>
+    <button data-tab="home" class="on">🏠 Übersicht</button>
+    <button data-tab="events">⚡ Events & Zeiten</button>
+    <button data-tab="design">🎨 Design</button>
+    <button data-tab="twitch">🟣 Twitch</button>
+    <button data-tab="general">⚙️ Allgemein</button>
+  </nav>
+  <div class="mini">
+    <div class="t" id="miniTime">0:00:00</div>
+    <div><span class="dot" id="dIrc"></span>Subs & Bits</div>
+    <div><span class="dot" id="dFol"></span>Follows</div>
+  </div>
+</aside>
+
+<main>
+<!-- ================= ÜBERSICHT ================= -->
+<section id="home" class="on">
+  <h1>Übersicht</h1>
+  <p class="sub">Timer steuern, Zeit anpassen und sehen, was reinkommt.</p>
+
+  <div class="card hero">
+    <div class="big" id="bigTime">0:00:00</div>
+    <div class="state" id="stateTxt">Pausiert</div>
+    <div class="row">
+      <button class="btn pri" id="bToggle">▶ Start</button>
+      <button class="btn dang" id="bReset">↺ Zurücksetzen</button>
+    </div>
+    <div class="quick">
+      <button class="btn plus" data-add="60">+1 Min</button><button class="btn plus" data-add="300">+5 Min</button>
+      <button class="btn plus" data-add="600">+10 Min</button><button class="btn plus" data-add="3600">+1 Std</button>
+      <button class="btn minus" data-add="-60">−1 Min</button><button class="btn minus" data-add="-300">−5 Min</button>
+      <button class="btn minus" data-add="-600">−10 Min</button><button class="btn minus" data-add="-3600">−1 Std</button>
+    </div>
+    <div class="custom">
+      <input type="number" id="cAmt" value="15" min="1">
+      <select id="cUnit"><option value="1">Sek.</option><option value="60" selected>Min.</option><option value="3600">Std.</option></select>
+      <button class="btn plus" id="cPlus" style="flex:1">Hinzufügen</button>
+      <button class="btn minus" id="cMinus" style="flex:1">Abziehen</button>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>📊 Statistik</h2>
+      <div class="stats">
+        <div class="stat"><span>❤️ Follows</span><b id="nF">0</b></div>
+        <div class="stat"><span>⭐ Subs</span><b id="nS">0</b></div>
+        <div class="stat"><span>💎 Bits</span><b id="nB">0</b></div>
+        <div class="stat"><span>🚀 Raids</span><b id="nR">0</b></div>
+        <div class="stat"><span>➕ Dazugekommen</span><b id="nAdd">0</b></div>
+        <div class="stat"><span>⏳ Marathon-Länge</span><b id="nLen">0</b></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>📺 In OBS einfügen</h2>
+      <div class="copy"><input type="text" id="ovUrl" readonly><button class="btn pri" data-copy="ovUrl">Kopieren</button></div>
+      <ol>
+        <li>In OBS: <b>Quelle hinzufügen → Browser</b></li>
+        <li>Die Adresse oben bei <b>URL</b> einfügen</li>
+        <li>Breite <b>1000</b>, Höhe <b>400</b> (passt meistens)</li>
+        <li>Die App muss während des Streams offen bleiben</li>
+      </ol>
+      <div class="status" style="margin-top:14px">
+        <div><span class="dot" id="dIrc2"></span>Subs, Gifts, Bits, Raids: <span id="sIrc"></span></div>
+        <div><span class="dot" id="dFol2"></span>Follows: <span id="sFol"></span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>🧪 Testen</h2>
+      <div class="tests">
+        <button class="btn" data-test="follow">Follow</button>
+        <button class="btn" data-test="prime">Prime-Sub</button>
+        <button class="btn" data-test="t1">Sub T1</button>
+        <button class="btn" data-test="t2">Sub T2</button>
+        <button class="btn" data-test="t3">Sub T3</button>
+        <button class="btn" data-test="gift">Gift-Sub</button>
+        <button class="btn" data-test="bits100">100 Bits</button>
+        <button class="btn" data-test="bits1000">1.000 Bits</button>
+        <button class="btn" data-test="raid">Raid (20)</button>
+      </div>
+      <div class="hint">Tests verlängern den Timer und erscheinen im Overlay, zählen aber nicht in die Statistik.</div>
+    </div>
+    <div class="card">
+      <h2>📜 Verlauf <button class="btn" id="bClear" style="margin-left:auto;padding:4px 10px;font-size:12px">Leeren</button></h2>
+      <ul id="log"></ul>
+    </div>
+  </div>
+</section>
+
+<!-- ================= EVENTS ================= -->
+<section id="events">
+  <h1>Events & Zeiten</h1>
+  <p class="sub">Wie viel Zeit jedes Event bringt. Alles wird sofort gespeichert.</p>
+  <div class="grid2">
+    <div class="card">
+      <h2>⏳ Timer</h2>
+      <label class="f">Startzeit (Minuten)</label>
+      <input type="number" data-k="startMin" class="dur60" min="0">
+      <div class="dh"></div>
+      <label class="f">Maximale Marathon-Länge (Stunden, 0 = unbegrenzt)</label>
+      <input type="number" data-k="capH" min="0" step="0.5">
+      <div class="hint">Startzeit + alles, was dazukommt, kann diesen Wert nicht überschreiten.</div>
+      <label class="chk"><span class="sw"><input type="checkbox" data-k="ignoreAfterEnd"><span></span></span>Nach dem Ende keine Zeit mehr annehmen</label>
+      <div class="hint">Aus = ein Sub nach Ablauf startet den Timer wieder.</div>
+    </div>
+
+    <div class="card">
+      <h2>❤️ Follows <label class="sw"><input type="checkbox" data-k="en_follow"><span></span></label></h2>
+      <label class="f">Sekunden pro Follow</label>
+      <input type="number" data-k="follow" class="dur" min="0"><div class="dh"></div>
+      <label class="chk"><span class="sw"><input type="checkbox" data-k="dedupe"><span></span></span>Jeden Follower nur einmal zählen</label>
+      <div class="hint">Verhindert, dass Leute für Zeit entfolgen und wieder folgen. Follows brauchen den Twitch-Login.</div>
+    </div>
+
+    <div class="card">
+      <h2>⭐ Subs <label class="sw"><input type="checkbox" data-k="en_sub"><span></span></label></h2>
+      <div class="two">
+        <div><label class="f">Prime (Sek.)</label><input type="number" data-k="prime" class="dur" min="0"><div class="dh"></div></div>
+        <div><label class="f">Tier 1 (Sek.)</label><input type="number" data-k="t1" class="dur" min="0"><div class="dh"></div></div>
+        <div><label class="f">Tier 2 (Sek.)</label><input type="number" data-k="t2" class="dur" min="0"><div class="dh"></div></div>
+        <div><label class="f">Tier 3 (Sek.)</label><input type="number" data-k="t3" class="dur" min="0"><div class="dh"></div></div>
+      </div>
+      <div class="hint">Gilt für neue Subs und Resubs.</div>
+    </div>
+
+    <div class="card">
+      <h2>🎁 Gift-Subs <label class="sw"><input type="checkbox" data-k="en_gift"><span></span></label></h2>
+      <label class="f">Wert eines Gift-Subs (% vom normalen Sub)</label>
+      <input type="number" data-k="giftPct" min="0">
+      <div class="hint">100 % = ein geschenkter T1-Sub bringt genauso viel wie ein normaler T1-Sub. Bei einer Gift-Bombe zählt jeder einzelne Sub.</div>
+    </div>
+
+    <div class="card">
+      <h2>💎 Bits <label class="sw"><input type="checkbox" data-k="en_bits"><span></span></label></h2>
+      <div class="two">
+        <div><label class="f">Sekunden pro 100 Bits</label><input type="number" data-k="bits" class="dur" min="0"><div class="dh"></div></div>
+        <div><label class="f">Mindestens Bits</label><input type="number" data-k="bitsMin" min="1"></div>
+      </div>
+      <div class="hint">Wird anteilig gerechnet: 250 Bits = 2,5 × die Zeit.</div>
+    </div>
+
+    <div class="card">
+      <h2>🚀 Raids <label class="sw"><input type="checkbox" data-k="en_raid"><span></span></label></h2>
+      <div class="two">
+        <div><label class="f">Sekunden pro Zuschauer</label><input type="number" data-k="raid" class="dur" min="0"><div class="dh"></div></div>
+        <div><label class="f">Mindestens Zuschauer</label><input type="number" data-k="raidMin" min="0"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= DESIGN ================= -->
+<section id="design">
+  <h1>Design</h1>
+  <p class="sub">So sieht der Timer in OBS aus. Die Vorschau rechts aktualisiert sich live.</p>
+  <div class="design">
+    <div>
+      <div class="card">
+        <h2>✏️ Text</h2>
+        <label class="f">Titel über dem Timer</label><input type="text" data-k="title" placeholder="leer = kein Titel">
+        <label class="f">Text, wenn der Marathon vorbei ist</label><input type="text" data-k="endText">
+        <label class="f">Schriftart</label>
+        <select data-k="font">
+          <option>Rubik</option><option>Luckiest Guy</option><option>Bebas Neue</option><option>Montserrat</option>
+          <option>Russo One</option><option>Orbitron</option><option>Press Start 2P</option><option>VT323</option><option>Segoe UI</option>
+        </select>
+        <label class="f">Zeitformat</label>
+        <select data-k="format">
+          <option value="hms">1:23:45</option>
+          <option value="hhmmss">01:23:45</option>
+          <option value="dhms">1T 02:03:45 (Tage ab 24 Std.)</option>
+          <option value="auto">23:45 (Stunden nur wenn nötig)</option>
+        </select>
+        <label class="f">Größe</label>
+        <div class="rng"><input type="range" data-k="size" min="30" max="300"><input type="number" data-k="size" min="20"></div>
+        <label class="f">Ausrichtung</label>
+        <div class="seg" data-seg="align"><button data-v="left">Links</button><button data-v="center">Mitte</button><button data-v="right">Rechts</button></div>
+      </div>
+
+      <div class="card">
+        <h2>🎨 Farben & Effekte</h2>
+        <div class="two">
+          <div><label class="f">Textfarbe</label><input type="color" data-k="color"></div>
+          <div><label class="f">Akzentfarbe</label><input type="color" data-k="accent"></div>
+        </div>
+        <label class="f">Schatten</label>
+        <div class="rng"><input type="range" data-k="shadow" min="0" max="100"><input type="number" data-k="shadow" min="0" max="100"></div>
+        <label class="f">Umrandung (px)</label>
+        <div class="rng"><input type="range" data-k="outline" min="0" max="12" step="0.5"><input type="number" data-k="outline" min="0" step="0.5"></div>
+      </div>
+
+      <div class="card">
+        <h2>🟪 Hintergrund <label class="sw"><input type="checkbox" data-k="boxOn"><span></span></label></h2>
+        <div class="two">
+          <div><label class="f">Farbe</label><input type="color" data-k="boxColor"></div>
+          <div><label class="f">Ecken-Rundung</label><input type="number" data-k="boxRadius" min="0"></div>
+        </div>
+        <label class="f">Deckkraft (%)</label>
+        <div class="rng"><input type="range" data-k="boxOpacity" min="0" max="100"><input type="number" data-k="boxOpacity" min="0" max="100"></div>
+      </div>
+
+      <div class="card">
+        <h2>📊 Statistik im Overlay <label class="sw"><input type="checkbox" data-k="showStats"><span></span></label></h2>
+        <label class="chk"><span class="sw"><input type="checkbox" data-k="st_f"><span></span></span>❤️ Follows</label>
+        <label class="chk"><span class="sw"><input type="checkbox" data-k="st_s"><span></span></span>⭐ Subs</label>
+        <label class="chk"><span class="sw"><input type="checkbox" data-k="st_b"><span></span></span>💎 Bits</label>
+        <label class="chk"><span class="sw"><input type="checkbox" data-k="st_r"><span></span></span>🚀 Raids</label>
+      </div>
+
+      <div class="card">
+        <h2>✨ Einblendungen <label class="sw"><input type="checkbox" data-k="pops"><span></span></label></h2>
+        <label class="f">Anzeigedauer (Sekunden)</label>
+        <div class="rng"><input type="range" data-k="popDur" min="1.5" max="8" step="0.1"><input type="number" data-k="popDur" min="1" step="0.1"></div>
+        <label class="chk"><span class="sw"><input type="checkbox" data-k="popManual"><span></span></span>Auch bei manuellen Änderungen einblenden</label>
+        <label class="chk"><span class="sw"><input type="checkbox" data-k="sound"><span></span></span>Ton abspielen</label>
+        <label class="f">Lautstärke</label>
+        <div class="rng"><input type="range" data-k="volume" min="0" max="100"><input type="number" data-k="volume" min="0" max="100"></div>
+        <div class="hint">Damit der Ton im Stream ist: in der OBS-Browserquelle „Audio über OBS steuern“ anhaken.</div>
+      </div>
+    </div>
+
+    <div class="preview">
+      <div class="card">
+        <h2>👁️ Vorschau <button class="btn pri" id="bPreviewPop" style="margin-left:auto;padding:5px 12px;font-size:12px">Test-Einblendung</button></h2>
+        <div class="stage"><iframe id="pv" src="/overlay"></iframe></div>
+        <div class="hint">Karomuster = durchsichtig in OBS. Die Test-Einblendung erscheint auch im echten Overlay, ändert aber die Zeit nicht.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= TWITCH ================= -->
+<section id="twitch">
+  <h1>Twitch</h1>
+  <p class="sub">Subs, Gifts, Bits und Raids brauchen nur deinen Kanalnamen. Für Follows musst du dich einmal anmelden.</p>
+  <div class="grid2">
+    <div class="card">
+      <h2>📡 Kanal</h2>
+      <label class="f">Twitch-Kanal</label>
+      <input type="text" data-k="channel" placeholder="z. B. ximjxstinn">
+      <div class="status" style="margin-top:14px">
+        <div><span class="dot" id="dIrc3"></span>Subs, Gifts, Bits, Raids: <span id="sIrc2"></span></div>
+        <div><span class="dot" id="dFol3"></span>Follows: <span id="sFol2"></span></div>
+      </div>
+      <button class="btn" id="bReconnect" style="margin-top:12px">↻ Neu verbinden</button>
+    </div>
+
+    <div class="card">
+      <h2>❤️ Follows freischalten</h2>
+      <div id="acctBox"></div>
+      <div id="setupBox">
+        <div class="step"><i>1</i><div>Öffne die <a href="https://dev.twitch.tv/console/apps/create" target="_blank">Twitch Developer Console</a> und lege eine App an. Name egal, Kategorie „Application Integration“, Client-Typ „Vertraulich“ oder „Öffentlich“ – beides geht.</div></div>
+        <div class="step"><i>2</i><div>Trage bei <b>OAuth-Redirect-URLs</b> genau das hier ein:
+          <div class="copy" style="margin-top:8px"><input type="text" id="redir" readonly><button class="btn" data-copy="redir">Kopieren</button></div></div></div>
+        <div class="step"><i>3</i><div>Kopiere die <b>Client-ID</b> der App hierher:
+          <input type="text" data-k="clientId" placeholder="Client-ID" style="margin-top:8px"></div></div>
+        <div class="step"><i>4</i><div><button class="btn pri" id="bLogin">🟣 Mit Twitch verbinden</button>
+          <div class="hint">Öffnet deinen Browser. Nach dem Erlauben verbindet sich die App automatisch.</div></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= ALLGEMEIN ================= -->
+<section id="general">
+  <h1>Allgemein</h1>
+  <p class="sub">Hotkeys funktionieren überall, auch wenn du gerade im Spiel bist.</p>
+  <div class="grid2">
+    <div class="card">
+      <h2>⌨️ Hotkeys</h2>
+      <div class="hk"><span>Start / Pause</span><input type="text" data-hk="hk_toggle" readonly><span class="s" id="hs_hk_toggle"></span></div>
+      <div class="hk"><span>Zeit hinzufügen</span><input type="text" data-hk="hk_plus" readonly><span class="s" id="hs_hk_plus"></span></div>
+      <div class="hk"><span>Zeit abziehen</span><input type="text" data-hk="hk_minus" readonly><span class="s" id="hs_hk_minus"></span></div>
+      <label class="f">Wie viel Zeit die Hotkeys ändern (Sekunden)</label>
+      <input type="number" data-k="hkSec" class="dur" min="1"><div class="dh"></div>
+      <div class="hint">Feld anklicken und Taste(n) drücken. Entf oder Rücktaste = Hotkey aus. Achtung: Eine belegte Taste geht dann im Spiel nicht mehr.</div>
+    </div>
+    <div class="card">
+      <h2>🔌 Verbindung zu OBS</h2>
+      <label class="f">Port</label>
+      <input type="number" data-k="port" min="1024" max="65535">
+      <div class="hint">Nur ändern, wenn 7777 schon von etwas anderem benutzt wird. Danach App neu starten und in OBS die Adresse anpassen. Bei Follows auch die Redirect-URL in der Twitch-App ändern.</div>
+      <div class="hint" id="portNote" style="color:var(--warn)"></div>
+    </div>
+    <div class="card">
+      <h2>📡 Nutzung an den Entwickler melden</h2>
+      <select data-k="telemetry">
+        <option value="channel">Ja, mit meinem Kanalnamen</option>
+        <option value="anon">Ja, anonym</option>
+        <option value="off">Nein, nichts senden</option>
+      </select>
+      <div class="hint">Gesendet wird nur: dein Kanalname (wenn erlaubt), App-Version, eine zufällige ID, deine Timer-Einstellungen und am Ende die Marathon-Statistik. <b>Nie</b> dein Twitch-Login oder deine Client-ID. Gemeldet wird beim App-Start (höchstens alle 6 Std.) sowie beim Start und Ende eines Marathons.</div>
+      <div class="hint" id="verTxt"></div>
+    </div>
+  </div>
+</section>
+
+<div class="modal" id="consent">
+  <div class="card">
+    <h2>👋 Kurze Frage</h2>
+    <p>Darf Stream Marathon dem Entwickler <b>xImJxstinn</b> melden, dass du die App benutzt? Das hilft, die App zu verbessern.</p>
+    <ul>
+      <li>Kanalname (nur wenn du willst), App-Version, Timer-Einstellungen</li>
+      <li>Wann ein Marathon startet und endet, mit Statistik</li>
+      <li><b>Nie</b> dein Twitch-Login oder andere Zugangsdaten</li>
+    </ul>
+    <div class="choice">
+      <button class="btn pri" data-tel="channel">Ja, mit meinem Kanalnamen<small>Der Entwickler sieht, welcher Kanal die App nutzt.</small></button>
+      <button class="btn" data-tel="anon">Ja, aber anonym<small>Nur Einstellungen und Zahlen, kein Name.</small></button>
+      <button class="btn" data-tel="off">Nein, nichts senden</button>
+    </div>
+    <p class="hint" style="margin-top:12px">Du kannst das jederzeit unter „Allgemein“ ändern.</p>
+  </div>
+</div>
+</main>
+
+<div class="toast" id="toast">✔ Gespeichert</div>
+<div class="upd" id="upd"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const $$ = s => document.querySelectorAll(s);
+const pad = n => String(n).padStart(2, '0');
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+const num = n => Number(n).toLocaleString('de-DE');
+const post = (url, body) => fetch(url, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body || {}) });
+const act = (a, body) => post('/api/action/' + a, body);
+let S = null, off = 0;
+
+function fmt(ms) {
+  const t = Math.ceil(ms / 1000), h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), x = t % 60;
+  return h + ':' + pad(m) + ':' + pad(x);
+}
+function dur(sec, sign) {
+  sec = Math.round(sec); const a = Math.abs(sec);
+  const d = Math.floor(a / 86400), h = Math.floor(a % 86400 / 3600), m = Math.floor(a % 3600 / 60), x = a % 60;
+  const s = [d ? d + 'T' : '', h ? h + 'h' : '', m ? m + 'm' : '', x ? x + 's' : ''].filter(Boolean).join(' ') || '0s';
+  return sign === false ? s : (sec < 0 ? '−' : '+') + s;
+}
+const rem = () => !S ? 0 : S.state.running ? Math.max(0, S.state.endsAt - (Date.now() + off)) : S.state.remaining;
+
+// ---------- Navigation ----------
+$$('nav button').forEach(b => b.onclick = () => {
+  $$('nav button').forEach(x => x.classList.toggle('on', x === b));
+  $$('section').forEach(s => s.classList.toggle('on', s.id === b.dataset.tab));
+  document.querySelector('main').scrollTop = 0;
+});
+
+// ---------- Einstellungen binden ----------
+let pending = {}, saveT = null, toastT = null;
+function valueOf(el) {
+  if (el.type === 'checkbox') return el.checked;
+  if (el.type === 'number' || el.type === 'range') return el.value === '' ? null : Number(el.value);
+  return el.value;
+}
+function queue(k, v) {
+  if (v === null || (typeof v === 'number' && !isFinite(v))) return;
+  pending[k] = v;
+  clearTimeout(saveT);
+  saveT = setTimeout(() => {
+    const p = pending; pending = {};
+    post('/api/config', p).then(() => { const t = $('toast'); t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 900); });
+  }, 350);
+}
+$$('[data-k]').forEach(el => {
+  const evs = el.type === 'checkbox' || el.tagName === 'SELECT' ? ['change'] : ['input'];
+  evs.forEach(ev => el.addEventListener(ev, () => {
+    const v = valueOf(el), k = el.dataset.k;
+    $$(`[data-k="${k}"]`).forEach(o => { if (o !== el) { if (o.type === 'checkbox') o.checked = v; else o.value = v; } });
+    durHints();
+    queue(k, v);
+  }));
+});
+$$('[data-seg]').forEach(seg => seg.querySelectorAll('button').forEach(b => b.onclick = () => {
+  seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+  queue(seg.dataset.seg, b.dataset.v);
+}));
+function durHints() {
+  $$('input.dur, input.dur60').forEach(el => {
+    const h = el.nextElementSibling; if (!h || !h.classList.contains('dh')) return;
+    const v = Number(el.value) * (el.classList.contains('dur60') ? 60 : 1);
+    h.textContent = el.value === '' ? '' : '= ' + dur(v, false);
+  });
+}
+function fillForm(c) {
+  $$('[data-k]').forEach(el => {
+    if (el === document.activeElement || !(el.dataset.k in c)) return;
+    if (el.dataset.k in pending) return;
+    const v = c[el.dataset.k];
+    if (el.type === 'checkbox') el.checked = !!v; else if (String(el.value) !== String(v)) el.value = v;
+  });
+  $$('[data-seg]').forEach(seg => seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === c[seg.dataset.seg])));
+  $$('[data-hk]').forEach(el => { if (el !== document.activeElement) el.value = c[el.dataset.hk] || '—'; });
+  durHints();
+}
+
+// ---------- Hotkey-Eingabe ----------
+const keyMap = { ArrowUp:'Up', ArrowDown:'Down', ArrowLeft:'Left', ArrowRight:'Right', Space:'Space', Home:'Home', End:'End',
+  PageUp:'PageUp', PageDown:'PageDown', Insert:'Insert', Pause:'Pause', ScrollLock:'Scrolllock', Minus:'-', Equal:'=', Comma:',', Period:'.',
+  NumpadAdd:'numadd', NumpadSubtract:'numsub', NumpadMultiply:'nummult', NumpadDivide:'numdiv', NumpadDecimal:'numdec' };
+$$('[data-hk]').forEach(el => {
+  el.addEventListener('focus', () => { el.value = 'Taste drücken…'; });
+  el.addEventListener('blur', () => { if (S) el.value = S.cfg[el.dataset.hk] || '—'; });
+  el.addEventListener('keydown', e => {
+    e.preventDefault();
+    if (e.key === 'Escape') { el.blur(); return; }
+    if (e.key === 'Backspace' || e.key === 'Delete') { queue(el.dataset.hk, ''); el.value = '—'; el.blur(); return; }
+    if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return;
+    let k = null;
+    if (/^F\d{1,2}$/.test(e.key)) k = e.key;
+    else if (keyMap[e.code]) k = keyMap[e.code];
+    else if (/^Numpad\d$/.test(e.code)) k = 'num' + e.code.slice(6);
+    else if (/^Key[A-Z]$/.test(e.code)) k = e.code.slice(3);
+    else if (/^Digit\d$/.test(e.code)) k = e.code.slice(5);
+    if (!k) return;
+    const mods = [];
+    if (e.ctrlKey) mods.push('Ctrl'); if (e.altKey) mods.push('Alt'); if (e.shiftKey) mods.push('Shift');
+    const acc = [...mods, k].join('+');
+    queue(el.dataset.hk, acc); el.value = acc; el.blur();
+  });
+});
+
+// ---------- Aktionen ----------
+$('bToggle').onclick = () => act('toggle');
+let resetArm = 0;
+$('bReset').onclick = () => {
+  const b = $('bReset');
+  if (Date.now() - resetArm < 3000) { act('reset'); resetArm = 0; b.textContent = '↺ Zurücksetzen'; return; }
+  resetArm = Date.now(); b.textContent = '⚠ Wirklich? Nochmal klicken';
+  setTimeout(() => { if (Date.now() - resetArm >= 2900) b.textContent = '↺ Zurücksetzen'; }, 3000);
+};
+$$('[data-add]').forEach(b => b.onclick = () => act('add', { sec: +b.dataset.add }));
+$('cPlus').onclick = () => act('add', { sec: (+$('cAmt').value || 0) * +$('cUnit').value });
+$('cMinus').onclick = () => act('add', { sec: -(+$('cAmt').value || 0) * +$('cUnit').value });
+$$('[data-test]').forEach(b => b.onclick = () => act('test', { kind: b.dataset.test }));
+$('bClear').onclick = () => act('clearLog');
+$$('[data-tel]').forEach(b => b.onclick = () => {
+  $('consent').classList.remove('on');
+  post('/api/config', { telemetry: b.dataset.tel });
+});
+$('bPreviewPop').onclick = () => act('previewPop');
+$('bReconnect').onclick = () => act('reconnect');
+$$('[data-copy]').forEach(b => b.onclick = () => {
+  const el = $(b.dataset.copy); el.select();
+  (navigator.clipboard ? navigator.clipboard.writeText(el.value) : Promise.reject()).catch(() => document.execCommand('copy'));
+  const t = b.textContent; b.textContent = '✔'; setTimeout(() => b.textContent = t, 1000);
+});
+$('bLogin').onclick = async () => {
+  if (pending.clientId !== undefined) { clearTimeout(saveT); const p = pending; pending = {}; await post('/api/config', p); }
+  const r = await fetch('/api/authurl').then(r => r.json());
+  if (r.url) window.open(r.url, '_blank');
+};
+
+// ---------- Anzeige ----------
+const good = v => /^verbunden/.test(v || '');
+function setDot(id, v, offWhen) { const d = $(id); d.className = 'dot' + (good(v) ? ' ok' : offWhen && offWhen.test(v || '') ? ' off' : ''); }
+
+function renderSnap() {
+  const c = S.cfg, s = S.state, st = S.status;
+  fillForm(c);
+  $('nF').textContent = num(s.n.f); $('nS').textContent = num(s.n.s); $('nB').textContent = num(s.n.b); $('nR').textContent = num(s.n.r || 0);
+  $('nAdd').textContent = dur(s.added / 1000, false); $('nLen').textContent = dur(c.startMin * 60 + s.added / 1000, false);
+  const port = location.port || 7777;
+  $('ovUrl').value = `http://localhost:${port}/overlay`;
+  $('redir').value = `http://localhost:${port}/auth`;
+  $('portNote').textContent = String(c.port) !== String(port) ? `Neuer Port ${c.port} gilt nach dem nächsten Neustart der App.` : '';
+  ['sIrc', 'sIrc2'].forEach(id => $(id).textContent = st.irc);
+  ['sFol', 'sFol2'].forEach(id => $(id).textContent = st.follow);
+  ['dIrc', 'dIrc2', 'dIrc3'].forEach(id => setDot(id, st.irc, /kein Kanal/));
+  ['dFol', 'dFol2', 'dFol3'].forEach(id => setDot(id, st.follow, /deaktiviert|nicht verbunden/));
+  const hk = st.hotkeys || {};
+  ['hk_toggle', 'hk_plus', 'hk_minus'].forEach(k => {
+    const v = hk[k] || ''; const el = $('hs_' + k);
+    el.textContent = v; el.style.color = v === 'aktiv' ? 'var(--ok)' : v === 'aus' ? 'var(--dim)' : 'var(--warn)';
+  });
+  // Twitch-Konto
+  if (S.hasToken && c.login) {
+    $('acctBox').innerHTML = `<div class="acct"><span>🟣</span><b>Verbunden als ${esc(c.login)}</b><button class="btn" id="bLogout">Trennen</button></div>`;
+    $('bLogout').onclick = () => act('logout');
+    $('setupBox').style.display = 'none';
+  } else {
+    $('acctBox').innerHTML = '';
+    $('setupBox').style.display = '';
+  }
+  $('bLogin').disabled = !(pending.clientId || c.clientId);
+  $('consent').classList.toggle('on', c.telemetry === 'ask' && !pending.telemetry);
+  $('verTxt').textContent = 'Version ' + (S.version || '?') + ' · Updates kommen automatisch';
+  $('upd').textContent = '⬇ ' + (st.update || ''); $('upd').classList.toggle('on', !!st.update);
+  // Verlauf
+  const lastId = S.log.length ? S.log[S.log.length - 1].id + ':' + S.log.length : '';
+  if ($('log').dataset.k !== lastId) {
+    $('log').dataset.k = lastId;
+    $('log').innerHTML = S.log.slice().reverse().map(x => {
+      const d = new Date(x.t);
+      return `<li class="${x.sec ? '' : 'info'}"><span class="t">${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}</span><span>${esc(x.text)}</span>` +
+        (x.sec ? `<span class="p ${x.sec < 0 ? 'neg' : ''}">${esc(dur(x.sec))}</span>` : '') + '</li>';
+    }).join('') || '<li class="info">Noch nichts passiert.</li>';
+  }
+}
+function renderTime() {
+  if (!S) return;
+  const s = S.state, t = fmt(rem());
+  $('bigTime').textContent = t; $('miniTime').textContent = t;
+  $('bigTime').className = 'big' + (s.ended ? ' end' : s.running ? ' run' : '');
+  $('stateTxt').textContent = s.ended ? '🏁 Marathon vorbei' : s.running ? '● Läuft' : s.remaining > 0 ? '⏸ Pausiert' : 'Keine Zeit übrig – füg Zeit hinzu';
+  $('bToggle').textContent = s.running ? '⏸ Pause' : '▶ Start';
+  $('bToggle').disabled = !s.running && s.remaining <= 0;
+}
+$('cAmt').addEventListener('keydown', e => { if (e.key === 'Enter') $('cPlus').click(); });
+
+const es = new EventSource('/api/stream?role=control');
+es.addEventListener('snap', e => { S = JSON.parse(e.data); off = S.now - Date.now(); renderSnap(); renderTime(); });
+setInterval(renderTime, 200);
+</script>
+</body>
+</html>

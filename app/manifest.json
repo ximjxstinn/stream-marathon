@@ -1,0 +1,13 @@
+{
+  "version": "1.2.0",
+  "date": "2026-10-26T20:54:01.720Z",
+  "files": {
+    "shell.js": "c2e7e1c63bc7e35075c0d2f70eebb1d7156d45b1507fe81ad43e6930b649d12f",
+    "core.js": "cd4a605fb4126c96308e28d981735bc239b4f8f26ddf27c85befe1a1cb148fd0",
+    "package.json": "25f8475f3f88d287982a6cee778b8fd141b6e6981d25b81b681c9c34c45cb657",
+    "icon.png": "59d889eb70cb73dcdbf47a6d6e9395fb3d308987ea1da43a17bf007993269fb0",
+    "ui/auth.html": "ae37ef8a740764b31ec889fdb4e9a6405300481d4c4c3dc4182f367ff0a8154e",
+    "ui/control.html": "65e39a062db149cc704c56e331c4056db1af75b9e840ac11f97753d7afacafd8",
+    "ui/overlay.html": "1cbb18a22a4148821f4e8253e9cb1880b0d033fdde4b02d66d5d9b4db9a17180"
+  }
+}
