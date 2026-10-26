@@ -8,7 +8,9 @@
 :root{--c:#fff;--a:#9146ff;--s:110px;--font:'Rubik';--sh:none;--ol:0px;--box:transparent;--rad:16px;--pad:0px;--align:center;--just:center}
 *{box-sizing:border-box}
 html,body{margin:0;background:transparent;overflow:hidden;color:var(--c);font-family:var(--font),Rubik,"Segoe UI",sans-serif}
-#wrap{padding:20px;text-align:var(--align);display:flex;flex-direction:column;align-items:var(--just)}
+html,body{height:100%}
+#wrap{position:absolute;left:var(--tx,50%);top:var(--ty,0%);transform:translate(calc(-1 * var(--tx,50%)),calc(-1 * var(--ty,0%)));
+  padding:20px;text-align:var(--align);display:flex;flex-direction:column;align-items:var(--just);z-index:1}
 #box{display:inline-block;background:var(--box);border-radius:var(--rad);padding:var(--pad) calc(var(--pad)*1.6)}
 .fx{text-shadow:var(--sh);-webkit-text-stroke:var(--ol) #000;paint-order:stroke fill}
 #title{font-weight:900;letter-spacing:.18em;font-size:calc(var(--s)*.22);color:var(--a);margin-bottom:4px}
@@ -76,6 +78,7 @@ function apply(c) {
   r.setProperty('--pad', c.boxOn ? (c.size * .18) + 'px' : '0px');
   r.setProperty('--pd', c.popDur + 's');
   r.setProperty('--st', (c.statSize || 100) / 100);
+  r.setProperty('--tx', (c.timerX ?? 50) + '%'); r.setProperty('--ty', (c.timerY ?? 0) + '%');
   $('pops').style.display = c.pops ? '' : 'none';
 }
 

@@ -93,6 +93,8 @@ ol b{color:var(--text)}
 .stage{border-radius:12px;overflow:hidden;border:1px solid var(--line);background:
   conic-gradient(#202024 25%,#17171a 0 50%,#202024 0 75%,#17171a 0) 0 0/24px 24px}
 .stage iframe{width:100%;height:420px;border:0;display:block}
+#pvStage{position:relative;overflow:hidden}
+#pvStage iframe{position:absolute;left:0;top:0;width:1920px;height:1080px;transform-origin:0 0}
 .ovgrid{display:grid;grid-template-columns:minmax(300px,1fr) minmax(300px,1fr);gap:16px;align-items:start}
 .ov .stage{--sc:.8;--h:240px;height:var(--h);position:relative}
 .ov .stage.tall{--h:390px}
@@ -201,7 +203,8 @@ a{color:#bf94ff}
       <ol>
         <li>In OBS: <b>Quelle hinzufügen → Browser</b></li>
         <li>Die Adresse oben bei <b>URL</b> einfügen</li>
-        <li>Breite <b>1000</b>, Höhe <b>400</b> (passt meistens)</li>
+        <li>Breite <b>1920</b>, Höhe <b>1080</b> (ganzer Bildschirm – nicht in OBS verkleinern)</li>
+        <li>Timer verschieben: in der App unter <b>🎨 Design → Position</b>, nicht in OBS</li>
         <li>Die App muss während des Streams offen bleiben</li>
       </ol>
       <div class="status" style="margin-top:14px">
@@ -326,6 +329,15 @@ a{color:#bf94ff}
       </div>
 
       <div class="card">
+        <h2>📍 Position des Timers <button class="btn" id="bCenter" style="margin-left:auto;padding:5px 12px;font-size:12px">Oben Mitte</button></h2>
+        <label class="f">Links ↔ Rechts (%)</label>
+        <div class="rng"><input type="range" data-k="timerX" min="0" max="100"><input type="number" data-k="timerX" min="0" max="100"></div>
+        <label class="f">Oben ↕ Unten (%)</label>
+        <div class="rng"><input type="range" data-k="timerY" min="0" max="100"><input type="number" data-k="timerY" min="0" max="100"></div>
+        <div class="hint">Verschiebt nur den Timer. Die Overlays (Ziele, Top-Supporter …) bleiben an ihren Stellen. „Happy Hour unter dem Timer“ wandert mit. In OBS die Quelle auf 1920 × 1080 lassen und nicht verschieben.</div>
+      </div>
+
+      <div class="card">
         <h2>🎨 Farben & Effekte</h2>
         <div class="two">
           <div><label class="f">Textfarbe</label><input type="color" data-k="color"></div>
@@ -372,8 +384,8 @@ a{color:#bf94ff}
     <div class="preview">
       <div class="card">
         <h2>👁️ Vorschau <button class="btn pri" id="bPreviewPop" style="margin-left:auto;padding:5px 12px;font-size:12px">Test-Einblendung</button></h2>
-        <div class="stage"><iframe id="pv" src="/overlay"></iframe></div>
-        <div class="hint">Karomuster = durchsichtig in OBS. Die Test-Einblendung erscheint auch im echten Overlay, ändert aber die Zeit nicht.</div>
+        <div class="stage" id="pvStage"><iframe id="pv" src="/overlay"></iframe></div>
+        <div class="hint">Zeigt den ganzen Bildschirm (1920 × 1080) verkleinert. Karomuster = durchsichtig in OBS. Die Test-Einblendung erscheint auch im echten Overlay, ändert aber die Zeit nicht.</div>
       </div>
     </div>
   </div>
@@ -668,6 +680,12 @@ $('cPlus').onclick = () => act('add', { sec: (+$('cAmt').value || 0) * +$('cUnit
 $('cMinus').onclick = () => act('add', { sec: -(+$('cAmt').value || 0) * +$('cUnit').value });
 $$('[data-test]').forEach(b => b.onclick = () => act('test', { kind: b.dataset.test }));
 $('bClear').onclick = () => act('clearLog');
+$('bCenter').onclick = () => { $$('[data-k=timerX]').forEach(e => e.value = 50); $$('[data-k=timerY]').forEach(e => e.value = 0); queue('timerX', 50); queue('timerY', 0); };
+// Design-Vorschau zeigt den ganzen 1920×1080-Bildschirm verkleinert
+new ResizeObserver(() => {
+  const st = $('pvStage'), w = st.clientWidth; if (!w) return;
+  const sc = w / 1920; $('pv').style.transform = `scale(${sc})`; st.style.height = 1080 * sc + 'px';
+}).observe($('pvStage'));
 $$('[data-tel]').forEach(b => b.onclick = () => {
   $('consent').classList.remove('on');
   post('/api/config', { telemetry: b.dataset.tel });

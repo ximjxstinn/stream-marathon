@@ -19,6 +19,7 @@ const DEF = {
   title: 'SUBATHON', endText: 'MARATHON VORBEI', font: 'Rubik', format: 'hms', size: 110,
   color: '#ffffff', accent: '#9146ff', shadow: 60, outline: 0, align: 'center',
   boxOn: false, boxColor: '#000000', boxOpacity: 50, boxRadius: 16,
+  timerX: 50, timerY: 0,
   showStats: true, st_f: true, st_s: true, st_b: true, st_r: false, statSize: 100,
   pops: true, popDur: 3.2, popManual: false, sound: false, volume: 50,
   // Twitch-Login
@@ -496,6 +497,8 @@ class Core extends EventEmitter {
     }
     this.cfg.mScale = Math.max(30, Math.min(300, this.cfg.mScale || 100));
     for (const k of ['statSize', 'sz_goals', 'sz_hh', 'sz_top', 'sz_wheel', 'sz_ticker']) this.cfg[k] = Math.max(30, Math.min(400, this.cfg[k] || 100));
+    this.cfg.timerX = Math.max(0, Math.min(100, this.cfg.timerX));
+    this.cfg.timerY = Math.max(0, Math.min(100, this.cfg.timerY));
     this.cfg.tickerSpeed = Math.max(5, Math.min(300, this.cfg.tickerSpeed || 40));
     this.cfg.channel = this.cfg.channel.toLowerCase().replace(/^#/, '').replace(/^https?:\/\/(www\.)?twitch\.tv\//, '').replace(/\/.*$/, '');
     if (!this.cfg.port || this.cfg.port < 1024 || this.cfg.port > 65535) this.cfg.port = old.port;
