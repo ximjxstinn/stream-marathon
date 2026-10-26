@@ -104,6 +104,9 @@ ol b{color:var(--text)}
 .hhbar{display:flex;gap:8px;margin-top:10px;width:100%;max-width:520px}
 .hhbar .btn{flex:1}
 .hhon{background:linear-gradient(90deg,#ff4fd8,var(--brand))!important}
+.mainrow{display:grid;grid-template-columns:1fr 170px;gap:10px;align-items:center;margin-top:10px;padding:10px;background:var(--bg);border:1px solid var(--line);border-radius:8px}
+.mainrow:has(select:only-child),.mainrow:not(:has(select)){grid-template-columns:1fr}
+.mainbox{background:linear-gradient(135deg,#9146ff22,#ff4fd822);border:1px solid #9146ff66}
 .seg{display:flex;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:3px}
 .seg button{flex:1;background:none;border:0;border-radius:6px;padding:6px;cursor:pointer;color:var(--muted);font-weight:600}
 .seg button.on{background:#2f2f35;color:var(--text)}
@@ -409,13 +412,20 @@ a{color:#bf94ff}
 <!-- ================= OVERLAYS ================= -->
 <section id="overlays">
   <h1>Overlays</h1>
-  <p class="sub">Zusätzliche Overlays für deinen Stream. Jedes ist eine eigene Browser-Quelle in OBS – einfach Adresse kopieren. Ausgeschaltete bleiben in OBS leer.</p>
+  <p class="sub">Zusätzliche Overlays für deinen Stream. Du kannst sie <b>im Hauptoverlay</b> anzeigen (eine Browser-Quelle für alles) oder als <b>eigene Browser-Quelle</b> frei platzieren.</p>
+  <div class="card mainbox">
+    <h2>🧩 Alles in einem Overlay</h2>
+    <div class="hint" style="margin-top:0">Schalte bei einem Overlay „Im Hauptoverlay anzeigen“ ein und wähle die Position. Dann erscheint es in deiner normalen Timer-Quelle (<code>/overlay</code>). <b>Wichtig:</b> Stell die Timer-Quelle in OBS dafür auf <b>1920 × 1080</b> (Vollbild), damit die Positionen stimmen.</div>
+    <label class="f">Größe der Overlays im Hauptoverlay (%)</label>
+    <div class="rng"><input type="range" data-k="mScale" min="40" max="200"><input type="number" data-k="mScale" min="30" max="300"></div>
+  </div>
   <div class="ovgrid">
 
     <div class="card ov" data-ov="ov_goals">
       <h2>🎯 Ziele <label class="sw"><input type="checkbox" data-k="ov_goals"><span></span></label></h2>
       <div class="stage"><iframe data-src="/overlay/goals?demo"></iframe></div>
       <div class="copy" style="margin-top:10px"><input type="text" data-url="goals" readonly><button class="btn" data-copyurl>Kopieren</button></div>
+      <div class="mainrow"><label class="chk" style="margin:0"><span class="sw"><input type="checkbox" data-k="m_goals"><span></span></span>Im Hauptoverlay anzeigen</label><select data-k="p_goals"><option value="tl">Oben links</option><option value="tc">Unter dem Timer</option><option value="tr">Oben rechts</option><option value="ml">Mitte links</option><option value="mr">Mitte rechts</option><option value="bl">Unten links</option><option value="bc">Unten Mitte</option><option value="br">Unten rechts</option></select></div>
       <label class="f">Deine Ziele</label>
       <div id="goalList"></div>
       <button class="btn" id="bAddGoal" style="margin-top:8px">+ Ziel hinzufügen</button>
@@ -426,6 +436,7 @@ a{color:#bf94ff}
       <h2>⚡ Happy Hour <label class="sw"><input type="checkbox" data-k="ov_hh"><span></span></label></h2>
       <div class="stage"><iframe data-src="/overlay/hh?demo"></iframe></div>
       <div class="copy" style="margin-top:10px"><input type="text" data-url="hh" readonly><button class="btn" data-copyurl>Kopieren</button></div>
+      <div class="mainrow"><label class="chk" style="margin:0"><span class="sw"><input type="checkbox" data-k="m_hh"><span></span></span>Im Hauptoverlay anzeigen</label><select data-k="p_hh"><option value="tl">Oben links</option><option value="tc">Unter dem Timer</option><option value="tr">Oben rechts</option><option value="ml">Mitte links</option><option value="mr">Mitte rechts</option><option value="bl">Unten links</option><option value="bc">Unten Mitte</option><option value="br">Unten rechts</option></select></div>
       <div class="two">
         <div><label class="f">Multiplikator (×)</label><input type="number" data-k="hhMult" min="1" step="0.5"></div>
         <div><label class="f">Dauer (Minuten)</label><input type="number" data-k="hhMin" min="1"></div>
@@ -437,6 +448,7 @@ a{color:#bf94ff}
       <h2>🏆 Top-Supporter <label class="sw"><input type="checkbox" data-k="ov_top"><span></span></label></h2>
       <div class="stage"><iframe data-src="/overlay/top?demo"></iframe></div>
       <div class="copy" style="margin-top:10px"><input type="text" data-url="top" readonly><button class="btn" data-copyurl>Kopieren</button></div>
+      <div class="mainrow"><label class="chk" style="margin:0"><span class="sw"><input type="checkbox" data-k="m_top"><span></span></span>Im Hauptoverlay anzeigen</label><select data-k="p_top"><option value="tl">Oben links</option><option value="tc">Unter dem Timer</option><option value="tr">Oben rechts</option><option value="ml">Mitte links</option><option value="mr">Mitte rechts</option><option value="bl">Unten links</option><option value="bc">Unten Mitte</option><option value="br">Unten rechts</option></select></div>
       <div class="two">
         <div><label class="f">Anzahl Plätze</label><input type="number" data-k="topCount" min="1" max="15"></div>
         <div><label class="f">&nbsp;</label><button class="btn" id="bClearTop" style="width:100%">Liste leeren</button></div>
@@ -448,6 +460,7 @@ a{color:#bf94ff}
       <h2>🎡 Glücksrad <label class="sw"><input type="checkbox" data-k="ov_wheel"><span></span></label></h2>
       <div class="stage tall"><iframe data-src="/overlay/wheel?demo"></iframe></div>
       <div class="copy" style="margin-top:10px"><input type="text" data-url="wheel" readonly><button class="btn" data-copyurl>Kopieren</button></div>
+      <div class="mainrow"><label class="chk" style="margin:0"><span class="sw"><input type="checkbox" data-k="m_wheel"><span></span></span>Im Hauptoverlay anzeigen</label><select data-k="p_wheel"><option value="tl">Oben links</option><option value="tc">Unter dem Timer</option><option value="tr">Oben rechts</option><option value="ml">Mitte links</option><option value="mr">Mitte rechts</option><option value="bl">Unten links</option><option value="bc">Unten Mitte</option><option value="br">Unten rechts</option></select></div>
       <div class="two">
         <div><label class="f">Dreht ab … Gift-Subs auf einmal</label><input type="number" data-k="wheelMin" min="1"></div>
         <div><label class="f">&nbsp;</label><button class="btn pri" id="bSpin" style="width:100%">🎡 Test-Drehung</button></div>
@@ -461,6 +474,7 @@ a{color:#bf94ff}
       <h2>📰 Event-Laufband <label class="sw"><input type="checkbox" data-k="ov_ticker"><span></span></label></h2>
       <div class="stage wide"><iframe data-src="/overlay/ticker?demo"></iframe></div>
       <div class="copy" style="margin-top:10px"><input type="text" data-url="ticker" readonly><button class="btn" data-copyurl>Kopieren</button></div>
+      <div class="mainrow"><label class="chk" style="margin:0"><span class="sw"><input type="checkbox" data-k="m_ticker"><span></span></span>Im Hauptoverlay anzeigen (unten über die ganze Breite)</label></div>
       <div class="two">
         <div><label class="f">Anzahl Events</label><input type="number" data-k="tickerCount" min="1" max="30"></div>
         <div><label class="f">Geschwindigkeit</label><div class="rng"><input type="range" data-k="tickerSpeed" min="20" max="200"><input type="number" data-k="tickerSpeed" min="10"></div></div>

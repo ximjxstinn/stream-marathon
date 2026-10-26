@@ -16,6 +16,12 @@ html,body{margin:0;background:transparent;overflow:hidden;color:var(--c);font-fa
 #stats{margin-top:10px;font-weight:700;font-size:calc(var(--s)*.2);display:flex;gap:calc(var(--s)*.2);justify-content:var(--just)}
 body.ended #time{color:#ff4d6d}
 #pops{position:relative;height:calc(var(--s)*.9);margin-top:6px;width:100%}
+/* Eingebettete Overlays */
+body.full{height:100vh}
+.emb{position:absolute;overflow:hidden;pointer-events:none}
+.emb iframe{border:0;background:transparent;transform-origin:0 0;display:block}
+#below{display:flex;justify-content:var(--just);width:100%}
+#below .emb{position:relative}
 .pop{position:absolute;left:0;right:0;font-weight:900;font-size:calc(var(--s)*.3);color:var(--a);text-align:var(--align);animation:pop var(--pd,3.2s) ease forwards}
 .pop small{display:block;font-size:.55em;color:var(--c);font-weight:700}
 @keyframes pop{0%{opacity:0;transform:translateY(20px) scale(.8)}12%{opacity:1;transform:translateY(0) scale(1.08)}20%{transform:scale(1)}80%{opacity:1}100%{opacity:0;transform:translateY(-30px)}}
@@ -30,6 +36,7 @@ body.ended #time{color:#ff4d6d}
     <div id="time" class="fx">0:00:00</div>
     <div id="stats" class="fx"></div>
   </div>
+  <div id="below"></div>
   <div id="pops"></div>
 </div>
 <script>
@@ -69,6 +76,50 @@ function apply(c) {
   r.setProperty('--pad', c.boxOn ? (c.size * .18) + 'px' : '0px');
   r.setProperty('--pd', c.popDur + 's');
   $('pops').style.display = c.pops ? '' : 'none';
+}
+
+// ---------- Eingebettete Overlays ----------
+const EMB = { goals: [440, 300], hh: [600, 100], top: [360, 330], wheel: [400, 440] };
+const embeds = {};
+function place(box, pos, w, h, bottomGap) {
+  const g = 20, st = box.style;
+  st.left = st.right = st.top = st.bottom = st.transform = '';
+  if (pos[0] === 't') st.top = g + 'px';
+  if (pos[0] === 'b') st.bottom = (g + (bottomGap || 0)) + 'px';
+  if (pos[0] === 'm') { st.top = '50%'; st.transform = 'translateY(-50%)'; }
+  if (pos[1] === 'l') st.left = g + 'px';
+  if (pos[1] === 'r') st.right = g + 'px';
+  if (pos[1] === 'c') { st.left = '50%'; st.transform = 'translateX(-50%)'; }
+}
+function embed(c) {
+  const sc = (c.mScale || 100) / 100;
+  let any = false;
+  const tickGap = c.ov_ticker && c.m_ticker ? 60 * sc : 0;
+  for (const w of ['goals', 'hh', 'top', 'wheel', 'ticker']) {
+    const on = c['ov_' + w] && c['m_' + w];
+    let e = embeds[w];
+    if (!on) { if (e) { e.box.remove(); delete embeds[w]; } continue; }
+    any = true;
+    if (!e) {
+      const box = document.createElement('div'); box.className = 'emb';
+      const f = document.createElement('iframe'); f.src = '/overlay/' + w; f.setAttribute('allowtransparency', 'true');
+      box.appendChild(f); e = embeds[w] = { box, f, pos: null };
+    }
+    if (w === 'ticker') {
+      if (e.box.parentNode !== document.body) document.body.appendChild(e.box);
+      Object.assign(e.box.style, { left: '0', right: '0', bottom: '0', top: '', transform: '', height: 60 * sc + 'px' });
+      Object.assign(e.f.style, { width: `calc(100% / ${sc})`, height: '60px', transform: `scale(${sc})` });
+      continue;
+    }
+    const [W, H] = EMB[w], pos = c['p_' + w];
+    const target = pos === 'tc' ? $('below') : document.body;
+    if (e.box.parentNode !== target) target.appendChild(e.box);
+    Object.assign(e.box.style, { width: W * sc + 'px', height: H * sc + 'px' });
+    Object.assign(e.f.style, { width: W + 'px', height: H + 'px', transform: `scale(${sc})` });
+    if (pos === 'tc') { e.box.style.left = e.box.style.top = e.box.style.right = e.box.style.bottom = e.box.style.transform = ''; }
+    else place(e.box, pos, W * sc, H * sc, tickGap);
+  }
+  document.body.classList.toggle('full', any);
 }
 
 function render() {
@@ -125,7 +176,7 @@ function nextPop() {
 
 function connect() {
   const es = new EventSource('/api/stream?role=overlay');
-  es.addEventListener('snap', e => { S = JSON.parse(e.data); off = S.now - Date.now(); apply(S.cfg); render(); });
+  es.addEventListener('snap', e => { S = JSON.parse(e.data); off = S.now - Date.now(); apply(S.cfg); embed(S.cfg); render(); });
   es.addEventListener('pop', e => { q.push(JSON.parse(e.data)); if (!busy) nextPop(); });
 }
 connect();

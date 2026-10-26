@@ -35,6 +35,9 @@ const DEF = {
   ov_top: true, topCount: 5,
   ov_wheel: true, wheelMin: 5, wheelFields: [300, 600, 900, 1800, 60, 1200, 2700, 3600],
   ov_ticker: true, tickerCount: 10, tickerSpeed: 60,
+  // Im Hauptoverlay anzeigen + Position (tl, tr, bl, br, tc, bc, ml, mr)
+  m_goals: false, p_goals: 'tl', m_hh: false, p_hh: 'tc', m_top: false, p_top: 'tr',
+  m_wheel: false, p_wheel: 'mr', m_ticker: false, mScale: 100,
   // Nutzungsmeldung (immer aktiv): telemetry = 'ask' bis der Hinweis bestätigt ist, dann 'seen'
   telemetry: 'ask', installId: '', lastPing: 0, announced: false
 };
@@ -266,7 +269,7 @@ class Core extends EventEmitter {
     this.wheelBusy = true;
     const f = this.cfg.wheelFields.slice();
     const index = Math.floor(Math.random() * f.length);
-    const spin = { id: Date.now(), fields: f, index, who: job.who, count: job.count, sec: f[index] };
+    const spin = { id: Date.now(), fields: f, index, who: job.who, count: job.count, sec: f[index] * (this.hhActive() ? (this.state.hh.mult || 1) : 1) };
     const gen = this.wheelGen = this.wheelGen || 0;
     for (const c of this.clients) this.send(c, 'wheel', spin);
     this.pushLog(`🎡 Glücksrad für ${job.who} (${job.count} Gift-Subs)`, 0, 'info');
@@ -473,6 +476,8 @@ class Core extends EventEmitter {
       else if (typeof d === 'boolean') this.cfg[k] = !!v;
       else this.cfg[k] = String(v).slice(0, 300).trim();
     }
+    for (const w of ['goals', 'hh', 'top', 'wheel']) if (!['tl', 'tr', 'bl', 'br', 'tc', 'bc', 'ml', 'mr'].includes(this.cfg['p_' + w])) this.cfg['p_' + w] = DEF['p_' + w];
+    this.cfg.mScale = Math.max(30, Math.min(300, this.cfg.mScale || 100));
     this.cfg.channel = this.cfg.channel.toLowerCase().replace(/^#/, '').replace(/^https?:\/\/(www\.)?twitch\.tv\//, '').replace(/\/.*$/, '');
     if (!this.cfg.port || this.cfg.port < 1024 || this.cfg.port > 65535) this.cfg.port = old.port;
     this.cfg.port = Math.round(this.cfg.port);
