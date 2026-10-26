@@ -174,12 +174,31 @@ function nextPop() {
   setTimeout(nextPop, Math.max(800, c.popDur * 500));
 }
 
-function connect() {
-  const es = new EventSource('/api/stream?role=overlay');
-  es.addEventListener('snap', e => { S = JSON.parse(e.data); off = S.now - Date.now(); apply(S.cfg); embed(S.cfg); render(); });
-  es.addEventListener('pop', e => { q.push(JSON.parse(e.data)); if (!busy) nextPop(); });
+// Eine gemeinsame Live-Verbindung pro Fenster: eingebettete Seiten (Vorschauen, Overlays im
+// Hauptoverlay) hängen sich an die Verbindung der Elternseite. Browser erlauben nur 6 gleichzeitige
+// Verbindungen – sonst blockieren die Knöpfe.
+function smConnect(handlers) {
+  let bus = null;
+  try { if (window.parent !== window && window.parent.SMBus) bus = window.parent.SMBus; } catch (e) {}
+  if (!bus) {
+    bus = { subs: new Set(), last: null };
+    const es = new EventSource('/api/stream');
+    ['snap', 'pop', 'wheel'].forEach(ev => es.addEventListener(ev, e => {
+      const d = JSON.parse(e.data);
+      if (ev === 'snap') bus.last = d;
+      for (const f of [...bus.subs]) { try { f(ev, d); } catch (err) { bus.subs.delete(f); } }
+    }));
+  }
+  window.SMBus = bus;
+  const f = (ev, d) => { if (handlers[ev]) handlers[ev](JSON.parse(JSON.stringify(d))); };
+  bus.subs.add(f);
+  window.addEventListener('pagehide', () => bus.subs.delete(f));
+  if (bus.last) setTimeout(() => f('snap', bus.last), 0);
 }
-connect();
+smConnect({
+  snap: d => { S = d; off = S.now - Date.now(); apply(S.cfg); embed(S.cfg); render(); },
+  pop: d => { q.push(d); if (!busy) nextPop(); }
+});
 setInterval(render, 200);
 </script>
 </body>
