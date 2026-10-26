@@ -440,7 +440,7 @@ a{color:#bf94ff}
     <div class="rng"><input type="range" data-k="mScale" min="40" max="200"><input type="number" data-k="mScale" min="30" max="300"></div>
     <label class="f">Größe der Zahlen unter dem Timer (❤️ ⭐ 💎 🚀) in %</label>
     <div class="rng"><input type="range" data-k="statSize" min="50" max="300" step="5"><input type="number" data-k="statSize" min="30" max="400"></div>
-    <div class="hint">Zwei Overlays können nicht an derselben Stelle sein – ist eine Stelle schon besetzt, rutscht das Overlay automatisch auf die nächste freie.</div>
+    <div class="hint">„Unter dem Timer“ können mehrere Overlays stehen – sie werden untereinander gestapelt. An allen anderen Stellen ist Platz für eins; ist die Stelle besetzt, rutscht das Overlay auf die nächste freie.</div>
   </div>
   <div class="ovgrid">
 
@@ -645,7 +645,7 @@ function durHints() {
 }
 function fillForm(c) {
   $$('[data-k]').forEach(el => {
-    if (el === document.activeElement || !(el.dataset.k in c)) return;
+    if ((el === document.activeElement && el.tagName !== 'SELECT') || !(el.dataset.k in c)) return;
     if (el.dataset.k in pending) return;
     const v = c[el.dataset.k];
     if (el.type === 'checkbox') el.checked = !!v; else if (String(el.value) !== String(v)) el.value = v;

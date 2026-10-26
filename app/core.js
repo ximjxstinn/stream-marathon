@@ -552,12 +552,13 @@ class Core extends EventEmitter {
     for (const w of ['goals', 'hh', 'top', 'wheel']) if (!['tl', 'tr', 'bl', 'br', 'tc', 'bc', 'ml', 'mr'].includes(this.cfg['p_' + w])) this.cfg['p_' + w] = DEF['p_' + w];
     // Keine zwei Overlays an derselben Stelle: das gerade geänderte springt zur nächsten freien Stelle
     {
-      const ORDER = ['tl', 'tc', 'tr', 'ml', 'mr', 'bl', 'bc', 'br'];
+      const ORDER = ['tl', 'tr', 'ml', 'mr', 'bl', 'bc', 'br'];
       const changed = w => ['m_', 'p_', 'ov_'].some(pre => (pre + w) in patch);
       const act = ['goals', 'hh', 'top', 'wheel'].filter(w => this.cfg['ov_' + w] && this.cfg['m_' + w]);
       const used = new Set();
       for (const w of [...act.filter(w => !changed(w)), ...act.filter(changed)]) {
         let p = this.cfg['p_' + w];
+        if (p === 'tc') continue; // unter dem Timer dürfen mehrere stehen (werden gestapelt)
         if (used.has(p)) {
           const i0 = ORDER.indexOf(p);
           for (let i = 1; i <= ORDER.length; i++) { const q = ORDER[(i0 + i) % ORDER.length]; if (!used.has(q)) { p = q; break; } }

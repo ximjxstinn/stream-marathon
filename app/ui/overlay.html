@@ -22,7 +22,7 @@ body.ended #time{color:#ff4d6d}
 body.full{height:100vh}
 .emb{position:absolute;overflow:hidden;pointer-events:none}
 .emb iframe{border:0;background:transparent;transform-origin:0 0;display:block}
-#below{display:flex;justify-content:var(--just);width:100%}
+#below{display:flex;flex-direction:column;align-items:var(--just);gap:4px;width:100%}
 #below .emb{position:relative}
 .pop{position:absolute;left:0;right:0;font-weight:900;font-size:calc(var(--s)*.3);color:var(--a);text-align:var(--align);animation:pop var(--pd,3.2s) ease forwards}
 .pop small{display:block;font-size:.55em;color:var(--c);font-weight:700}
@@ -121,6 +121,7 @@ function embed(c) {
     if (e.box.parentNode !== target) target.appendChild(e.box);
     Object.assign(e.box.style, { width: W * sc + 'px', height: H * sc + 'px' });
     Object.assign(e.f.style, { width: W + 'px', height: H + 'px', transform: `scale(${sc})` });
+    e.box.style.order = ['hh', 'goals', 'top', 'wheel'].indexOf(w); // Happy Hour immer direkt unter dem Timer
     if (pos === 'tc') { e.box.style.left = e.box.style.top = e.box.style.right = e.box.style.bottom = e.box.style.transform = ''; }
     else place(e.box, pos, W * sc, H * sc, tickGap);
   }
