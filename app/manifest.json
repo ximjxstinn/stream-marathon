@@ -1,13 +1,13 @@
 {
-  "version": "1.3.4",
-  "date": "2026-10-26T23:00:06.548Z",
+  "version": "1.3.5",
+  "date": "2026-10-26T23:09:13.041Z",
   "files": {
     "shell.js": "4f331e0b506b7308dcea4dfa79758ba85129a55b3c7df0c84d348912d8f6038c",
     "core.js": "0128c57772e42dccfbfdaea1b50bfd9085665ab166fe3ade2a9204a27c1232a3",
-    "package.json": "3c327d9583b64b7239ca0e2227d7b4631fc81928c4f4bb5fe6464f212b6d5c81",
+    "package.json": "4aca899df93c8419cd7401b3f265f7ff2d0e5f93a34f94c3d1bccd19ba7a86ab",
     "icon.png": "59d889eb70cb73dcdbf47a6d6e9395fb3d308987ea1da43a17bf007993269fb0",
     "ui/auth.html": "ae37ef8a740764b31ec889fdb4e9a6405300481d4c4c3dc4182f367ff0a8154e",
-    "ui/control.html": "877e77d326b042c5c5929aa37b6618f7f0b992d0058f7ace4dcf42e674d190cb",
+    "ui/control.html": "f7768585d77e079d7552c6f4cf5c1bba64befa0b1840f13aa0a62843356e64ef",
     "ui/overlay.html": "dd723588ee18fb537882f49f0cf8521784fc2f888aa5cf6370440079a8bf0521",
     "ui/widgets.html": "741ef47c05bac53ddc536eb2c05882a12f78bc2dfb3c233035e65205692cbeaf"
   }

@@ -422,7 +422,7 @@ a{color:#bf94ff}
     <div class="rng"><input type="range" data-k="mScale" min="40" max="200"><input type="number" data-k="mScale" min="30" max="300"></div>
     <label class="f">Größe der Zahlen unter dem Timer (❤️ ⭐ 💎 🚀) in %</label>
     <div class="rng"><input type="range" data-k="statSize" min="50" max="300" step="5"><input type="number" data-k="statSize" min="30" max="400"></div>
-    <div class="hint">Belegte Positionen sind in der Auswahl ausgegraut. Schaltest du ein Overlay ein, dessen Stelle schon belegt ist, springt es automatisch zur nächsten freien.</div>
+    <div class="hint">Zwei Overlays können nicht an derselben Stelle sein – ist eine Stelle schon besetzt, rutscht das Overlay automatisch auf die nächste freie.</div>
   </div>
   <div class="ovgrid">
 
@@ -740,18 +740,9 @@ function renderOverlays(c) {
   const port = location.port || 7777;
   $$('[data-url]').forEach(el => el.value = `http://localhost:${port}/overlay/${el.dataset.url}`);
   $$('.ov').forEach(el => el.classList.toggle('off', !c[el.dataset.ov]));
-  // Belegte Positionen ausgrauen
-  const W4 = ['goals', 'hh', 'top', 'wheel'];
-  const NAMES = { goals: 'Ziele', hh: 'Happy Hour', top: 'Top-Supporter', wheel: 'Glücksrad' };
-  W4.forEach(w => {
-    const sel = document.querySelector(`select[data-k="p_${w}"]`); if (!sel) return;
-    [...sel.options].forEach(o => {
-      if (!o.dataset.t) o.dataset.t = o.textContent;
-      const by = W4.find(x => x !== w && c['ov_' + x] && c['m_' + x] && c['p_' + x] === o.value);
-      o.disabled = !!by && c['m_' + w];
-      o.textContent = by ? `${o.dataset.t} (belegt: ${NAMES[by]})` : o.dataset.t;
-    });
-    sel.disabled = !c['m_' + w];
+  ['goals', 'hh', 'top', 'wheel'].forEach(w => {
+    const sel = document.querySelector(`select[data-k="p_${w}"]`);
+    if (sel) sel.disabled = !c['m_' + w];
   });
   if (!goalsDraft) { goalsDraft = JSON.parse(JSON.stringify(c.goals)); drawGoals(goalsDraft); }
   if (document.activeElement !== $('wheelInput') && !('wheelFields' in pending))
