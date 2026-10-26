@@ -7,7 +7,7 @@ const crypto = require('crypto');
 
 const SRC = __dirname;
 const OUT = path.resolve(process.argv[2] || path.join(SRC, 'dist', 'app'));
-const FILES = ['shell.js', 'core.js', 'package.json', 'icon.png',
+const FILES = ['shell.js', 'core.js', 'extras.js', 'changelog.json', 'package.json', 'icon.png', 'ui/StreamMarathon.streamDeckPlugin',
   ...fs.readdirSync(path.join(SRC, 'ui')).filter(f => f.endsWith('.html')).map(f => 'ui/' + f)];
 
 const version = require(path.join(SRC, 'package.json')).version;

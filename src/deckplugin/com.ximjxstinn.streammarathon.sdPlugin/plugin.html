@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Stream Marathon</title></head>
+<body>
+<script>
+// Stream Marathon – Stream-Deck-Plugin
+// Spricht mit der Stream-Marathon-App über http://127.0.0.1:<Port>/deck/… (Verbindungs-Code = "<Port>-<Schlüssel>")
+let ws = null, uuid = null, code = '';
+const ctx = {}; // context -> { action, settings }
+const PRE = 'com.ximjxstinn.streammarathon.';
+const send = o => { try { ws && ws.readyState === 1 && ws.send(JSON.stringify(o)); } catch (e) {} };
+const parse = c => { const m = /^\s*(\d{2,5})-([a-f0-9]{6,})\s*$/i.exec(c || ''); return m ? { port: m[1], key: m[2] } : null; };
+
+async function call(path) {
+  const p = parse(code); if (!p) throw new Error('kein Code');
+  const sep = path.includes('?') ? '&' : '?';
+  const r = await fetch(`http://127.0.0.1:${p.port}/deck/${path}${sep}k=${p.key}`, { cache: 'no-store' });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+function pathFor(action, s) {
+  const a = action.replace(PRE, ''), min = Math.max(1, parseInt(s.min, 10) || 5);
+  return ({ time: 'toggle', toggle: 'toggle', add: 'add?min=' + min, sub: 'sub?min=' + min, happyhour: 'happyhour',
+    panic: 'panic', pausescreen: 'pausescreen', profile: s.n ? 'profile?n=' + s.n : 'profile', wheel: 'wheel' })[a];
+}
+
+// Titel live aktualisieren
+let last = {};
+async function refresh() {
+  if (!Object.keys(ctx).length) return;
+  let st = null;
+  try { st = await call('status'); } catch (e) { st = null; }
+  for (const [c, { action, settings }] of Object.entries(ctx)) {
+    const a = action.replace(PRE, '');
+    let t = '';
+    if (!st) t = a === 'time' ? (parse(code) ? 'App aus?' : 'Code\nfehlt') : '';
+    else if (a === 'time') t = st.time + (st.running ? '' : '\n⏸');
+    else if (a === 'toggle') t = st.running ? 'Läuft' : 'Pause';
+    else if (a === 'add') t = '+' + (parseInt(settings.min, 10) || 5) + ' Min';
+    else if (a === 'sub') t = '−' + (parseInt(settings.min, 10) || 5) + ' Min';
+    else if (a === 'happyhour') t = st.happyHour ? 'AN' : 'Happy H.';
+    else if (a === 'panic') t = st.panic === 'hide' ? 'AUS!' : 'Notfall';
+    else if (a === 'pausescreen') t = st.panic === 'pause' ? 'AN' : 'Pause';
+    else if (a === 'profile') t = st.profile || '';
+    else if (a === 'wheel') t = 'Rad';
+    if (last[c] !== t) { last[c] = t; send({ event: 'setTitle', context: c, payload: { title: t, target: 0 } }); }
+  }
+}
+setInterval(refresh, 1000);
+
+function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent) {
+  uuid = inUUID;
+  ws = new WebSocket('ws://127.0.0.1:' + inPort);
+  ws.onopen = () => { send({ event: inRegisterEvent, uuid }); send({ event: 'getGlobalSettings', context: uuid }); };
+  ws.onmessage = async e => {
+    const m = JSON.parse(e.data), c = m.context;
+    if (m.event === 'didReceiveGlobalSettings') { code = (m.payload.settings || {}).code || ''; last = {}; refresh(); }
+    else if (m.event === 'willAppear') { ctx[c] = { action: m.action, settings: (m.payload && m.payload.settings) || {} }; delete last[c]; refresh(); }
+    else if (m.event === 'willDisappear') { delete ctx[c]; delete last[c]; }
+    else if (m.event === 'didReceiveSettings') { if (ctx[c]) ctx[c].settings = m.payload.settings || {}; delete last[c]; refresh(); }
+    else if (m.event === 'keyDown') {
+      const s = (m.payload && m.payload.settings) || {};
+      try { await call(pathFor(m.action, s)); if (!/time$/.test(m.action)) send({ event: 'showOk', context: c }); refresh(); }
+      catch (err) { send({ event: 'showAlert', context: c }); }
+    }
+  };
+}
+</script>
+</body></html>

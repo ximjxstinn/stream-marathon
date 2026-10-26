@@ -119,6 +119,49 @@ ol b{color:var(--text)}
 .hk .s{font-size:12px;text-align:right}
 .toast{position:fixed;right:20px;bottom:20px;background:#00f59322;border:1px solid var(--ok);color:var(--ok);padding:8px 14px;border-radius:8px;font-weight:700;opacity:0;transition:.2s;pointer-events:none}
 .toast.on{opacity:1}
+/* Profile */
+.prof{margin:0 0 14px;position:relative}
+.prof .sel{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-weight:700;cursor:pointer}
+.prof .sel:hover{border-color:#9146ff88}
+.prof .sel small{color:var(--dim);font-weight:600;display:block;font-size:11px}
+.prof .sel span.nm{display:block;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.prof .menu{position:absolute;left:0;right:0;top:calc(100% + 4px);background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:5px;display:none;z-index:30;box-shadow:0 10px 30px #000a}
+.prof .menu.on{display:block}
+.prof .menu div{padding:8px 10px;border-radius:7px;font-weight:600;font-size:13px;cursor:pointer}
+.prof .menu div:hover{background:#ffffff10}
+.prof .menu div.cur{color:var(--ok)}
+.prof .menu hr{border:0;border-top:1px solid var(--line);margin:5px 0}
+.g3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.g3 .card{margin:0}
+.pill{margin-left:auto;font-size:11px;padding:3px 9px;border-radius:999px;font-weight:800;white-space:nowrap}
+.pill.ok{background:#00f59322;color:var(--ok);border:1px solid #00f59366}
+.pill.off{background:#ffffff10;color:var(--dim);border:1px solid var(--line)}
+.pill.warn{background:#ffb31a22;color:var(--warn);border:1px solid #ffb31a66}
+.cmdrow{display:grid;grid-template-columns:110px 1fr 38px 34px;gap:6px;align-items:center;margin-top:6px}
+.cmdrow input[type=text]{font-family:inherit}
+.cmdrow .cmd{font-family:Consolas,monospace;color:#bf94ff;font-weight:700}
+.act{display:grid;grid-template-columns:130px 1fr 80px;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid #26262c;font-size:13px}
+.act input{font-family:Consolas,monospace;font-size:12px;color:#bf94ff}
+.ver{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:12px;max-width:820px}
+.ver h3{margin:0;font-size:16px;display:flex;align-items:center;gap:10px}
+.ver h3 small{color:var(--dim);font-weight:600;font-size:12px}
+.ver ul{margin:8px 0 0;padding-left:20px;color:var(--muted);line-height:1.7}
+.lockbox{max-width:420px;margin:50px auto;text-align:center}
+.lockbox .big2{font-size:56px;margin-bottom:6px}
+.shake{animation:shake .4s}@keyframes shake{20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)}}
+.err{color:var(--bad);font-size:12px;margin-top:8px;min-height:16px}
+.okm{color:var(--ok);font-size:12px;margin-top:6px;min-height:16px}
+.log2{font-family:Consolas,monospace;font-size:11.5px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;height:170px;overflow:auto;color:var(--muted);line-height:1.6}
+.chart{display:flex;align-items:flex-end;gap:4px;height:140px;padding-top:6px}
+.chart div{flex:1;background:linear-gradient(180deg,#ff4fd8,var(--brand));border-radius:3px 3px 0 0;min-height:2px;position:relative}
+.chartL{display:flex;gap:4px;font-size:10px;color:var(--dim);margin-top:4px}
+.chartL span{flex:1;text-align:center}
+.kv3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px;font-size:12px;color:var(--dim)}
+.kv3 b{display:block;color:var(--text);font-size:15px;margin-top:2px}
+.panicbtn{width:100%;padding:12px!important}
+.panicon{background:var(--ok)!important;color:#000!important}
+.new ul{margin:6px 0 18px;padding-left:20px;line-height:1.8;color:var(--text)}
+
 .usteps{display:flex;gap:6px;margin-top:12px}
 .usteps div{flex:1;text-align:center;font-size:12px;font-weight:700;padding:8px 4px;border-radius:8px;background:var(--bg);border:1px solid var(--line);color:var(--dim)}
 .usteps div.done{color:var(--ok);border-color:#00f59355}
@@ -148,13 +191,20 @@ a{color:#bf94ff}
 
 <aside>
   <div class="logo"><i>⏱</i>Stream Marathon</div>
+  <div class="prof"><div class="sel" id="profSel"><span>👤</span><div><small>Profil</small><span class="nm" id="profName">Standard</span></div><span style="margin-left:auto;color:var(--dim)">▾</span></div>
+    <div class="menu" id="profMenu"></div></div>
   <nav>
     <button data-tab="home" class="on">🏠 Übersicht</button>
     <button data-tab="events">⚡ Events & Zeiten</button>
     <button data-tab="design">🎨 Design</button>
     <button data-tab="twitch">🟣 Twitch</button>
     <button data-tab="overlays">🧩 Overlays</button>
+    <button data-tab="platforms">🌐 Plattformen</button>
+    <button data-tab="chatpts">💬 Chat & Punkte</button>
+    <button data-tab="deck">🎛️ Stream Deck</button>
     <button data-tab="general">⚙️ Allgemein</button>
+    <button data-tab="changelog">📋 Changelog</button>
+    <button data-tab="admin">🛡️ Admin</button>
   </nav>
   <div class="mini">
     <div class="t" id="miniTime">0:00:00</div>
@@ -409,6 +459,8 @@ a{color:#bf94ff}
       <div class="status" style="margin-top:14px">
         <div><span class="dot" id="dIrc3"></span>Subs, Gifts, Bits, Raids: <span id="sIrc2"></span></div>
         <div><span class="dot" id="dFol3"></span>Follows: <span id="sFol2"></span></div>
+        <div><span class="dot" id="dChat"></span>Chat-Befehle: <span id="sChat">–</span></div>
+        <div><span class="dot" id="dPts"></span>Kanalpunkte: <span id="sPts">–</span></div>
       </div>
       <button class="btn" id="bReconnect" style="margin-top:12px">↻ Neu verbinden</button>
     </div>
@@ -519,6 +571,168 @@ a{color:#bf94ff}
   <div class="hint" style="margin-top:4px">Die Vorschau zeigt Beispieldaten, solange noch nichts passiert ist. Farben und Schrift kommen aus dem Bereich „Design“.</div>
 </section>
 
+
+<!-- ================= PLATTFORMEN ================= -->
+<section id="platforms">
+  <h1>Plattformen</h1>
+  <p class="sub">Neben Twitch können auch YouTube-Super-Chats und TikTok-Geschenke (über ein Zusatz-Tool) den Timer verlängern.</p>
+  <div class="grid2">
+    <div class="card">
+      <h2>▶️ YouTube <span class="pill off" id="ytPill">aus</span><label class="sw" style="margin-left:8px"><input type="checkbox" data-k="yt_on"><span></span></label></h2>
+      <label class="f">YouTube-Kanal (@name oder Kanal-ID)</label><input type="text" data-k="yt_channel" placeholder="@deinkanal">
+      <label class="f">API-Schlüssel <span id="ytKeyState" style="color:var(--ok)"></span></label>
+      <div class="row"><input type="password" id="ytKey" placeholder="AIza…"><button class="btn" id="bYtKey" style="flex:none">Speichern</button></div>
+      <div class="three">
+        <div><label class="f">Sek. pro 1 € / $</label><input type="number" data-k="yt_sc" min="0"></div>
+        <div><label class="f">Neues Mitglied (Sek.)</label><input type="number" data-k="yt_member" min="0"></div>
+        <div><label class="f">Abfrage alle (Sek.)</label><input type="number" data-k="yt_poll" min="20"></div>
+      </div>
+      <div class="hint">Zählt Super Chats, Super Sticker, neue und verschenkte Mitgliedschaften. Super Chats werden in ihrer Währung gerechnet.<br>
+      <b>API-Schlüssel holen:</b> <a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank">Google Cloud Console</a> → Projekt anlegen → „YouTube Data API v3“ aktivieren → Anmeldedaten → API-Schlüssel.<br>
+      Google erlaubt nur eine begrenzte Zahl Abfragen pro Tag – bei 45 Sek. reicht es für etwa 24 Std. Livestream.</div>
+    </div>
+    <div class="card">
+      <h2>♪ TikTok & andere (Event-Eingang) <label class="sw" style="margin-left:auto"><input type="checkbox" data-k="tt_on"><span></span></label></h2>
+      <div class="hint" style="margin-top:0">TikTok hat keine offizielle Schnittstelle für Live-Geschenke. Tools wie <b>Streamer.bot</b> oder <b>TikFinity</b> können Ereignisse aber per Web-Aufruf an die App schicken – dafür ist dieser Eingang.</div>
+      <div class="three">
+        <div><label class="f">Sek. pro Coin</label><input type="number" data-k="tt_coin" min="0" step="0.1"></div>
+        <div><label class="f">Follow (Sek.)</label><input type="number" data-k="tt_follow" min="0"></div>
+        <div><label class="f">Abo (Sek.)</label><input type="number" data-k="tt_sub" min="0"></div>
+      </div>
+      <label class="f">Adresse für Geschenke (Platzhalter im Tool ersetzen)</label>
+      <div class="copy"><input type="text" id="hookGift" readonly><button class="btn" data-copy="hookGift">Kopieren</button></div>
+      <label class="f">Adresse für Follows</label>
+      <div class="copy"><input type="text" id="hookFollow" readonly><button class="btn" data-copy="hookFollow">Kopieren</button></div>
+      <div class="hint">Parameter: <code>user</code>, <code>coins</code> (Coins pro Geschenk), <code>count</code> (Anzahl), <code>gift</code> (Name), oder direkt <code>sec</code>. Der Schlüssel <code>k=…</code> schützt davor, dass fremde Webseiten Zeit hinzufügen.</div>
+      <button class="btn" id="bHookTest" style="margin-top:10px">🧪 Test: 10 Rosen schicken</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= CHAT & KANALPUNKTE ================= -->
+<section id="chatpts">
+  <h1>Chat & Kanalpunkte</h1>
+  <p class="sub">Ein Bot antwortet im Twitch-Chat, und Zuschauer können mit Kanalpunkten Zeit kaufen. Beides braucht den Twitch-Login (Bereich „Twitch“).</p>
+  <div class="grid2">
+    <div class="card">
+      <h2>💬 Chat-Befehle <span class="pill off" id="chatPill">–</span><label class="sw" style="margin-left:8px"><input type="checkbox" data-k="cmd_on"><span></span></label></h2>
+      <div id="cmdList"></div>
+      <div class="row" style="margin-top:8px"><button class="btn" id="bAddCmd" style="flex:none">+ Befehl</button>
+        <div style="display:flex;align-items:center;gap:6px;justify-content:flex-end"><span class="hint" style="margin:0">Abklingzeit (Sek.)</span><input type="number" data-k="cmdCooldown" min="0" style="width:70px"></div></div>
+      <div class="hint">Platzhalter: <code>{zeit}</code> Restzeit · <code>{ziel}</code> <code>{stand}</code> <code>{zielwert}</code> nächstes Ziel · <code>{top3}</code> · <code>{subs}</code> <code>{follows}</code> · <code>{user}</code> wer gefragt hat · <code>{faktor}</code> <code>{rest}</code> Happy Hour · <code>{t1}</code> <code>{bits}</code> <code>{follow}</code> Zeiten.<br>Der Bot antwortet mit deinem Twitch-Account.</div>
+    </div>
+    <div class="card">
+      <h2>💠 Kanalpunkte <span class="pill off" id="ptsPill">–</span><label class="sw" style="margin-left:8px"><input type="checkbox" data-k="cp_on"><span></span></label></h2>
+      <label class="f">Name der Belohnung</label><input type="text" data-k="cp_title" maxlength="45">
+      <div class="two">
+        <div><label class="f">Kosten (Punkte)</label><input type="number" data-k="cp_cost" min="1"></div>
+        <div><label class="f">Zeit (Sek.)</label><input type="number" data-k="cp_sec" class="dur" min="0"><div class="dh"></div></div>
+        <div><label class="f">Max. pro Zuschauer & Stream (0 = ∞)</label><input type="number" data-k="cp_max" min="0"></div>
+        <div><label class="f">Abklingzeit (Sek., 0 = keine)</label><input type="number" data-k="cp_cool" min="0"></div>
+      </div>
+      <div class="hint">Die Belohnung wird automatisch auf deinem Kanal angelegt und bei Änderungen angepasst. Ausschalten blendet sie auf Twitch aus. Nur für <b>Twitch Affiliates und Partner</b>.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= STREAM DECK ================= -->
+<section id="deck">
+  <h1>Stream Deck</h1>
+  <p class="sub">Steuere die App mit deinem Elgato Stream Deck (alle Modelle und Stream Deck Mobile).</p>
+  <div class="grid2">
+    <div class="card">
+      <h2>🧩 Stream-Marathon-Plugin <span class="pill ok">empfohlen</span></h2>
+      <div class="hint" style="margin-top:0">Eigene Aktionen mit Icons – und eine Taste zeigt live die Restzeit.</div>
+      <ol>
+        <li><b>Plugin herunterladen</b> und doppelklicken – Stream Deck installiert es.</li>
+        <li>In der Stream-Deck-Software unter <b>Stream Marathon</b> die Aktionen auf Tasten ziehen.</li>
+        <li>Bei der ersten Aktion den <b>Verbindungs-Code</b> eintragen:</li>
+      </ol>
+      <div class="copy" style="margin-top:8px"><input type="text" id="deckCode" readonly style="font-size:18px;font-weight:800;letter-spacing:.1em;text-align:center"><button class="btn" data-copy="deckCode">Kopieren</button></div>
+      <button class="btn pri" id="bPlugin" style="width:100%;margin-top:12px">⬇ Plugin herunterladen</button>
+    </div>
+    <div class="card">
+      <h2>🔗 Ohne Plugin (Aktion „Website“)</h2>
+      <div class="hint" style="margin-top:0">In Stream Deck die Aktion <b>System → Website</b> auf eine Taste ziehen, Adresse einfügen und <b>„GET request in background“</b> anhaken.</div>
+      <div id="deckList" style="margin-top:8px"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= CHANGELOG ================= -->
+<section id="changelog">
+  <h1>Changelog</h1>
+  <p class="sub">Was sich in den Updates geändert hat.</p>
+  <div id="clList"></div>
+</section>
+
+<!-- ================= ADMIN ================= -->
+<section id="admin">
+  <div id="admLocked">
+    <div class="card lockbox" id="lockCard">
+      <div class="big2">🔒</div><h2 style="justify-content:center;font-size:18px">Admin-Bereich</h2>
+      <p class="hint" style="margin:0 0 14px">Profi-Werkzeuge. Passwort eingeben zum Entsperren.</p>
+      <div class="row"><input type="password" id="admPw" placeholder="Passwort"><button class="btn pri" id="bUnlock" style="flex:none">Entsperren</button></div>
+      <div class="err" id="admErr"></div>
+      <div class="hint" id="admDefault"></div>
+    </div>
+  </div>
+  <div id="admOpen" style="display:none">
+    <h1>🛡️ Admin <button class="btn dang" id="bLock" style="float:right;padding:6px 12px;font-size:12px">🔒 Sperren</button></h1>
+    <p class="sub">Profi-Werkzeuge – nur für dich. Änderungen wirken sofort im Stream. <span id="admUntil"></span></p>
+    <div class="g3">
+      <div class="card"><h2>🚨 Notfall-Schalter</h2>
+        <button class="btn dang panicbtn" id="bPanic">🙈 Alle Overlays sofort ausblenden</button>
+        <button class="btn" id="bPauseScr" style="width:100%;margin-top:6px">☕ Pause-Bildschirm zeigen</button>
+        <label class="f">Text auf dem Pause-Bildschirm</label><input type="text" data-k="pauseText">
+        <div class="hint">Auch per Hotkey (Allgemein) und Stream Deck.</div>
+      </div>
+      <div class="card"><h2>🚫 Namen- & Wortfilter</h2>
+        <label class="f" style="margin-top:0">Gesperrte Namen (mit Komma getrennt)</label><input type="text" data-k="fNames" placeholder="troll123, nervig">
+        <label class="f">Wörter ausblenden</label><input type="text" data-k="fWords" placeholder="beleidigung, spam">
+        <div class="hint">Gesperrte Namen zählen weiter (Zeit kommt dazu), erscheinen aber als „Anonym“ in Laufband, Top-Liste und Einblendungen. Wörter werden zu „***“.</div>
+      </div>
+      <div class="card"><h2>🌙 Zeit-Regeln</h2>
+        <label class="chk" style="margin-top:0"><span class="sw"><input type="checkbox" data-k="nightOn"><span></span></span>Nachtmodus</label>
+        <div class="three"><div><label class="f">Von</label><input type="text" data-k="nightFrom" placeholder="02:00"></div><div><label class="f">Bis</label><input type="text" data-k="nightTo" placeholder="08:00"></div><div><label class="f">Zeit zählt %</label><input type="number" data-k="nightPct" min="0" max="100"></div></div>
+        <label class="f">Höchstens dazu pro Stunde (Min., 0 = ∞)</label><input type="number" data-k="hourCap" min="0">
+        <div class="hint">Gilt für Events, nicht für manuelle Änderungen.</div>
+      </div>
+      <div class="card" style="grid-column:span 2"><h2>📈 Live-Statistik <span class="hint" style="margin:0 0 0 auto">Zeit dazugekommen pro Stunde (letzte 24 Std.)</span></h2>
+        <div class="chart" id="chart"></div><div class="chartL" id="chartL"></div>
+        <div class="kv3"><div>Beste Stunde<b id="stBest">–</b></div><div>Ø pro aktiver Stunde<b id="stAvg">–</b></div><div>Events gesamt<b id="stEv">–</b></div></div>
+        <button class="btn" id="bClearStats" style="margin-top:10px;padding:5px 10px;font-size:12px">Statistik zurücksetzen</button>
+      </div>
+      <div class="card"><h2>🩺 Live-Diagnose</h2>
+        <div class="log2" id="diag"></div>
+        <div class="row" style="margin-top:8px"><button class="btn" id="bDiagExp">📄 Log exportieren</button><button class="btn" id="bReconn2">↻ Neu verbinden</button></div>
+      </div>
+      <div class="card"><h2>💾 Backup</h2>
+        <label class="chk" style="margin-top:0"><span class="sw"><input type="checkbox" data-k="autoBackup"><span></span></span>Automatisch alle 15 Min</label>
+        <button class="btn" id="bBackup" style="width:100%;margin-top:10px">⬇ Backup herunterladen</button>
+        <button class="btn" id="bRestore" style="width:100%;margin-top:6px">⬆ Backup wiederherstellen</button>
+        <button class="btn" id="bCsv" style="width:100%;margin-top:6px">📊 Verlauf als CSV</button>
+        <input type="file" id="restoreFile" accept=".json" style="display:none">
+        <div class="okm" id="bakMsg"></div>
+      </div>
+      <div class="card"><h2>🔄 Update-Kanal</h2>
+        <div class="seg" data-seg="updChannel"><button data-v="stable">Stabil</button><button data-v="beta">Beta</button></div>
+        <div class="hint">Beta bekommt neue Funktionen früher zum Testen.</div>
+        <button class="btn" id="bForceUpd" style="width:100%;margin-top:10px">⬇ Update erzwingen</button>
+        <button class="btn" id="bRollback" style="width:100%;margin-top:6px">↺ Zur vorherigen Version</button>
+        <div class="okm" id="updMsg"></div>
+      </div>
+      <div class="card"><h2>🔑 Passwort</h2>
+        <input type="password" id="pwOld" placeholder="Altes Passwort">
+        <input type="password" id="pwNew" placeholder="Neues Passwort (mind. 4 Zeichen)" style="margin-top:6px">
+        <button class="btn" id="bPwChange" style="width:100%;margin-top:8px">Passwort ändern</button>
+        <div class="okm" id="pwMsg"></div>
+        <label class="chk"><span class="sw"><input type="checkbox" data-k="adminAutoLock"><span></span></span>Nach 10 Min automatisch sperren</label>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ================= ALLGEMEIN ================= -->
 <section id="general">
   <h1>Allgemein</h1>
@@ -530,6 +744,7 @@ a{color:#bf94ff}
       <div class="hk"><span>Zeit hinzufügen</span><input type="text" data-hk="hk_plus" readonly><span class="s" id="hs_hk_plus"></span></div>
       <div class="hk"><span>Zeit abziehen</span><input type="text" data-hk="hk_minus" readonly><span class="s" id="hs_hk_minus"></span></div>
       <div class="hk"><span>Happy Hour an/aus</span><input type="text" data-hk="hk_hh" readonly><span class="s" id="hs_hk_hh"></span></div>
+      <div class="hk"><span>🚨 Notfall (Overlays aus)</span><input type="text" data-hk="hk_panic" readonly><span class="s" id="hs_hk_panic"></span></div>
       <label class="f">Wie viel Zeit die Hotkeys ändern (Sekunden)</label>
       <input type="number" data-k="hkSec" class="dur" min="1"><div class="dh"></div>
       <div class="hint">Feld anklicken und Taste(n) drücken. Entf oder Rücktaste = Hotkey aus. Achtung: Eine belegte Taste geht dann im Spiel nicht mehr.</div>
@@ -576,6 +791,17 @@ a{color:#bf94ff}
 </main>
 
 <div class="toast" id="toast">✔ Gespeichert</div>
+<div class="modal" id="news"><div class="card new">
+  <h2 id="newsTitle">🎉 Neu</h2>
+  <p class="hint" style="margin:4px 0 0">Die App hat sich gerade aktualisiert.</p>
+  <div id="newsBody"></div>
+  <div class="row"><button class="btn" id="bNewsAll">Alle Änderungen</button><button class="btn pri" id="bNewsOk">Verstanden</button></div>
+</div></div>
+<div class="modal" id="ask"><div class="card" style="min-width:380px">
+  <h2 id="askTitle">Name</h2>
+  <input type="text" id="askInput" maxlength="40">
+  <div class="row" style="margin-top:12px"><button class="btn" id="askNo">Abbrechen</button><button class="btn pri" id="askYes">OK</button></div>
+</div></div>
 <div class="upd" id="upd"></div>
 
 <script>
@@ -809,11 +1035,165 @@ function renderOverlays(c) {
   $('bHH').textContent = on ? `⚡ Happy Hour läuft (×${h.mult}) – beenden` : `⚡ Happy Hour starten (${c.hhMin} Min, ×${c.hhMult})`;
 }
 
+
+// ================= Profile =================
+function ask(title, value, cb, yes) {
+  $('askTitle').textContent = title; $('askInput').value = value || ''; $('askInput').style.display = cb.length ? '' : 'none';
+  $('askYes').textContent = yes || 'OK'; $('ask').classList.add('on'); setTimeout(() => $('askInput').focus(), 50);
+  const done = ok => { $('ask').classList.remove('on'); $('askYes').onclick = $('askNo').onclick = null; if (ok) cb($('askInput').value.trim()); };
+  $('askYes').onclick = () => done(true); $('askNo').onclick = () => done(false);
+  $('askInput').onkeydown = e => { if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); };
+}
+$('profSel').onclick = e => { e.stopPropagation(); $('profMenu').classList.toggle('on'); };
+document.addEventListener('click', () => $('profMenu').classList.remove('on'));
+$('profMenu').onclick = e => {
+  const d = e.target.closest('[data-p]'); if (!d) return;
+  const a = d.dataset.p, cur = S.profiles.active;
+  $('profMenu').classList.remove('on');
+  if (a === 'switch') act('profile.switch', { name: d.dataset.n });
+  else if (a === 'new') ask('Neues Profil – Name', '', n => n && act('profile.new', { name: n }));
+  else if (a === 'copy') ask('Profil kopieren – Name der Kopie', cur + ' (Kopie)', n => n && act('profile.copy', { name: n }));
+  else if (a === 'rename') ask('Profil umbenennen', cur, n => n && n !== cur && act('profile.rename', { name: n }));
+  else if (a === 'delete') ask(`Profil „${cur}“ wirklich löschen?`, '', () => act('profile.delete', {}), 'Löschen');
+};
+function renderProfiles() {
+  const P = S.profiles || { active: 'Standard', names: ['Standard'] };
+  $('profName').textContent = P.active;
+  $('profMenu').innerHTML = P.names.map(n => `<div data-p="switch" data-n="${esc(n)}" class="${n === P.active ? 'cur' : ''}">${n === P.active ? '✓ ' : ''}${esc(n)}</div>`).join('') +
+    '<hr><div data-p="new">＋ Neues Profil</div><div data-p="copy">⧉ Profil kopieren</div><div data-p="rename">✎ Umbenennen</div>' +
+    (P.names.length > 1 ? '<div data-p="delete" style="color:var(--bad)">🗑 Löschen</div>' : '');
+}
+
+// ================= Plattformen =================
+$('bYtKey').onclick = () => { const v = $('ytKey').value.trim(); if (!v) return; post('/api/config', { yt_key: v }); $('ytKey').value = ''; };
+$('bHookTest').onclick = () => fetch(`/hook?k=${S.cfg.deckKey}&type=gift&user=Tester&gift=Rose&coins=1&count=10`);
+function pill(id, text, okRe, offRe) {
+  const el = $(id); el.textContent = (text || '–').replace(/ –.*$/, '');
+  el.className = 'pill ' + (okRe.test(text || '') ? 'ok' : offRe.test(text || '') ? 'off' : 'warn'); el.title = text || '';
+}
+
+// ================= Chat-Befehle =================
+let cmdDraft = null, cmdT = null;
+function drawCmds() {
+  $('cmdList').innerHTML = cmdDraft.map((c, i) => `<div class="cmdrow" data-i="${i}">
+    <input type="text" class="cmd" data-cf="cmd" value="${esc(c.cmd)}"><input type="text" data-cf="text" value="${esc(c.text)}">
+    <label class="sw"><input type="checkbox" data-cf="on" ${c.on ? 'checked' : ''}><span></span></label>
+    <button class="btn minus" data-cdel style="padding:6px 0">✕</button></div>`).join('');
+}
+const saveCmds = () => { clearTimeout(cmdT); cmdT = setTimeout(() => queue('cmds', cmdDraft), 400); };
+$('cmdList').addEventListener('input', e => {
+  const r = e.target.closest('.cmdrow'); if (!r) return;
+  const f = e.target.dataset.cf; cmdDraft[+r.dataset.i][f] = f === 'on' ? e.target.checked : e.target.value; saveCmds();
+});
+$('cmdList').addEventListener('change', e => { if (e.target.dataset.cf === 'on') $('cmdList').dispatchEvent(new Event('input')); });
+$('cmdList').addEventListener('click', e => { if (!e.target.matches('[data-cdel]')) return; cmdDraft.splice(+e.target.closest('.cmdrow').dataset.i, 1); drawCmds(); saveCmds(); });
+$('bAddCmd').onclick = () => { cmdDraft.push({ cmd: '!neu', text: 'Antwort…', on: true }); drawCmds(); saveCmds(); };
+
+// ================= Stream Deck =================
+const DECK = [['⏯ Start / Pause', 'toggle'], ['➕ +5 Min', 'add?min=5'], ['➖ −5 Min', 'sub?min=5'], ['⚡ Happy Hour', 'happyhour'],
+  ['🙈 Notfall', 'panic'], ['☕ Pause-Bildschirm', 'pausescreen'], ['👤 Nächstes Profil', 'profile'], ['🎡 Rad testen', 'wheel']];
+$('bPlugin').onclick = () => { const a = document.createElement('a'); a.href = '/deck-plugin'; a.download = 'StreamMarathon.streamDeckPlugin'; a.click(); };
+$('deckList').addEventListener('click', e => {
+  const b = e.target.closest('[data-dc]'); if (!b) return; const el = b.previousElementSibling; el.select();
+  (navigator.clipboard ? navigator.clipboard.writeText(el.value) : Promise.reject()).catch(() => document.execCommand('copy'));
+  b.textContent = '✔'; setTimeout(() => b.textContent = 'Kopieren', 1000);
+});
+function renderDeck(c) {
+  const port = location.port || 7777, base = `http://localhost:${port}`;
+  $('deckCode').value = `${port}-${c.deckKey}`;
+  const html = DECK.map(([n, p]) => `<div class="act"><span>${n}</span><input type="text" readonly value="${base}/deck/${p}${p.includes('?') ? '&' : '?'}k=${c.deckKey}"><button class="btn" data-dc>Kopieren</button></div>`).join('');
+  if ($('deckList').dataset.h !== html) { $('deckList').dataset.h = html; $('deckList').innerHTML = html; }
+  $('hookGift').value = `${base}/hook?k=${c.deckKey}&type=gift&user={nickname}&gift={giftname}&coins={coins}&count={repeatcount}`;
+  $('hookFollow').value = `${base}/hook?k=${c.deckKey}&type=follow&user={nickname}`;
+}
+
+// ================= Changelog & „Was ist neu“ =================
+function clHtml(list) {
+  return list.map(v => `<div class="ver"><h3>Version ${esc(v.version)} <small>${esc(v.date || '')}</small>${v.version === S.version ? '<span class="pill ok" style="margin-left:0">installiert</span>' : ''}</h3><ul>${v.items.map(i => `<li>${esc(i)}</li>`).join('')}</ul></div>`).join('');
+}
+const cmpv = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d; } return 0; };
+$('bNewsOk').onclick = () => { $('news').classList.remove('on'); act('dismissNews'); };
+$('bNewsAll').onclick = () => { $('bNewsOk').click(); document.querySelector('[data-tab="changelog"]').click(); };
+function renderChangelog() {
+  const cl = S.changelog || [], h = clHtml(cl) || '<div class="hint">Noch keine Einträge.</div>';
+  if ($('clList').dataset.h !== h) { $('clList').dataset.h = h; $('clList').innerHTML = h; }
+  const ju = S.status.justUpdated;
+  if (ju && S.cfg.telemetry !== 'ask' && !$('news').dataset.shown) {
+    const items = cl.filter(v => cmpv(v.version, ju.from) > 0 && cmpv(v.version, ju.to) <= 0);
+    $('newsTitle').textContent = `🎉 Neu in Version ${ju.to}`;
+    $('newsBody').innerHTML = items.length ? items.map(v => `<ul>${v.items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>`).join('') : '<ul><li>Verbesserungen und Fehlerbehebungen</li></ul>';
+    $('news').classList.add('on'); $('news').dataset.shown = 1;
+  }
+}
+
+// ================= Admin =================
+let admTok = null;
+const apost = (p, b) => post('/api/admin/' + p, b).then(r => r.json());
+$('bUnlock').onclick = async () => {
+  const r = await apost('unlock', { pw: $('admPw').value });
+  if (r.ok) { admTok = r.t; $('admPw').value = ''; $('admErr').textContent = ''; }
+  else { $('admErr').textContent = '✖ Falsches Passwort'; $('lockCard').classList.remove('shake'); void $('lockCard').offsetWidth; $('lockCard').classList.add('shake'); }
+};
+$('admPw').onkeydown = e => { if (e.key === 'Enter') $('bUnlock').click(); };
+$('bLock').onclick = () => apost('lock', {});
+$('bPanic').onclick = () => act('panic'); $('bPauseScr').onclick = () => act('pauseScreen');
+$('bReconn2').onclick = () => act('reconnect');
+$('bClearStats').onclick = () => apost('clearStats', {});
+const dl = (url, name) => fetch(url).then(r => r.blob()).then(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = name; a.click(); });
+$('bBackup').onclick = () => dl('/api/admin/backup?t=' + admTok, `StreamMarathon-Backup-${new Date().toISOString().slice(0, 10)}.json`);
+$('bCsv').onclick = () => dl('/api/admin/csv?t=' + admTok, `StreamMarathon-Verlauf-${new Date().toISOString().slice(0, 10)}.csv`);
+$('bDiagExp').onclick = () => { const b = new Blob([(S.diag || []).map(d => new Date(d.t).toLocaleString('de-DE') + '  ' + d.text).join('\n')], { type: 'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'StreamMarathon-Log.txt'; a.click(); };
+$('bRestore').onclick = () => $('restoreFile').click();
+$('restoreFile').onchange = async () => {
+  const f = $('restoreFile').files[0]; if (!f) return;
+  try { const data = JSON.parse(await f.text()); const r = await apost('restore', { data }); $('bakMsg').textContent = r.ok ? '✔ Wiederhergestellt' : '✖ ' + r.error; }
+  catch (e) { $('bakMsg').textContent = '✖ Datei ist kein gültiges Backup'; }
+  $('restoreFile').value = '';
+};
+$('bForceUpd').onclick = async () => { $('updMsg').textContent = 'Prüfe…'; await apost('forceUpdate', {}); $('updMsg').textContent = '✔ Update wird geladen, falls vorhanden'; };
+$('bRollback').onclick = () => ask('Zur vorherigen Version zurück? Die App startet neu.', '', () => apost('rollback', {}), 'Zurück');
+$('bPwChange').onclick = async () => {
+  const r = await apost('password', { old: $('pwOld').value, pw: $('pwNew').value });
+  $('pwMsg').style.color = r.ok ? 'var(--ok)' : 'var(--bad)'; $('pwMsg').textContent = r.ok ? '✔ Passwort geändert' : '✖ ' + r.error;
+  if (r.ok) { $('pwOld').value = $('pwNew').value = ''; }
+};
+function renderAdmin() {
+  const A = S.admin || {}, s = S.state;
+  $('admLocked').style.display = A.unlocked ? 'none' : ''; $('admOpen').style.display = A.unlocked ? '' : 'none';
+  $('admDefault').textContent = A.defaultPw ? 'Das Passwort ist noch „admin“ – bitte nach dem Entsperren ändern.' : '';
+  if (!A.unlocked) return;
+  $('admUntil').textContent = A.until ? `· sperrt automatisch um ${new Date(A.until).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}` : '';
+  $('bPanic').textContent = s.panic === 'hide' ? '👁 Overlays wieder einblenden' : '🙈 Alle Overlays sofort ausblenden';
+  $('bPanic').className = 'btn panicbtn ' + (s.panic === 'hide' ? 'panicon' : 'dang');
+  $('bPauseScr').textContent = s.panic === 'pause' ? '▶ Pause-Bildschirm beenden' : '☕ Pause-Bildschirm zeigen';
+  $('bPauseScr').className = 'btn ' + (s.panic === 'pause' ? 'panicon' : '');
+  // Statistik: letzte 24 Stunden
+  const H = s.hourly || {}, keys = [], now = new Date();
+  for (let i = 23; i >= 0; i--) { const d = new Date(now - i * 3600000); keys.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + 'T' + String(d.getHours()).padStart(2, '0')); }
+  const vals = keys.map(k => H[k] || 0), max = Math.max(60, ...vals);
+  const ch = vals.map((v, i) => `<div style="height:${Math.max(2, v / max * 130)}px" title="${keys[i].slice(11)} Uhr: +${dur(v, false)}"></div>`).join('');
+  if ($('chart').dataset.h !== ch) { $('chart').dataset.h = ch; $('chart').innerHTML = ch; $('chartL').innerHTML = keys.map((k, i) => `<span>${i % 3 === 0 ? k.slice(11) : ''}</span>`).join(''); }
+  const all = Object.entries(H), best = all.sort((a, b) => b[1] - a[1])[0], active = all.filter(x => x[1] > 0);
+  $('stBest').textContent = best ? `${best[0].slice(11)}–${String((+best[0].slice(11) + 1) % 24).padStart(2, '0')} Uhr · ${dur(best[1])}` : '–';
+  $('stAvg').textContent = active.length ? dur(active.reduce((a, x) => a + x[1], 0) / active.length) : '–';
+  $('stEv').textContent = num(s.evCount || 0);
+  const dg = (S.diag || []).slice().reverse().map(d => `${new Date(d.t).toLocaleTimeString('de-DE')}  ${esc(d.text)}`).join('<br>');
+  if ($('diag').dataset.h !== dg) { $('diag').dataset.h = dg; $('diag').innerHTML = dg; }
+}
+
 function renderSnap() {
   const c = S.cfg, s = S.state, st = S.status;
   fillForm(c);
   renderOverlays(c);
   renderUpdate();
+  renderProfiles(); renderDeck(c); renderChangelog(); renderAdmin();
+  if (!cmdDraft || !document.activeElement.closest('#cmdList')) { const j = JSON.stringify(c.cmds); if ($('cmdList').dataset.j !== j) { $('cmdList').dataset.j = j; cmdDraft = JSON.parse(j); drawCmds(); } }
+  $('ytKeyState').textContent = S.hasYtKey ? '✔ gespeichert' : '';
+  pill('ytPill', st.yt || 'aus', /^live|^verbunden/, /^aus/);
+  pill('chatPill', c.cmd_on ? st.chat : 'aus', /^aktiv/, /^aus|^–/);
+  pill('ptsPill', st.points || (c.cp_on ? '–' : 'aus'), /^aktiv/, /^aus|^–/);
+  $('sChat').textContent = st.chat || '–'; $('sPts').textContent = st.points || '–';
+  setDot('dChat', /^aktiv/.test(st.chat || '') ? 'verbunden' : st.chat, /^–|^aus/); setDot('dPts', /^aktiv/.test(st.points || '') ? 'verbunden' : st.points, /^–|^aus/);
   $('nF').textContent = num(s.n.f); $('nS').textContent = num(s.n.s); $('nB').textContent = num(s.n.b); $('nR').textContent = num(s.n.r || 0);
   $('nAdd').textContent = dur(s.added / 1000, false); $('nLen').textContent = dur(c.startMin * 60 + s.added / 1000, false);
   const port = location.port || 7777;
@@ -825,14 +1205,17 @@ function renderSnap() {
   ['dIrc', 'dIrc2', 'dIrc3'].forEach(id => setDot(id, st.irc, /kein Kanal/));
   ['dFol', 'dFol2', 'dFol3'].forEach(id => setDot(id, st.follow, /deaktiviert|nicht verbunden/));
   const hk = st.hotkeys || {};
-  ['hk_toggle', 'hk_plus', 'hk_minus', 'hk_hh'].forEach(k => {
+  ['hk_toggle', 'hk_plus', 'hk_minus', 'hk_hh', 'hk_panic'].forEach(k => {
     const v = hk[k] || ''; const el = $('hs_' + k);
     el.textContent = v; el.style.color = v === 'aktiv' ? 'var(--ok)' : v === 'aus' ? 'var(--dim)' : 'var(--warn)';
   });
   // Twitch-Konto
   if (S.hasToken && c.login) {
-    $('acctBox').innerHTML = `<div class="acct"><span>🟣</span><b>Verbunden als ${esc(c.login)}</b><button class="btn" id="bLogout">Trennen</button></div>`;
+    const need = ['user:write:chat', 'channel:read:redemptions', 'channel:manage:redemptions'].filter(x => !(S.scopes || []).includes(x));
+    $('acctBox').innerHTML = `<div class="acct"><span>🟣</span><b>Verbunden als ${esc(c.login)}</b><button class="btn" id="bRelogin">↻ Neu verbinden</button><button class="btn" id="bLogout">Trennen</button></div>` +
+      (need.length && S.scopes ? '<div class="hint" style="color:var(--warn)">⚠ Für Chat-Befehle und Kanalpunkte bitte einmal „Neu verbinden“ – die App braucht dafür neue Rechte.</div>' : '');
     $('bLogout').onclick = () => act('logout');
+    $('bRelogin').onclick = () => $('bLogin').click();
     $('setupBox').style.display = 'none';
   } else {
     $('acctBox').innerHTML = '';

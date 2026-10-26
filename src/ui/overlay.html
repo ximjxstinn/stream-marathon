@@ -20,6 +20,12 @@ body.ended #time{color:#ff4d6d}
 #pops{position:relative;height:calc(var(--s)*.9);margin-top:6px;width:100%}
 /* Eingebettete Overlays */
 body.full{height:100vh}
+body.panic #wrap,body.panic .emb,body.pausing #wrap,body.pausing .emb{visibility:hidden}
+#pauseScr{position:fixed;inset:0;display:none;place-items:center;text-align:center;z-index:5}
+body.pausing #pauseScr{display:grid}
+#pauseScr .pb{background:rgba(14,14,16,.85);border:2px solid var(--a);border-radius:24px;padding:40px 60px;font-weight:900;font-size:calc(var(--s)*.5);text-shadow:0 3px 12px #000c;animation:breath 2.4s ease-in-out infinite}
+#pauseScr .pb small{display:block;font-size:.45em;color:var(--a);margin-top:10px;font-variant-numeric:tabular-nums}
+@keyframes breath{50%{transform:scale(1.03)}}
 .emb{position:absolute;overflow:hidden;pointer-events:none}
 .emb iframe{border:0;background:transparent;transform-origin:0 0;display:block}
 #below{display:flex;flex-direction:column;align-items:var(--just);gap:4px;width:100%}
@@ -32,6 +38,7 @@ body.full{height:100vh}
 </style>
 </head>
 <body>
+<div id="pauseScr"><div class="pb"><span id="pauseTxt"></span><small id="pauseTime"></small></div></div>
 <div id="wrap">
   <div id="box">
     <div id="title" class="fx"></div>
@@ -133,6 +140,9 @@ function render() {
   const c = S.cfg, s = S.state;
   const ms = s.running ? Math.max(0, s.endsAt - (Date.now() + off)) : s.remaining;
   $('time').textContent = fmt(ms, c.format);
+  document.body.classList.toggle('panic', s.panic === 'hide');
+  document.body.classList.toggle('pausing', s.panic === 'pause');
+  if (s.panic === 'pause') { $('pauseTxt').textContent = c.pauseText || ''; $('pauseTime').textContent = '⏱ ' + fmt(ms, c.format); }
   document.body.classList.toggle('ended', s.ended);
   const title = s.ended && c.endText ? c.endText : c.title;
   $('title').textContent = title; $('title').style.display = title ? '' : 'none';

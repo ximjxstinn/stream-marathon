@@ -11,9 +11,14 @@ Subathon-Timer für OBS von **xImJxstinn**. Follows, Subs, Gift-Subs, Bits und R
 
 1. Änderungen in `src/` machen
 2. In `src/package.json` die Version erhöhen (z. B. `1.2.0` → `1.2.1`)
-3. `node src/release.js app`
-4. Committen und pushen
+3. Eintrag in `src/changelog.json` ergänzen
+4. `node src/release.js app`
+5. Committen und pushen
 
-Alle Apps holen sich das Update innerhalb von 10 Minuten. Ein laufender Timer läuft dabei weiter.
+Alle Apps holen sich das Update automatisch, sobald GitHub es verteilt hat (bis zu 5 Minuten).
+
+**Beta-Kanal:** `node src/release.js beta` – nur Apps mit Update-Kanal „Beta“ (Admin-Bereich) bekommen es.
+
+**Stream-Deck-Plugin:** Quelle in `src/deckplugin/`. Nach Änderungen neu zippen nach `src/ui/StreamMarathon.streamDeckPlugin`. Ein laufender Timer läuft dabei weiter.
 
 `src/main.js` (der Starter) ist nicht Teil der Updates. Änderungen daran brauchen eine neue Windows-ZIP.

@@ -19,7 +19,8 @@ module.exports = function startShell(ctx) {
       hk_toggle: () => core.toggle(),
       hk_plus: () => core.addTime(core.cfg.hkSec, 'Hotkey', null, { manual: true, kind: 'manual' }),
       hk_minus: () => core.addTime(-core.cfg.hkSec, 'Hotkey', null, { manual: true, kind: 'manual' }),
-      hk_hh: () => core.hhToggle()
+      hk_hh: () => core.hhToggle(),
+      hk_panic: () => core.setPanic('hide')
     };
     for (const k in actions) {
       const acc = String(c[k] || '').trim();
@@ -47,7 +48,7 @@ module.exports = function startShell(ctx) {
       return;
     }
     ctx.ready();
-    if (ctx.updatedFrom) core.pushLog(`App auf Version ${core.version} aktualisiert`, 0, 'info');
+    if (ctx.updatedFrom) { core.pushLog(`App auf Version ${core.version} aktualisiert`, 0, 'info'); core.status.justUpdated = { from: ctx.updatedFrom, to: core.version }; }
     registerHotkeys();
     core.on('config', registerHotkeys);
     core.on('restart', () => {

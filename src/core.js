@@ -44,6 +44,7 @@ const DEF = {
   // Nutzungsmeldung (immer aktiv): telemetry = 'ask' bis der Hinweis bestätigt ist, dann 'seen'
   telemetry: 'ask', installId: '', lastPing: 0, announced: false
 };
+const SCOPES = ['moderator:read:followers', 'user:write:chat', 'channel:read:redemptions', 'channel:manage:redemptions'];
 const UPDATE_URL = (() => { try { return require('./package.json').updateUrl || ''; } catch (e) { return ''; } })();
 const cmpVer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d; } return 0; };
 const VERSION = (() => { try { return require('./package.json').version; } catch (e) { return '?'; } })();
@@ -70,9 +71,10 @@ function parseIrc(line) {
   }
   if (line[0] === ':') line = line.slice(line.indexOf(' ') + 1);
   const ti = line.indexOf(' :');
-  if (ti >= 0) line = line.slice(0, ti);
+  let text = '';
+  if (ti >= 0) { text = line.slice(ti + 2); line = line.slice(0, ti); }
   const parts = line.split(' ');
-  return { tags, command: parts[0], params: parts.slice(1) };
+  return { tags, command: parts[0], params: parts.slice(1), text };
 }
 
 class Core extends EventEmitter {
@@ -97,6 +99,7 @@ class Core extends EventEmitter {
     this.logId = this.log.reduce((m, x) => Math.max(m, x.id), 0);
     this.status = { irc: 'aus', follow: 'aus', hotkeys: {} };
     this.clients = new Set();
+    this.initExtras(saved);
     // App wurde beendet oder ist abgestürzt, während der Timer lief → pausiert weitermachen
     if (this.state.running && saved && saved.resume) {
       // Neustart durch ein Update: Timer läuft einfach weiter
@@ -123,12 +126,13 @@ class Core extends EventEmitter {
     clearTimeout(this._st);
     writeJson(this.stateFile, { state: this.state, log: this.log.slice(-200), seen: [...this.seen].slice(-20000), savedAt: Date.now(), resume: !!resume });
   }
-  saveCfg() { writeJson(this.cfgFile, this.cfg); }
+  saveCfg() { writeJson(this.cfgFile, this.cfg); this.saveProfile && this.saveProfile(); }
   changed() { this.saveState(); this.broadcast(); }
 
   snapshot() {
     const { token, ...pub } = this.cfg;
-    return { now: Date.now(), cfg: pub, hasToken: !!token, version: this.version, state: this.state, status: this.status, log: this.log.slice(-100) };
+    const snap = { now: Date.now(), cfg: pub, hasToken: !!token, version: this.version, state: this.state, status: this.status, log: this.log.slice(-100) };
+    return this.extraSnapshot(snap);
   }
   send(res, event, data) { try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch (e) {} }
   broadcast() {
@@ -148,6 +152,9 @@ class Core extends EventEmitter {
   // ---------- Timer ----------
   addTime(sec, text, counts, opt = {}) {
     const c = this.cfg, s = this.state;
+    text = this.cleanText(text);
+    if (opt.user) opt = Object.assign({}, opt, { user: this.cleanName(opt.user) });
+    sec = this.applyRules(sec, opt);
     if (s.ended && !opt.manual) {
       if (c.ignoreAfterEnd) { this.pushLog(text + ' (nach Ende ignoriert)', 0, 'info'); this.changed(); return; }
       s.running = true; s.endsAt = Date.now();
@@ -167,6 +174,7 @@ class Core extends EventEmitter {
     if (counts && !opt.test) for (const k in counts) s.n[k] = (s.n[k] || 0) + counts[k];
     if (this.rem() > 0) s.ended = false;
     if (opt.user && ms > 0 && !opt.test) s.top[opt.user] = (s.top[opt.user] || 0) + ms / 1000;
+    this.recordStat(ms, opt);
     let label = text;
     if (mult > 1) label += ` (⚡ ×${mult})`;
     if (sec > 0 && ms === 0 && c.capH > 0) label += ' (Maximalzeit erreicht)';
@@ -252,6 +260,7 @@ class Core extends EventEmitter {
   // Fragt GitHub direkt (ohne Zwischenspeicher), ob ein neues Update hochgeladen wurde,
   // und den zwischengespeicherten Download-Server, ob es schon verteilt ist.
   async checkLatest() {
+    const UPDATE_URL = this.updUrl();
     if (!UPDATE_URL || typeof fetch === 'undefined') return;
     const L = Object.assign({}, this.status.latest);
     const get = async (url, headers) => {
@@ -276,7 +285,7 @@ class Core extends EventEmitter {
     L.checkedAt = Date.now();
     this.setStatus('latest', L);
     // Sobald das Update verteilt ist: sofort selbst herunterladen und neu starten
-    if (L.cdn && cmpVer(L.cdn, this.version) > 0 && !this._installing) this.installUpdate(L.cdn);
+    if (L.cdn && cmpVer(L.cdn, this.version) > 0 && !this._installing && !this.isBadVersion(L.cdn)) this.installUpdate(L.cdn);
     // Solange ein Update verteilt wird, öfter nachsehen
     clearTimeout(this._updT);
     const pending = L.published && L.cdn && cmpVer(L.published, L.cdn) > 0;
@@ -284,6 +293,7 @@ class Core extends EventEmitter {
   }
 
   async installUpdate(ver) {
+    const UPDATE_URL = this.updUrl();
     this._installing = true;
     const crypto = require('crypto');
     const root = path.join(this.dir, '..', 'updates'), tmp = path.join(root, '.tmp-core-' + process.pid);
@@ -385,6 +395,7 @@ class Core extends EventEmitter {
         else { this.pushLog(`Raid von ${from} mit ${v} Zuschauern (unter Minimum)`, 0, 'info'); this.changed(); }
       }
     }
+    if (m.command === 'PRIVMSG') this.onChat(t, m.text);
     if (m.command === 'PRIVMSG' && t.bits && c.en_bits) {
       const b = parseInt(t.bits, 10) || 0;
       if (b >= Math.max(1, c.bitsMin)) this.addTime(b / 100 * c.bits, `${num(b)} Bits von ${who}`, { b }, { kind: 'bits', user: who });
@@ -451,7 +462,6 @@ class Core extends EventEmitter {
     const c = this.cfg, gen = this.esGen = (this.esGen || 0) + 1;
     if (this.es) { const o = this.es; this.es = null; try { o.close(); } catch (e) {} }
     clearTimeout(this.esRetry);
-    if (!c.en_follow) return this.setStatus('follow', 'deaktiviert');
     if (!c.clientId || !c.token) return this.setStatus('follow', 'nicht verbunden (Bereich „Twitch“)');
     this.setStatus('follow', 'prüfe Login…');
     try {
@@ -463,6 +473,7 @@ class Core extends EventEmitter {
       if (v.client_id !== c.clientId) return this.setStatus('follow', 'Login passt nicht zur Client-ID – neu verbinden');
       if (!(v.scopes || []).includes('moderator:read:followers')) return this.setStatus('follow', 'Berechtigung fehlt – neu verbinden');
       this.uid = v.user_id;
+      this.scopes = v.scopes || [];
       if (this.cfg.login !== v.login) { this.cfg.login = v.login; this.saveCfg(); }
       if (!this.cfg.channel) { this.cfg.channel = v.login; this.saveCfg(); this.connIrc(); }
       const ch = this.cfg.channel.trim().toLowerCase().replace(/^#/, '');
@@ -501,6 +512,7 @@ class Core extends EventEmitter {
               transport: { method: 'websocket', session_id: m.payload.session.id } })
           });
           if (gen !== this.esGen) return;
+          this.extraSubscribe(m.payload.session.id);
           if (r.ok) this.setStatus('follow', 'verbunden als ' + this.cfg.login);
           else {
             const j = await r.json().catch(() => ({}));
@@ -509,6 +521,8 @@ class Core extends EventEmitter {
         } catch (err) { this.setStatus('follow', 'Fehler beim Anmelden der Follows'); }
       } else if (type === 'notification' && m.payload.subscription.type === 'channel.follow') {
         this.onFollow(m.payload.event);
+      } else if (type === 'notification') {
+        this.onEventSub(m.payload.subscription.type, m.payload.event);
       } else if (type === 'session_reconnect') {
         ws.onclose = null;
         this.openEs(m.payload.session.reconnect_url, gen, true);
@@ -527,7 +541,9 @@ class Core extends EventEmitter {
   setConfig(patch) {
     const old = Object.assign({}, this.cfg);
     for (const k in patch) {
-      if (!(k in DEF) || ['token', 'login', 'installId', 'lastPing', 'announced'].includes(k)) continue;
+      if (!(k in DEF) || ['token', 'login', 'installId', 'lastPing', 'announced', 'adminHash', 'cp_rewardId', 'deckKey'].includes(k)) continue;
+      if (!this.canSet(k)) continue;
+      if (this.setExtraKey(k, patch[k])) continue;
       if (k === 'telemetry' && patch[k] !== 'seen') continue;
       const d = DEF[k], v = patch[k];
       if (k === 'goals') {
@@ -575,6 +591,7 @@ class Core extends EventEmitter {
     if (!this.cfg.port || this.cfg.port < 1024 || this.cfg.port > 65535) this.cfg.port = old.port;
     this.cfg.port = Math.round(this.cfg.port);
     this.saveCfg();
+    this.afterConfig(old);
     const s = this.state;
     if (this.cfg.startMin !== old.startMin && !s.started && !s.running && s.added === 0) s.remaining = this.cfg.startMin * 60000;
     if (this.cfg.channel !== old.channel) this.connIrc();
@@ -592,7 +609,7 @@ class Core extends EventEmitter {
   authUrl() {
     return 'https://id.twitch.tv/oauth2/authorize?client_id=' + encodeURIComponent(this.cfg.clientId) +
       '&redirect_uri=' + encodeURIComponent(`http://localhost:${this.port}/auth`) +
-      '&response_type=token&scope=moderator%3Aread%3Afollowers&force_verify=true';
+      '&response_type=token&scope=' + encodeURIComponent(SCOPES.join(' ')) + '&force_verify=true';
   }
 
   action(a, body) {
@@ -613,6 +630,7 @@ class Core extends EventEmitter {
       case 'clearTop': this.state.top = {}; return this.changed();
       case 'checkUpdate': this._apiAt = 0; return this.checkLatest();
       case 'restartNow': return this.emit('restart');
+      default: return this.extraAction(a, body || {});
     }
   }
 
@@ -633,6 +651,7 @@ class Core extends EventEmitter {
       if (p === '/auth') return html('auth.html');
       if (p === '/api/snap') return json(200, this.snapshot());
       if (p === '/api/authurl') return json(200, { url: this.cfg.clientId ? this.authUrl() : '' });
+      if (await this.extraGet(p, u, req, res, json)) return;
       if (p === '/api/stream') {
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
         res.write('retry: 2000\n\n');
@@ -655,6 +674,7 @@ class Core extends EventEmitter {
       if (p === '/api/config') { this.setConfig(body); return json(200, { ok: true }); }
       if (p === '/api/token') { this.setToken(body.token); return json(200, { ok: true }); }
       if (p.startsWith('/api/action/')) { this.action(p.slice(12), body); return json(200, { ok: true }); }
+      if (await this.extraPost(p, body, json)) return;
     }
     res.writeHead(404); res.end();
   }
@@ -676,6 +696,7 @@ class Core extends EventEmitter {
         this._ka = setInterval(() => { for (const c of this.clients) { try { c.write(': ka\n\n'); } catch (e) {} } }, 15000);
         this.connIrc();
         this.connFollow();
+        this.startExtras();
         setTimeout(() => {
           if (!this.cfg.announced) { this.cfg.announced = true; this.cfg.lastPing = Date.now(); this.saveCfg(); this.report('consent'); }
           else this.report('start');
@@ -694,6 +715,7 @@ class Core extends EventEmitter {
       this.saveStateNow(false);
     }
     clearInterval(this._tick); clearInterval(this._save); clearInterval(this._ka); clearTimeout(this._updT);
+    this.stopExtras();
     try { this.irc && this.irc.close(); } catch (e) {}
     try { this.es && this.es.close(); } catch (e) {}
     for (const c of this.clients) { try { c.end(); } catch (e) {} }
@@ -701,4 +723,5 @@ class Core extends EventEmitter {
   }
 }
 
+require('./extras').install(Core, DEF, { readJson, writeJson, fmtDur, num, cmpVer, UPDATE_URL });
 module.exports = { Core, DEF };

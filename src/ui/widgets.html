@@ -175,6 +175,7 @@ function spin(w) {
 
 function render() {
   if (!S) return;
+  document.body.style.visibility = S.state.panic && !DEMO ? 'hidden' : '';
   if (W === 'goals') goals();
   else if (W === 'hh') hh();
   else if (W === 'top') topList();

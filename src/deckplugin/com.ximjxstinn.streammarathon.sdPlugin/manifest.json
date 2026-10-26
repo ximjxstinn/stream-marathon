@@ -1,0 +1,27 @@
+{
+  "Name": "Stream Marathon",
+  "Author": "xImJxstinn",
+  "Description": "Steuert die Stream-Marathon-App (Subathon-Timer) – Start/Pause, Zeit, Happy Hour, Notfall und Live-Restzeit.",
+  "Version": "1.0.0.0",
+  "SDKVersion": 2,
+  "CodePath": "plugin.html",
+  "Icon": "imgs/plugin",
+  "Category": "Stream Marathon",
+  "CategoryIcon": "imgs/category",
+  "Software": { "MinimumVersion": "5.0" },
+  "OS": [
+    { "Platform": "windows", "MinimumVersion": "10" },
+    { "Platform": "mac", "MinimumVersion": "10.14" }
+  ],
+  "Actions": [
+    { "UUID": "com.ximjxstinn.streammarathon.time", "Name": "Restzeit (live)", "Tooltip": "Zeigt die Restzeit. Drücken = Start/Pause.", "Icon": "imgs/a-time", "PropertyInspectorPath": "pi.html", "States": [{ "Image": "imgs/k-time", "FontSize": "14", "TitleAlignment": "middle" }] },
+    { "UUID": "com.ximjxstinn.streammarathon.toggle", "Name": "Start / Pause", "Tooltip": "Timer starten oder pausieren", "Icon": "imgs/a-toggle", "PropertyInspectorPath": "pi.html", "States": [{ "Image": "imgs/k-toggle", "TitleAlignment": "bottom" }] },
+    { "UUID": "com.ximjxstinn.streammarathon.add", "Name": "Zeit hinzufügen", "Tooltip": "Fügt Minuten hinzu (einstellbar)", "Icon": "imgs/a-add", "PropertyInspectorPath": "pi.html", "States": [{ "Image": "imgs/k-add", "TitleAlignment": "bottom" }] },
+    { "UUID": "com.ximjxstinn.streammarathon.sub", "Name": "Zeit abziehen", "Tooltip": "Zieht Minuten ab (einstellbar)", "Icon": "imgs/a-sub", "PropertyInspectorPath": "pi.html", "States": [{ "Image": "imgs/k-sub", "TitleAlignment": "bottom" }] },
+    { "UUID": "com.ximjxstinn.streammarathon.happyhour", "Name": "Happy Hour", "Tooltip": "Happy Hour an/aus", "Icon": "imgs/a-hh", "PropertyInspectorPath": "pi.html", "States": [{ "Image": "imgs/k-hh", "TitleAlignment": "bottom" }] },
+    { "UUID": "com.ximjxstinn.streammarathon.panic", "Name": "Notfall", "Tooltip": "Alle Overlays sofort aus/an", "Icon": "imgs/a-panic", "PropertyInspectorPath": "pi.html", "States": [{ "Image": "imgs/k-panic", "TitleAlignment": "bottom" }] },
+    { "UUID": "com.ximjxstinn.streammarathon.pausescreen", "Name": "Pause-Bildschirm", "Tooltip": "„Gleich geht's weiter“ an/aus", "Icon": "imgs/a-pause", "PropertyInspectorPath": "pi.html", "States": [{ "Image": "imgs/k-pause", "TitleAlignment": "bottom" }] },
+    { "UUID": "com.ximjxstinn.streammarathon.profile", "Name": "Profil wechseln", "Tooltip": "Nächstes Profil oder Profil Nr. X", "Icon": "imgs/a-profile", "PropertyInspectorPath": "pi.html", "States": [{ "Image": "imgs/k-profile", "TitleAlignment": "bottom", "FontSize": "10" }] },
+    { "UUID": "com.ximjxstinn.streammarathon.wheel", "Name": "Glücksrad testen", "Tooltip": "Dreht das Glücksrad als Test", "Icon": "imgs/a-wheel", "PropertyInspectorPath": "pi.html", "States": [{ "Image": "imgs/k-wheel", "TitleAlignment": "bottom" }] }
+  ]
+}

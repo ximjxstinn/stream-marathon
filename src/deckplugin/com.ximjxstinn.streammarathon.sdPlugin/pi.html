@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+body{font-family:-apple-system,"Segoe UI",sans-serif;font-size:12px;color:#d8d8d8;background:#2d2d2d;margin:0;padding:8px 10px}
+.row{display:flex;align-items:center;margin:6px 0}
+.row label{width:100px;flex:none;color:#969696}
+input{flex:1;background:#3d3d3d;border:1px solid #3d3d3d;color:#d8d8d8;border-radius:3px;padding:5px 6px;font-size:12px;min-width:0}
+input:focus{outline:1px solid #9146ff}
+.hint{color:#969696;font-size:11px;line-height:1.5;margin:4px 0 0 100px}
+.ok{color:#00f593}.bad{color:#ff6b7f}
+.only{display:none}
+</style></head>
+<body>
+<div class="row"><label>Verbindungs-Code</label><input id="code" placeholder="7777-abc123…"></div>
+<div class="hint">Steht in der Stream-Marathon-App unter <b>🎛️ Stream Deck</b>. Gilt für alle Tasten.<br><span id="st"></span></div>
+<div class="row only" id="minRow"><label>Minuten</label><input id="min" type="number" min="1" placeholder="5"></div>
+<div class="row only" id="nRow"><label>Profil Nr.</label><input id="n" type="number" min="1" placeholder="leer = nächstes"></div>
+<script>
+let ws, uuid, ctx, settings = {};
+const send = o => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
+const $ = id => document.getElementById(id);
+async function test(code) {
+  const m = /^\s*(\d{2,5})-([a-f0-9]{6,})\s*$/i.exec(code || '');
+  if (!m) { $('st').innerHTML = '<span class="bad">Code eintragen (z. B. 7777-ab12cd34ef56)</span>'; return; }
+  try {
+    const r = await fetch(`http://127.0.0.1:${m[1]}/deck/status?k=${m[2]}`, { cache: 'no-store' });
+    $('st').innerHTML = r.ok ? '<span class="ok">✔ Verbunden mit der App</span>' : '<span class="bad">✖ Code falsch</span>';
+  } catch (e) { $('st').innerHTML = '<span class="bad">✖ App nicht erreichbar – läuft sie?</span>'; }
+}
+function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent, inInfo, inActionInfo) {
+  uuid = inUUID;
+  const ai = JSON.parse(inActionInfo || '{}'); ctx = ai.context; settings = (ai.payload && ai.payload.settings) || {};
+  const a = (ai.action || '').split('.').pop();
+  if (a === 'add' || a === 'sub') { $('minRow').style.display = 'flex'; $('min').value = settings.min || ''; }
+  if (a === 'profile') { $('nRow').style.display = 'flex'; $('n').value = settings.n || ''; }
+  ws = new WebSocket('ws://127.0.0.1:' + inPort);
+  ws.onopen = () => { send({ event: inRegisterEvent, uuid }); send({ event: 'getGlobalSettings', context: uuid }); };
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.event === 'didReceiveGlobalSettings') { $('code').value = (m.payload.settings || {}).code || ''; test($('code').value); } };
+}
+$('code').addEventListener('input', () => { const v = $('code').value.trim(); send({ event: 'setGlobalSettings', context: uuid, payload: { code: v } }); test(v); });
+['min', 'n'].forEach(id => $(id).addEventListener('input', () => { settings[id] = $(id).value; send({ event: 'setSettings', context: ctx, payload: settings }); }));
+</script>
+</body></html>
