@@ -160,9 +160,16 @@ function chime(vol) {
 // Einblendungen
 const q = []; let busy = false;
 function nextPop() {
-  const x = q.shift();
+  let x = q.shift();
   if (!x || !S) { busy = false; return; }
   busy = true;
+  // Gift-Bombe: mehrere Geschenk-Subs vom selben Spender zu einer Einblendung zusammenfassen
+  if (x.kind === 'gift') {
+    const giver = x.text.split(' schenkt ')[0];
+    let n = 1, sec = x.sec;
+    while (q[0] && q[0].kind === 'gift' && q[0].text.split(' schenkt ')[0] === giver) { sec += q.shift().sec; n++; }
+    if (n > 1) x = Object.assign({}, x, { sec, text: `${giver} schenkt ${n} Subs` });
+  }
   const c = S.cfg;
   if (c.pops) {
     const el = document.createElement('div');
@@ -199,7 +206,7 @@ function smConnect(handlers) {
 }
 smConnect({
   snap: d => { S = d; off = S.now - Date.now(); apply(S.cfg); embed(S.cfg); render(); },
-  pop: d => { q.push(d); if (!busy) nextPop(); }
+  pop: d => { q.push(d); if (!busy) { busy = true; setTimeout(nextPop, d.kind === 'gift' ? 500 : 0); } }
 });
 setInterval(render, 200);
 </script>

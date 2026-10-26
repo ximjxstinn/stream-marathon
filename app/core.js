@@ -479,6 +479,21 @@ class Core extends EventEmitter {
       else this.cfg[k] = String(v).slice(0, 300).trim();
     }
     for (const w of ['goals', 'hh', 'top', 'wheel']) if (!['tl', 'tr', 'bl', 'br', 'tc', 'bc', 'ml', 'mr'].includes(this.cfg['p_' + w])) this.cfg['p_' + w] = DEF['p_' + w];
+    // Keine zwei Overlays an derselben Stelle: das gerade geänderte springt zur nächsten freien Stelle
+    {
+      const ORDER = ['tl', 'tc', 'tr', 'ml', 'mr', 'bl', 'bc', 'br'];
+      const changed = w => ['m_', 'p_', 'ov_'].some(pre => (pre + w) in patch);
+      const act = ['goals', 'hh', 'top', 'wheel'].filter(w => this.cfg['ov_' + w] && this.cfg['m_' + w]);
+      const used = new Set();
+      for (const w of [...act.filter(w => !changed(w)), ...act.filter(changed)]) {
+        let p = this.cfg['p_' + w];
+        if (used.has(p)) {
+          const i0 = ORDER.indexOf(p);
+          for (let i = 1; i <= ORDER.length; i++) { const q = ORDER[(i0 + i) % ORDER.length]; if (!used.has(q)) { p = q; break; } }
+        }
+        this.cfg['p_' + w] = p; used.add(p);
+      }
+    }
     this.cfg.mScale = Math.max(30, Math.min(300, this.cfg.mScale || 100));
     for (const k of ['statSize', 'sz_goals', 'sz_hh', 'sz_top', 'sz_wheel', 'sz_ticker']) this.cfg[k] = Math.max(30, Math.min(400, this.cfg[k] || 100));
     this.cfg.tickerSpeed = Math.max(5, Math.min(300, this.cfg.tickerSpeed || 40));
