@@ -9,13 +9,13 @@ const crypto = require('crypto');
 const GLOBAL_KEYS = new Set(['port', 'channel', 'clientId', 'token', 'login', 'telemetry', 'installId', 'lastPing', 'announced',
   'hk_toggle', 'hk_plus', 'hk_minus', 'hkSec', 'hk_hh', 'hk_pausescr',
   'adminHash', 'adminAutoLock', 'updChannel', 'autoBackup', 'deckKey',
-  'yt_key', 'yt_channel', 'cp_rewardId', 'cp_on', 'cp_rewards', 'cp_migrated', 'noticeSeen', 'ghToken']);
+  'yt_key', 'yt_channel', 'cp_rewardId', 'cp_on', 'cp_rewards', 'cp_migrated', 'noticeSeen', 'ghToken', 'errReport']);
 // Diese Einstellungen gehen nur bei entsperrtem Admin-Bereich
 const ADMIN_KEYS = new Set(['fNames', 'fWords', 'nightOn', 'nightFrom', 'nightTo', 'nightPct', 'hourCap',
   'adminAutoLock', 'updChannel', 'autoBackup', 'pauseText', 'ghToken']);
 
 const NEW_DEF = {
-  noticeSeen: '', ghToken: '',
+  noticeSeen: '', ghToken: '', errReport: true,
   // Admin
   adminHash: '', adminAutoLock: true, updChannel: 'stable', autoBackup: true,
   fNames: '', fWords: '', nightOn: false, nightFrom: '02:00', nightTo: '08:00', nightPct: 50, hourCap: 0,
@@ -611,6 +611,13 @@ function install(Core, DEF, H) {
       this.adminUntil = this.cfg.adminAutoLock ? Date.now() + 10 * 60000 : Infinity;
       const t = crypto.randomBytes(16).toString('hex'); this.adminTokens.add(t);
       this.addDiag('Admin entsperrt'); this.broadcast(); json(200, { ok: true, t }); return true;
+    }
+    if (p === '/api/support') {
+      const msg = String(b.msg || '').trim();
+      if (!msg) { json(200, { ok: false, error: 'Bitte eine Nachricht eingeben' }); return true; }
+      if (!this.webhook) { json(200, { ok: false, error: 'Senden ist nicht eingerichtet' }); return true; }
+      this.reportSupport({ cat: b.cat, msg, contact: b.contact }); this.addDiag('Support-Nachricht gesendet');
+      json(200, { ok: true }); return true;
     }
     if (!p.startsWith('/api/admin/')) return false;
     if (!this.isAdmin()) { json(403, { ok: false, error: 'gesperrt' }); return true; }

@@ -245,6 +245,7 @@ a{color:#bf94ff}
     <button data-tab="chatpts">💬 Chat & Punkte</button>
     <button data-tab="deck">🎛️ Stream Deck</button>
     <button data-tab="general">⚙️ Allgemein</button>
+    <button data-tab="support">🆘 Hilfe & Support</button>
     <button data-tab="changelog">📋 Changelog</button>
     <button data-tab="admin">🛡️ Admin</button>
   </nav>
@@ -868,6 +869,29 @@ a{color:#bf94ff}
   </div>
 </section>
 
+<!-- ================= HILFE & SUPPORT ================= -->
+<section id="support">
+  <h1>🆘 Hilfe & Support</h1>
+  <p class="sub">Melde Fehler, stell Fragen oder schick Wünsche direkt an den Entwickler.</p>
+  <div class="grid2">
+    <div class="card">
+      <h2>📨 Nachricht an den Entwickler</h2>
+      <div class="hint" style="margin-top:0">Geht direkt an <b>xImJxstinn</b>. Mitgeschickt werden nur dein <b>Kanalname</b> und die <b>App-Version</b> – sonst nichts.</div>
+      <label class="f">Kategorie</label>
+      <div class="seg" id="spCat"><button data-v="bug" class="on">🐛 Bug</button><button data-v="frage">❓ Frage</button><button data-v="wunsch">💡 Wunsch</button></div>
+      <label class="f">Nachricht</label><textarea id="spMsg" maxlength="1000" placeholder="Was ist passiert bzw. was wünschst du dir?"></textarea>
+      <label class="f">Antwort an (optional)</label><input type="text" id="spContact" maxlength="80" placeholder="Discord-Name oder E-Mail – falls du Antwort möchtest">
+      <div class="row" style="margin-top:10px"><button class="btn pri" id="bSupport" style="flex:none">📨 An Entwickler senden</button><span class="s" id="spState" style="align-self:center"></span></div>
+    </div>
+    <div class="card">
+      <h2>🐞 Automatische Fehlermeldung</h2>
+      <div class="hint" style="margin-top:0">Wenn in der App ein unerwarteter Fehler auftritt, wird er automatisch an den Entwickler gemeldet – so lässt sich das Problem schnell beheben. Persönliche Pfade werden dabei <b>anonymisiert</b> (dein Windows-Benutzername ist nicht dabei).</div>
+      <label class="chk"><span class="sw"><input type="checkbox" data-k="errReport"><span></span></span>Fehler automatisch melden</label>
+      <div class="hint">Gesendet wird nur: Fehlertext, Stelle im Programm, App-Version und dein Betriebssystem. Derselbe Fehler höchstens einmal pro Stunde.</div>
+    </div>
+  </div>
+</section>
+
 <div class="modal" id="consent">
   <div class="card">
     <h2>👋 Kurzer Hinweis</h2>
@@ -1403,6 +1427,10 @@ $('bGhDel').onclick = () => { queue('ghToken', ''); $('ghState').textContent = '
 async function admPost(a, body) { const t = $('ntState'); t.style.color = 'var(--muted)'; t.textContent = '… wird gesendet'; try { const r = await apost(a, body || {}); t.style.color = r.ok ? 'var(--ok)' : 'var(--bad)'; t.textContent = r.ok ? (a === 'clearNotice' ? '✔ entfernt' : '✔ an alle gesendet') : ('✖ ' + (r.error || 'Fehler')); if (r.ok && a === 'publishNotice') { $('ntTitle').value = ''; $('ntText').value = ''; } } catch (e) { t.style.color = 'var(--bad)'; t.textContent = '✖ keine Verbindung'; } }
 $('bNtSend').onclick = () => { if (!S.hasGhToken) { $('ntState').style.color = 'var(--bad)'; $('ntState').textContent = '✖ Erst GitHub-Token speichern'; return; } admPost('publishNotice', { title: $('ntTitle').value, text: $('ntText').value, level: ntLevel }); };
 $('bNtClear').onclick = () => admPost('clearNotice', {});
+// --- Support-Formular ---
+let spCat = 'bug';
+$('spCat').querySelectorAll('button').forEach(b => b.onclick = () => { spCat = b.dataset.v; $('spCat').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); });
+$('bSupport').onclick = async () => { const t = $('spState'), msg = $('spMsg').value.trim(); if (!msg) { t.style.color = 'var(--bad)'; t.textContent = '✖ Bitte etwas schreiben'; return; } t.style.color = 'var(--muted)'; t.textContent = '… wird gesendet'; try { const r = await post('/api/support', { cat: spCat, msg, contact: $('spContact').value.trim() }).then(x => x.json()); t.style.color = r.ok ? 'var(--ok)' : 'var(--bad)'; t.textContent = r.ok ? '✔ gesendet – danke!' : ('✖ ' + (r.error || 'Fehler')); if (r.ok) { $('spMsg').value = ''; $('spContact').value = ''; } } catch (e) { t.style.color = 'var(--bad)'; t.textContent = '✖ keine Verbindung'; } };
 function renderReports() {
   const R = (S.reports || []).slice().reverse();
   const h = R.map(r => `<div class="rep"><span class="tt">${new Date(r.t).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span><b>${esc(r.title)}</b>

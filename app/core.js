@@ -269,6 +269,55 @@ class Core extends EventEmitter {
     }).catch(() => {});
   }
 
+  // Baustein für eigene Meldungen (Fehler, Support) – gleiche Optik wie oben
+  sendWebhook(title, color, fields) {
+    if (!this.webhook || typeof fetch === 'undefined') return;
+    const base = ((this.updUrl && this.updUrl()) || '').replace(/(app|beta)\/$/, '');
+    const icon = base ? base + 'app/icon.png' : undefined;
+    const osName = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[process.platform] || process.platform;
+    if (this.recordReport) this.recordReport(title, fields);
+    fetch(this.webhook, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'Stream Marathon', avatar_url: icon, embeds: [{
+        author: { name: 'Stream Marathon', icon_url: icon }, title, color, fields,
+        footer: { text: `ID ${(this.cfg.installId || '').slice(0, 8)} · ${osName}`, icon_url: icon },
+        timestamp: new Date().toISOString() }] })
+    }).catch(() => {});
+  }
+  // Persönliche Pfade im Fehlertext anonymisieren (C:\Users\name\… -> C:\Users\…)
+  cleanPath(s) { return String(s || '').replace(/([A-Za-z]:\\Users\\)[^\\/]+/g, '$1…').replace(/((?:\/home|\/Users)\/)[^\\/]+/g, '$1…'); }
+
+  // Automatische Fehlermeldung an den Entwickler (nur wenn eingeschaltet)
+  reportError(err, where) {
+    if (!this.cfg.errReport) return;
+    const msg = this.cleanPath(err && err.message || String(err)).slice(0, 300);
+    const key = (where || '') + '|' + msg, now = Date.now();
+    this._errSeen = this._errSeen || {};
+    if (now - (this._errSeen[key] || 0) < 3600000) return;      // gleicher Fehler höchstens 1×/Stunde
+    this._errSeen[key] = now;
+    const stack = this.cleanPath(err && err.stack || '').split('\n').slice(1, 6).join('\n').slice(0, 900);
+    const who = this.cfg.channel ? `[${this.cfg.channel}](https://twitch.tv/${encodeURIComponent(this.cfg.channel)})` : '*kein Kanal*';
+    this.sendWebhook('🐞 Fehler in der App', 0xff4d6d, [
+      { name: '📺 Kanal', value: who, inline: true },
+      { name: '🏷️ Version', value: '`' + VERSION + '`', inline: true },
+      { name: '📍 Stelle', value: where || 'unbekannt', inline: true },
+      { name: '⚠️ Fehlermeldung', value: '```' + (msg || '—') + '```' },
+      { name: '🔎 Details', value: stack ? '```' + stack + '```' : '—' }
+    ]);
+  }
+  // Support-Nachricht, die der Nutzer selbst in der App abschickt
+  reportSupport(d) {
+    const cat = { bug: ['🐛 Bug-Meldung', 0xff4d6d], frage: ['❓ Frage', 0x9146ff], wunsch: ['💡 Wunsch', 0x00f593] }[d && d.cat] || ['🆘 Support', 0x9146ff];
+    const who = this.cfg.channel ? `[${this.cfg.channel}](https://twitch.tv/${encodeURIComponent(this.cfg.channel)})` : '*kein Kanal*';
+    const fields = [
+      { name: '📺 Kanal', value: who, inline: true },
+      { name: '🏷️ Version', value: '`' + VERSION + '`', inline: true }
+    ];
+    if (d && d.contact) fields.push({ name: '✉️ Antwort an', value: String(d.contact).slice(0, 80), inline: true });
+    fields.push({ name: '💬 Nachricht', value: String(d && d.msg || '').slice(0, 1000) || '—' });
+    this.sendWebhook(cat[0], cat[1], fields);
+  }
+
   // ---------- Update-Anzeige ----------
   // Fragt GitHub direkt (ohne Zwischenspeicher), ob ein neues Update hochgeladen wurde,
   // und den zwischengespeicherten Download-Server, ob es schon verteilt ist.

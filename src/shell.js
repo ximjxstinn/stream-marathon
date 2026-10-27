@@ -34,6 +34,9 @@ module.exports = function startShell(ctx) {
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
     core = new Core(path.join(app.getPath('userData'), 'data'), { webhook: ctx.webhook });
+    // Unerwartete Fehler automatisch an den Entwickler melden (abschaltbar) – App läuft weiter
+    process.on('uncaughtException', e => { try { core && core.reportError(e, 'Hauptprozess'); } catch (x) {} });
+    process.on('unhandledRejection', e => { try { core && core.reportError(e, 'Hintergrund'); } catch (x) {} });
     // Beim Neustart nach einem Update kann der alte Prozess den Port noch kurz belegen → kurz warten
     let listenErr = null;
     for (let i = 0; i < 20; i++) {
