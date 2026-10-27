@@ -142,7 +142,7 @@ function render() {
   $('time').textContent = fmt(ms, c.format);
   document.body.classList.toggle('panic', s.panic === 'hide');
   document.body.classList.toggle('pausing', s.panic === 'pause');
-  if (s.panic === 'pause') { $('pauseTxt').textContent = c.pauseText || ''; $('pauseTime').textContent = '⏱ ' + fmt(ms, c.format); }
+  if (s.panic === 'pause') { $('pauseTxt').textContent = c.pauseText || ''; $('pauseTime').textContent = (s.running ? '⏱ ' : '⏸ Timer pausiert · ') + fmt(ms, c.format); }
   document.body.classList.toggle('ended', s.ended);
   const title = s.ended && c.endText ? c.endText : c.title;
   $('title').textContent = title; $('title').style.display = title ? '' : 'none';

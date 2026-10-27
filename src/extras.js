@@ -7,7 +7,7 @@ const crypto = require('crypto');
 
 // Einstellungen, die NICHT pro Profil gespeichert werden
 const GLOBAL_KEYS = new Set(['port', 'channel', 'clientId', 'token', 'login', 'telemetry', 'installId', 'lastPing', 'announced',
-  'hk_toggle', 'hk_plus', 'hk_minus', 'hkSec', 'hk_hh', 'hk_panic',
+  'hk_toggle', 'hk_plus', 'hk_minus', 'hkSec', 'hk_hh', 'hk_panic', 'hk_pausescr',
   'adminHash', 'adminAutoLock', 'updChannel', 'autoBackup', 'deckKey',
   'yt_key', 'yt_channel', 'cp_rewardId']);
 // Diese Einstellungen gehen nur bei entsperrtem Admin-Bereich
@@ -19,7 +19,7 @@ const NEW_DEF = {
   // Admin
   adminHash: '', adminAutoLock: true, updChannel: 'stable', autoBackup: true,
   fNames: '', fWords: '', nightOn: false, nightFrom: '02:00', nightTo: '08:00', nightPct: 50, hourCap: 0,
-  pauseText: 'Gleich geht\'s weiter …',
+  pauseText: 'Gleich geht\'s weiter …', pauseTimer: true, hk_pausescr: '',
   // Stream Deck / Event-Eingang
   deckKey: '',
   // Chat-Befehle
@@ -229,7 +229,13 @@ function install(Core, DEF, H) {
     if (keys.length > 24 * 14) for (const x of keys.slice(0, keys.length - 24 * 14)) delete this.state.hourly[x];
   };
   P.setPanic = function (mode) {
+    const was = this.state.panic;
     this.state.panic = this.state.panic === mode ? '' : mode;
+    // Pause-Bildschirm: Timer anhalten und danach weiterlaufen lassen
+    if (this.cfg.pauseTimer) {
+      if (this.state.panic === 'pause' && this.state.running) { this.pause(); this.state.pausedByScreen = true; }
+      else if (was === 'pause' && this.state.panic !== 'pause' && this.state.pausedByScreen) { this.state.pausedByScreen = false; this.start(); }
+    }
     this.pushLog(this.state.panic === 'hide' ? '🙈 Overlays ausgeblendet' : this.state.panic === 'pause' ? '☕ Pause-Bildschirm an' : '👁 Overlays wieder sichtbar', 0, 'info');
     this.addDiag('Notfall: ' + (this.state.panic || 'aus'));
     this.changed();

@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.4.2",
+    "date": "27.10.2026",
+    "items": [
+      "☕ Pause-Bildschirm hält den Timer an und startet ihn danach wieder (abschaltbar)",
+      "Eigener Hotkey für den Pause-Bildschirm"
+    ]
+  },
+  {
     "version": "1.4.1",
     "date": "27.10.2026",
     "items": [

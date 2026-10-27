@@ -20,7 +20,8 @@ module.exports = function startShell(ctx) {
       hk_plus: () => core.addTime(core.cfg.hkSec, 'Hotkey', null, { manual: true, kind: 'manual' }),
       hk_minus: () => core.addTime(-core.cfg.hkSec, 'Hotkey', null, { manual: true, kind: 'manual' }),
       hk_hh: () => core.hhToggle(),
-      hk_panic: () => core.setPanic('hide')
+      hk_panic: () => core.setPanic('hide'),
+      hk_pausescr: () => core.setPanic('pause')
     };
     for (const k in actions) {
       const acc = String(c[k] || '').trim();

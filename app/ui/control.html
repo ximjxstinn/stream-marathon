@@ -684,6 +684,7 @@ a{color:#bf94ff}
       <div class="card"><h2>🚨 Notfall-Schalter</h2>
         <button class="btn dang panicbtn" id="bPanic">🙈 Alle Overlays sofort ausblenden</button>
         <button class="btn" id="bPauseScr" style="width:100%;margin-top:6px">☕ Pause-Bildschirm zeigen</button>
+        <label class="chk"><span class="sw"><input type="checkbox" data-k="pauseTimer"><span></span></span>Timer während der Pause anhalten</label>
         <label class="f">Text auf dem Pause-Bildschirm</label><input type="text" data-k="pauseText">
         <div class="hint">Auch per Hotkey (Allgemein) und Stream Deck.</div>
       </div>
@@ -745,6 +746,7 @@ a{color:#bf94ff}
       <div class="hk"><span>Zeit abziehen</span><input type="text" data-hk="hk_minus" readonly><span class="s" id="hs_hk_minus"></span></div>
       <div class="hk"><span>Happy Hour an/aus</span><input type="text" data-hk="hk_hh" readonly><span class="s" id="hs_hk_hh"></span></div>
       <div class="hk"><span>🚨 Notfall (Overlays aus)</span><input type="text" data-hk="hk_panic" readonly><span class="s" id="hs_hk_panic"></span></div>
+      <div class="hk"><span>☕ Pause-Bildschirm</span><input type="text" data-hk="hk_pausescr" readonly><span class="s" id="hs_hk_pausescr"></span></div>
       <label class="f">Wie viel Zeit die Hotkeys ändern (Sekunden)</label>
       <input type="number" data-k="hkSec" class="dur" min="1"><div class="dh"></div>
       <div class="hint">Feld anklicken und Taste(n) drücken. Entf oder Rücktaste = Hotkey aus. Achtung: Eine belegte Taste geht dann im Spiel nicht mehr.</div>
@@ -1165,7 +1167,7 @@ function renderAdmin() {
   $('admUntil').textContent = A.until ? `· sperrt automatisch um ${new Date(A.until).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}` : '';
   $('bPanic').textContent = s.panic === 'hide' ? '👁 Overlays wieder einblenden' : '🙈 Alle Overlays sofort ausblenden';
   $('bPanic').className = 'btn panicbtn ' + (s.panic === 'hide' ? 'panicon' : 'dang');
-  $('bPauseScr').textContent = s.panic === 'pause' ? '▶ Pause-Bildschirm beenden' : '☕ Pause-Bildschirm zeigen';
+  $('bPauseScr').textContent = s.panic === 'pause' ? (c => c.pauseTimer ? '▶ Pause beenden & Timer starten' : '▶ Pause-Bildschirm beenden')(S.cfg) : (S.cfg.pauseTimer ? '☕ Pause-Bildschirm + Timer anhalten' : '☕ Pause-Bildschirm zeigen');
   $('bPauseScr').className = 'btn ' + (s.panic === 'pause' ? 'panicon' : '');
   // Statistik: letzte 24 Stunden
   const H = s.hourly || {}, keys = [], now = new Date();
@@ -1205,7 +1207,7 @@ function renderSnap() {
   ['dIrc', 'dIrc2', 'dIrc3'].forEach(id => setDot(id, st.irc, /kein Kanal/));
   ['dFol', 'dFol2', 'dFol3'].forEach(id => setDot(id, st.follow, /deaktiviert|nicht verbunden/));
   const hk = st.hotkeys || {};
-  ['hk_toggle', 'hk_plus', 'hk_minus', 'hk_hh', 'hk_panic'].forEach(k => {
+  ['hk_toggle', 'hk_plus', 'hk_minus', 'hk_hh', 'hk_panic', 'hk_pausescr'].forEach(k => {
     const v = hk[k] || ''; const el = $('hs_' + k);
     el.textContent = v; el.style.color = v === 'aktiv' ? 'var(--ok)' : v === 'aus' ? 'var(--dim)' : 'var(--warn)';
   });
