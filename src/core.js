@@ -223,37 +223,49 @@ class Core extends EventEmitter {
     }
     const who = c.channel || '';
     const link = who ? `[${who}](https://twitch.tv/${encodeURIComponent(who)})` : '*noch kein Kanal eingetragen*';
+    const base = ((this.updUrl && this.updUrl()) || '').replace(/(app|beta)\/$/, '');
+    const icon = base ? base + 'app/icon.png' : undefined;
+    const osName = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[process.platform] || process.platform;
+    const plat = ['Twitch']; if (c.yt_on) plat.push('YouTube');
     const titles = {
       consent: ['🆕 Neue Installation', 0x00f593],
       start: ['▶️ App gestartet', 0x9146ff],
-      marathon_start: ['⏱️ Marathon gestartet', 0xffb31a],
+      marathon_start: ['🚀 Marathon gestartet', 0xffb31a],
       marathon_end: ['🏁 Marathon beendet', 0xff4d6d]
     };
     const [title, color] = titles[kind] || [kind, 0x9146ff];
-    const fields = [
-      { name: 'Kanal', value: link, inline: true },
-      { name: 'Version', value: VERSION, inline: true },
-      { name: 'ID', value: '`' + c.installId.slice(0, 8) + '`', inline: true }
-    ];
     const ev = [];
-    if (c.en_follow) ev.push(`Follow ${fmtDur(c.follow)}`);
-    if (c.en_sub) ev.push(`Sub T1 ${fmtDur(c.t1)} · T2 ${fmtDur(c.t2)} · T3 ${fmtDur(c.t3)} · Prime ${fmtDur(c.prime)}`);
-    if (c.en_gift) ev.push(`Gift ${c.giftPct} %`);
-    if (c.en_bits) ev.push(`100 Bits ${fmtDur(c.bits)}`);
-    if (c.en_raid) ev.push(`Raid ${fmtDur(c.raid)}/Zuschauer`);
-    if (kind !== 'marathon_end') {
-      fields.push({ name: 'Startzeit', value: fmtDur(c.startMin * 60), inline: true });
-      fields.push({ name: 'Maximal', value: c.capH > 0 ? c.capH + ' h' : 'unbegrenzt', inline: true });
-      fields.push({ name: 'Design', value: `${c.font} · ${c.color} / ${c.accent}`, inline: true });
-      fields.push({ name: 'Events', value: ev.join('\n') || 'alle aus' });
+    if (c.en_follow) ev.push(`❤️ Follow · **${fmtDur(c.follow)}**`);
+    if (c.en_sub) ev.push(`💜 Sub · T1 **${fmtDur(c.t1)}** · T2 **${fmtDur(c.t2)}** · T3 **${fmtDur(c.t3)}** · Prime **${fmtDur(c.prime)}**`);
+    if (c.en_gift) ev.push(`🎁 Gift-Sub · **${c.giftPct} %**`);
+    if (c.en_bits) ev.push(`💎 100 Bits · **${fmtDur(c.bits)}**`);
+    if (c.en_raid) ev.push(`🚀 Raid · **${fmtDur(c.raid)}** / Zuschauer`);
+    const fields = [
+      { name: '📺 Kanal', value: link, inline: true },
+      { name: '🧩 Plattform', value: plat.join(' + '), inline: true },
+      { name: '🏷️ Version', value: '`' + VERSION + '`', inline: true }
+    ];
+    if (kind === 'marathon_end') {
+      fields.push({ name: '⏳ Gesamtzeit', value: '**' + fmtDur(c.startMin * 60 + s.added / 1000) + '**', inline: true });
+      fields.push({ name: '➕ Dazugewonnen', value: fmtDur(s.added / 1000), inline: true });
+      fields.push({ name: '📊 Statistik', value: `❤️ **${num(s.n.f)}** Follows\n⭐ **${num(s.n.s)}** Subs\n💎 **${num(s.n.b)}** Bits\n🚀 **${num(s.n.r || 0)}** Raids` });
     } else {
-      fields.push({ name: 'Länge', value: fmtDur(c.startMin * 60 + s.added / 1000), inline: true });
-      fields.push({ name: 'Statistik', value: `❤️ ${num(s.n.f)} · ⭐ ${num(s.n.s)} · 💎 ${num(s.n.b)} · 🚀 ${num(s.n.r || 0)}`, inline: true });
+      fields.push({ name: '⏱️ Startzeit', value: fmtDur(c.startMin * 60), inline: true });
+      fields.push({ name: '🧢 Maximum', value: c.capH > 0 ? c.capH + ' h' : 'unbegrenzt', inline: true });
+      fields.push({ name: '🎨 Design', value: `${c.font}\n${c.color} / ${c.accent}`, inline: true });
+      fields.push({ name: '⚡ Aktive Events', value: ev.join('\n') || '— keine —' });
     }
     if (this.recordReport) this.recordReport(title, fields);
+    const embed = {
+      author: { name: 'Stream Marathon', icon_url: icon },
+      title, color, fields,
+      thumbnail: icon ? { url: icon } : undefined,
+      footer: { text: `ID ${(c.installId || '').slice(0, 8)} · ${osName}`, icon_url: icon },
+      timestamp: new Date().toISOString()
+    };
     fetch(this.webhook, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'Stream Marathon', embeds: [{ title, color, fields, timestamp: new Date().toISOString() }] })
+      body: JSON.stringify({ username: 'Stream Marathon', avatar_url: icon, embeds: [embed] })
     }).catch(() => {});
   }
 
@@ -284,6 +296,18 @@ class Core extends EventEmitter {
       if (!L.published || cmpVer(j.version, L.published) > 0) { L.published = j.version; L.publishedAt = j.date; }
     } catch (e) { L.error = true; }
     L.checkedAt = Date.now();
+    // Ankündigung des Entwicklers abholen (liegt im Repo unter notice.json, nicht im app/-Ordner)
+    try {
+      const base = UPDATE_URL.replace(/(app|beta)\/$/, '');
+      const r = await fetch(base + 'notice.json?t=' + Date.now(), { cache: 'no-store' });
+      if (r.ok) {
+        const n = await r.json();
+        this.setStatus('notice', (n && n.id && (n.text || n.title)) ? {
+          id: String(n.id).slice(0, 64), title: String(n.title || '').slice(0, 120),
+          text: String(n.text || '').slice(0, 1000), level: n.level === 'warn' ? 'warn' : 'info', date: n.date || ''
+        } : null);
+      } else if (r.status === 404) { this.setStatus('notice', null); }
+    } catch (e) {}
     this.setStatus('latest', L);
     // Sobald das Update verteilt ist: sofort selbst herunterladen und neu starten
     if (L.cdn && cmpVer(L.cdn, this.version) > 0 && !this._installing && !this.isBadVersion(L.cdn)) this.installUpdate(L.cdn);

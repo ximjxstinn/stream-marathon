@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.5.1",
+    "date": "27.10.2026",
+    "items": [
+      "📣 Ankündigungen: Der Entwickler kann einen Hinweis einblenden, der oben im Steuerfenster erscheint (nie im Stream) – mit ✕ wegklickbar",
+      "💎 Schönere Discord-Meldungen: App-Symbol, klare Icons, Plattform, saubere Statistik am Ende"
+    ]
+  },
+  {
     "version": "1.5.0",
     "date": "27.10.2026",
     "items": [

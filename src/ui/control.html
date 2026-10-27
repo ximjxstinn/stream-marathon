@@ -29,6 +29,16 @@ nav button.on{background:var(--panel2);color:var(--text);box-shadow:inset 3px 0 
 
 /* Inhalt */
 main{flex:1;overflow:auto;padding:24px 28px 40px}
+.notice{display:flex;gap:14px;align-items:flex-start;margin:0 0 20px;padding:14px 16px;border-radius:14px;background:linear-gradient(135deg,#9146ff22,#772ce822);border:1px solid #9146ff66}
+.notice.warn{background:linear-gradient(135deg,#ffb31a22,#ff4d6d22);border-color:#ffb31a88}
+.notice .ni{flex:1;min-width:0}
+.notice .nt{font-weight:800;font-size:15px;margin-bottom:3px;display:flex;align-items:center;gap:8px}
+.notice .nt::before{content:"📣";font-size:16px}
+.notice.warn .nt::before{content:"⚠️"}
+.notice .nx{color:var(--fg2,#c8c2d8);font-size:13.5px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.notice .nb{flex:none;background:transparent;border:0;color:var(--dim,#8a84a0);font-size:15px;cursor:pointer;padding:2px 6px;border-radius:8px}
+.notice .nb:hover{background:#ffffff14;color:#fff}
+.hide{display:none!important}
 section{display:none;max-width:1100px}
 section.on{display:block}
 h1{font-size:22px;margin:0 0 4px}
@@ -246,6 +256,10 @@ a{color:#bf94ff}
 </aside>
 
 <main>
+<div id="notice" class="notice hide">
+  <div class="ni"><div class="nt" id="noticeTitle"></div><div class="nx" id="noticeText"></div></div>
+  <button class="nb" id="noticeClose" title="Ausblenden">✕</button>
+</div>
 <!-- ================= ÜBERSICHT ================= -->
 <section id="home" class="on">
   <h1>Übersicht</h1>
@@ -1348,6 +1362,15 @@ $('bPriceReset').onclick = () => ask('Preisliste auf Standard zurücksetzen?', '
 // ================= Meldungen & Credits =================
 $('credit').onclick = () => $('about').classList.add('on');
 $('bAboutClose').onclick = () => $('about').classList.remove('on');
+function renderNotice(c, st) {
+  const n = st.notice, box = $('notice');
+  if (!n || !n.id || n.id === c.noticeSeen) { box.classList.add('hide'); box.dataset.id = ''; return; }
+  box.classList.toggle('warn', n.level === 'warn');
+  $('noticeTitle').textContent = n.title || 'Hinweis vom Entwickler';
+  $('noticeText').textContent = n.text || '';
+  box.dataset.id = n.id; box.classList.remove('hide');
+}
+$('noticeClose').onclick = () => { const id = $('notice').dataset.id; if (id) queue('noticeSeen', id); $('notice').classList.add('hide'); };
 function renderReports() {
   const R = (S.reports || []).slice().reverse();
   const h = R.map(r => `<div class="rep"><span class="tt">${new Date(r.t).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span><b>${esc(r.title)}</b>
@@ -1360,7 +1383,7 @@ function renderSnap() {
   fillForm(c);
   renderOverlays(c);
   renderUpdate();
-  renderProfiles(); renderDeck(c); renderChangelog(); renderAdmin(); renderDrag(); renderReports();
+  renderProfiles(); renderDeck(c); renderChangelog(); renderAdmin(); renderDrag(); renderReports(); renderNotice(c, st);
   $('credVer').textContent = 'v' + (S.version || '?'); $('aboutVer').textContent = 'Version ' + (S.version || '?');
   if (!prDraft || !document.activeElement.closest('#priceList')) { const j = JSON.stringify(c.priceRows || []); if ($('priceList').dataset.j !== j && !('priceRows' in pending) && prDragI === null) { $('priceList').dataset.j = j; prDraft = JSON.parse(j); drawPrice(); } }
   if (!cpDraft || !document.activeElement.closest('#cpList')) { const j = JSON.stringify(c.cp_rewards || []); if ($('cpList').dataset.j !== j && !('cp_rewards' in pending)) { $('cpList').dataset.j = j; cpDraft = JSON.parse(j); drawCp(); } }

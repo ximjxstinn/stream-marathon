@@ -9,13 +9,13 @@ const crypto = require('crypto');
 const GLOBAL_KEYS = new Set(['port', 'channel', 'clientId', 'token', 'login', 'telemetry', 'installId', 'lastPing', 'announced',
   'hk_toggle', 'hk_plus', 'hk_minus', 'hkSec', 'hk_hh', 'hk_panic', 'hk_pausescr',
   'adminHash', 'adminAutoLock', 'updChannel', 'autoBackup', 'deckKey',
-  'yt_key', 'yt_channel', 'cp_rewardId', 'cp_on', 'cp_rewards', 'cp_migrated']);
+  'yt_key', 'yt_channel', 'cp_rewardId', 'cp_on', 'cp_rewards', 'cp_migrated', 'noticeSeen']);
 // Diese Einstellungen gehen nur bei entsperrtem Admin-Bereich
 const ADMIN_KEYS = new Set(['fNames', 'fWords', 'nightOn', 'nightFrom', 'nightTo', 'nightPct', 'hourCap',
   'adminAutoLock', 'updChannel', 'autoBackup', 'pauseText']);
 
 const NEW_DEF = {
-  hk_panic: '',
+  hk_panic: '', noticeSeen: '',
   // Admin
   adminHash: '', adminAutoLock: true, updChannel: 'stable', autoBackup: true,
   fNames: '', fWords: '', nightOn: false, nightFrom: '02:00', nightTo: '08:00', nightPct: 50, hourCap: 0,
@@ -237,6 +237,7 @@ function install(Core, DEF, H) {
     if (k === 'updChannel') { this.cfg.updChannel = v === 'beta' ? 'beta' : 'stable'; return true; }
     if (k === 'nightFrom' || k === 'nightTo') { if (hm(v) !== null) this.cfg[k] = String(v).trim(); return true; }
     if (k === 'yt_key' || k === 'yt_channel') { this.cfg[k] = String(v).trim().slice(0, 200); return true; }
+    if (k === 'noticeSeen') { this.cfg.noticeSeen = String(v || '').slice(0, 64); return true; }
     return false;
   };
   P.afterConfig = function (old) {
