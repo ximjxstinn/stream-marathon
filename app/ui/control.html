@@ -137,6 +137,13 @@ ol b{color:var(--text)}
 .pill.ok{background:#00f59322;color:var(--ok);border:1px solid #00f59366}
 .pill.off{background:#ffffff10;color:var(--dim);border:1px solid var(--line)}
 .pill.warn{background:#ffb31a22;color:var(--warn);border:1px solid #ffb31a66}
+.cprow{background:var(--bg);border:1px solid var(--line);border-left:5px solid var(--cpc,#9146ff);border-radius:10px;padding:10px;margin-top:8px}
+.cprow .top{display:grid;grid-template-columns:38px 1fr 38px 32px;gap:6px;align-items:center}
+.cprow .top input[type=color]{height:34px;padding:2px}
+.cprow .bot{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:6px}
+.cprow .bot label{font-size:10.5px;color:var(--dim);display:block;margin-bottom:2px}
+.cprow .bot input{padding:6px 8px}
+.cprow .live{font-size:10.5px;color:var(--dim);margin-top:4px}
 .cmdrow{display:grid;grid-template-columns:110px 1fr 38px 34px;gap:6px;align-items:center;margin-top:6px}
 .cmdrow input[type=text]{font-family:inherit}
 .cmdrow .cmd{font-family:Consolas,monospace;color:#bf94ff;font-weight:700}
@@ -623,14 +630,9 @@ a{color:#bf94ff}
     </div>
     <div class="card">
       <h2>💠 Kanalpunkte <span class="pill off" id="ptsPill">–</span><label class="sw" style="margin-left:8px"><input type="checkbox" data-k="cp_on"><span></span></label></h2>
-      <label class="f">Name der Belohnung</label><input type="text" data-k="cp_title" maxlength="45">
-      <div class="two">
-        <div><label class="f">Kosten (Punkte)</label><input type="number" data-k="cp_cost" min="1"></div>
-        <div><label class="f">Zeit (Sek.)</label><input type="number" data-k="cp_sec" class="dur" min="0"><div class="dh"></div></div>
-        <div><label class="f">Max. pro Zuschauer & Stream (0 = ∞)</label><input type="number" data-k="cp_max" min="0"></div>
-        <div><label class="f">Abklingzeit (Sek., 0 = keine)</label><input type="number" data-k="cp_cool" min="0"></div>
-      </div>
-      <div class="hint">Die Belohnung wird automatisch auf deinem Kanal angelegt und bei Änderungen angepasst. Ausschalten blendet sie auf Twitch aus. Nur für <b>Twitch Affiliates und Partner</b>.</div>
+      <div id="cpList"></div>
+      <button class="btn" id="bAddCp" style="margin-top:10px">+ Belohnung</button>
+      <div class="hint">Jede Belohnung wird automatisch auf deinem Kanal angelegt, mit Farbe, und bei Änderungen angepasst. Ausschalten blendet sie auf Twitch aus, Löschen entfernt sie dort. Nur für <b>Twitch Affiliates und Partner</b>.</div>
     </div>
   </div>
 </section>
@@ -1183,12 +1185,50 @@ function renderAdmin() {
   if ($('diag').dataset.h !== dg) { $('diag').dataset.h = dg; $('diag').innerHTML = dg; }
 }
 
+
+// ================= Kanalpunkte: mehrere Belohnungen =================
+let cpDraft = null, cpT = null;
+const CP_COLORS = ['#9146FF', '#FF4FD8', '#00B8FF', '#00F593', '#FFB31A', '#FF4D6D'];
+function drawCp() {
+  $('cpList').innerHTML = cpDraft.map((r, i) => `<div class="cprow" data-i="${i}" style="--cpc:${r.color}">
+    <div class="top"><input type="color" data-cp="color" value="${r.color}" title="Farbe auf Twitch">
+      <input type="text" data-cp="title" value="${esc(r.title)}" maxlength="45" placeholder="Name der Belohnung">
+      <label class="sw"><input type="checkbox" data-cp="on" ${r.on ? 'checked' : ''}><span></span></label>
+      <button class="btn minus" data-cpdel style="padding:6px 0" title="Löschen">✕</button></div>
+    <div class="bot"><div><label>Kosten (Punkte)</label><input type="number" data-cp="cost" value="${r.cost}" min="1"></div>
+      <div><label>Zeit (Sek.)</label><input type="number" data-cp="sec" value="${r.sec}" min="0"></div>
+      <div><label>Max/Zuschauer</label><input type="number" data-cp="max" value="${r.max}" min="0"></div>
+      <div><label>Abklingzeit (Sek.)</label><input type="number" data-cp="cool" value="${r.cool}" min="0"></div></div>
+    <div class="live">= ${dur(r.sec, false)} für ${num(r.cost)} Punkte${r.id ? ' · ✔ auf Twitch' : ''}</div></div>`).join('') || '<div class="hint">Noch keine Belohnung.</div>';
+}
+const saveCp = () => { clearTimeout(cpT); cpT = setTimeout(() => queue('cp_rewards', cpDraft), 600); };
+$('cpList').addEventListener('input', e => {
+  const row = e.target.closest('.cprow'), f = e.target.dataset.cp; if (!row || !f) return;
+  const r = cpDraft[+row.dataset.i];
+  r[f] = f === 'on' ? e.target.checked : ['cost', 'sec', 'max', 'cool'].includes(f) ? Number(e.target.value) || 0 : e.target.value;
+  if (f === 'color') row.style.setProperty('--cpc', e.target.value);
+  row.querySelector('.live').textContent = `= ${dur(r.sec, false)} für ${num(r.cost)} Punkte${r.id ? ' · ✔ auf Twitch' : ''}`;
+  saveCp();
+});
+$('cpList').addEventListener('change', e => { if (e.target.dataset.cp === 'on') e.target.dispatchEvent(new Event('input', { bubbles: true })); });
+$('cpList').addEventListener('click', e => {
+  if (!e.target.matches('[data-cpdel]')) return;
+  const i = +e.target.closest('.cprow').dataset.i;
+  ask(`Belohnung „${cpDraft[i].title}“ löschen? Sie wird auch auf Twitch entfernt.`, '', () => { cpDraft.splice(i, 1); drawCp(); queue('cp_rewards', cpDraft); }, 'Löschen');
+});
+$('bAddCp').onclick = () => {
+  if (cpDraft.length >= 20) return;
+  cpDraft.push({ title: `+${5 * (cpDraft.length + 1)} Minuten Subathon`, cost: 1000 * (cpDraft.length + 1), sec: 300 * (cpDraft.length + 1), max: 0, cool: 0, color: CP_COLORS[cpDraft.length % CP_COLORS.length], on: true, id: '' });
+  drawCp(); saveCp();
+};
+
 function renderSnap() {
   const c = S.cfg, s = S.state, st = S.status;
   fillForm(c);
   renderOverlays(c);
   renderUpdate();
   renderProfiles(); renderDeck(c); renderChangelog(); renderAdmin();
+  if (!cpDraft || !document.activeElement.closest('#cpList')) { const j = JSON.stringify(c.cp_rewards || []); if ($('cpList').dataset.j !== j && !('cp_rewards' in pending)) { $('cpList').dataset.j = j; cpDraft = JSON.parse(j); drawCp(); } }
   if (!cmdDraft || !document.activeElement.closest('#cmdList')) { const j = JSON.stringify(c.cmds); if ($('cmdList').dataset.j !== j) { $('cmdList').dataset.j = j; cmdDraft = JSON.parse(j); drawCmds(); } }
   $('ytKeyState').textContent = S.hasYtKey ? '✔ gespeichert' : '';
   pill('ytPill', st.yt || 'aus', /^live|^verbunden/, /^aus/);

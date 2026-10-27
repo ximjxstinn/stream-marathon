@@ -9,7 +9,7 @@ const crypto = require('crypto');
 const GLOBAL_KEYS = new Set(['port', 'channel', 'clientId', 'token', 'login', 'telemetry', 'installId', 'lastPing', 'announced',
   'hk_toggle', 'hk_plus', 'hk_minus', 'hkSec', 'hk_hh', 'hk_panic', 'hk_pausescr',
   'adminHash', 'adminAutoLock', 'updChannel', 'autoBackup', 'deckKey',
-  'yt_key', 'yt_channel', 'cp_rewardId']);
+  'yt_key', 'yt_channel', 'cp_rewardId', 'cp_on', 'cp_rewards', 'cp_migrated']);
 // Diese Einstellungen gehen nur bei entsperrtem Admin-Bereich
 const ADMIN_KEYS = new Set(['fNames', 'fWords', 'nightOn', 'nightFrom', 'nightTo', 'nightPct', 'hourCap',
   'adminAutoLock', 'updChannel', 'autoBackup', 'pauseText']);
@@ -32,6 +32,7 @@ const NEW_DEF = {
   ],
   // Kanalpunkte
   cp_on: false, cp_title: '+1 Minute Subathon', cp_cost: 500, cp_sec: 60, cp_max: 3, cp_cool: 300, cp_rewardId: '',
+  cp_migrated: false, cp_rewards: [{ title: '+1 Minute Subathon', cost: 500, sec: 60, max: 3, cool: 300, color: '#9146FF', on: true, id: '' }],
   // YouTube
   yt_on: false, yt_key: '', yt_channel: '', yt_sc: 60, yt_member: 300, yt_poll: 45,
   // TikTok über Zusatz-Tools (Event-Eingang)
@@ -61,6 +62,10 @@ function install(Core, DEF, H) {
     const c = this.cfg;
     if (!c.adminHash) c.adminHash = hashPw('admin');
     if (!c.deckKey) c.deckKey = crypto.randomBytes(6).toString('hex');
+    if (!c.cp_migrated) {
+      c.cp_rewards = [{ title: c.cp_title || '+1 Minute Subathon', cost: c.cp_cost || 500, sec: c.cp_sec || 60, max: c.cp_max || 0, cool: c.cp_cool || 0, color: '#9146FF', on: true, id: c.cp_rewardId || '' }];
+      c.cp_migrated = true;
+    }
     this.state.panic = this.state.panic || '';
     this.state.hourly = this.state.hourly || {};
     this.state.evCount = this.state.evCount || 0;
@@ -176,6 +181,20 @@ function install(Core, DEF, H) {
       })).filter(x => x.cmd.length > 1);
       return true;
     }
+    if (k === 'cp_rewards') {
+      if (!Array.isArray(v)) return true;
+      this.cfg.cp_rewards = v.slice(0, 20).map(x => ({
+        title: String(x && x.title || '').slice(0, 45).trim() || 'Belohnung',
+        cost: Math.max(1, Math.min(1e7, Math.round(Number(x && x.cost) || 1))),
+        sec: Math.max(0, Math.min(86400, Number(x && x.sec) || 0)),
+        max: Math.max(0, Math.round(Number(x && x.max) || 0)),
+        cool: Math.max(0, Math.min(604800, Math.round(Number(x && x.cool) || 0))),
+        color: /^#[0-9a-f]{6}$/i.test(x && x.color) ? x.color.toUpperCase() : '#9146FF',
+        on: !!(x && x.on),
+        id: /^[\w-]{0,64}$/.test(x && x.id || '') ? (x.id || '') : ''
+      }));
+      return true;
+    }
     if (k === 'updChannel') { this.cfg.updChannel = v === 'beta' ? 'beta' : 'stable'; return true; }
     if (k === 'nightFrom' || k === 'nightTo') { if (hm(v) !== null) this.cfg[k] = String(v).trim(); return true; }
     if (k === 'yt_key' || k === 'yt_channel') { this.cfg[k] = String(v).trim().slice(0, 200); return true; }
@@ -185,10 +204,8 @@ function install(Core, DEF, H) {
     const c = this.cfg;
     c.nightPct = Math.max(0, Math.min(100, c.nightPct));
     c.cmdCooldown = Math.max(0, Math.min(600, c.cmdCooldown));
-    c.cp_cost = Math.max(1, Math.round(c.cp_cost)); c.cp_max = Math.max(0, Math.round(c.cp_max)); c.cp_cool = Math.max(0, Math.round(c.cp_cool));
     c.yt_poll = Math.max(20, Math.min(600, c.yt_poll || 45));
-    const cpKeys = ['cp_on', 'cp_title', 'cp_cost', 'cp_max', 'cp_cool'];
-    if (cpKeys.some(k => c[k] !== old[k])) this.syncReward();
+    if (c.cp_on !== old.cp_on || JSON.stringify(c.cp_rewards) !== JSON.stringify(old.cp_rewards)) this.syncReward(old.cp_rewards);
     if (['yt_on', 'yt_key', 'yt_channel'].some(k => c[k] !== old[k])) this.connYouTube();
     if (c.updChannel !== old.updChannel) { this._apiAt = 0; this.checkLatest(); }
   };
@@ -342,45 +359,60 @@ function install(Core, DEF, H) {
     const j = r.status === 204 ? {} : await r.json().catch(() => ({}));
     return { ok: r.ok, status: r.status, j };
   };
-  P.syncReward = async function () {
-    const c = this.cfg;
-    if (!c.token || !this.uid) { if (c.cp_on) this.setStatus('points', 'Twitch-Login fehlt (Bereich „Twitch“)'); return; }
-    if (!(this.scopes || []).includes('channel:manage:redemptions')) { if (c.cp_on) this.setStatus('points', 'Berechtigung fehlt – im Bereich „Twitch“ neu verbinden'); return; }
-    if (this.bid !== this.uid) { if (c.cp_on) this.setStatus('points', 'Geht nur mit dem Account des Kanals selbst'); return; }
-    const body = {
-      title: c.cp_title.slice(0, 45) || '+1 Minute Subathon', cost: c.cp_cost, is_enabled: !!c.cp_on,
-      is_max_per_user_per_stream_enabled: c.cp_max > 0, max_per_user_per_stream: Math.max(1, c.cp_max),
-      is_global_cooldown_enabled: c.cp_cool > 0, global_cooldown_seconds: Math.max(1, c.cp_cool),
-      should_redemptions_skip_request_queue: true,
-      prompt: 'Verlängert den Subathon-Timer um ' + H.fmtDur(c.cp_sec) + '.'
-    };
+  P.syncReward = async function (oldList) {
+    const c = this.cfg, L = c.cp_rewards || [];
+    const anyOn = c.cp_on && L.some(r => r.on);
+    if (!c.token || !this.uid) { if (anyOn) this.setStatus('points', 'Twitch-Login fehlt (Bereich „Twitch“)'); return; }
+    if (!(this.scopes || []).includes('channel:manage:redemptions')) { if (anyOn) this.setStatus('points', 'Berechtigung fehlt – im Bereich „Twitch“ neu verbinden'); return; }
+    if (this.bid !== this.uid) { if (anyOn) this.setStatus('points', 'Geht nur mit dem Account des Kanals selbst'); return; }
+    if (this._cpBusy) { this._cpAgain = true; return; }
+    this._cpBusy = true;
+    let err = null, active = 0, changedIds = false;
     try {
-      let r;
-      if (c.cp_rewardId) {
-        r = await this.helix('PATCH', `channel_points/custom_rewards?broadcaster_id=${this.uid}&id=${c.cp_rewardId}`, body);
-        if (r.status === 404) { c.cp_rewardId = ''; H.writeJson(this.cfgFile, this.cfg); }
+      // Gelöschte Belohnungen auch auf Twitch entfernen
+      const keep = new Set(L.map(r => r.id).filter(Boolean));
+      for (const o of oldList || []) {
+        if (o.id && !keep.has(o.id)) await this.helix('DELETE', `channel_points/custom_rewards?broadcaster_id=${this.uid}&id=${o.id}`).catch(() => {});
       }
-      if (!c.cp_rewardId && c.cp_on) {
-        r = await this.helix('POST', `channel_points/custom_rewards?broadcaster_id=${this.uid}`, body);
-        if (r.ok && r.j.data && r.j.data[0]) { c.cp_rewardId = r.j.data[0].id; H.writeJson(this.cfgFile, this.cfg); }
+      for (const r of L) {
+        const enabled = !!(c.cp_on && r.on);
+        const body = {
+          title: r.title, cost: r.cost, is_enabled: enabled, background_color: r.color,
+          is_max_per_user_per_stream_enabled: r.max > 0, max_per_user_per_stream: Math.max(1, r.max),
+          is_global_cooldown_enabled: r.cool > 0, global_cooldown_seconds: Math.max(1, r.cool),
+          should_redemptions_skip_request_queue: true,
+          prompt: 'Verlängert den Subathon-Timer um ' + H.fmtDur(r.sec) + '.'
+        };
+        let res = null;
+        if (r.id) {
+          res = await this.helix('PATCH', `channel_points/custom_rewards?broadcaster_id=${this.uid}&id=${r.id}`, body);
+          if (res.status === 404) { r.id = ''; changedIds = true; }
+        }
+        if (!r.id && enabled) {
+          res = await this.helix('POST', `channel_points/custom_rewards?broadcaster_id=${this.uid}`, body);
+          if (res.ok && res.j.data && res.j.data[0]) { r.id = res.j.data[0].id; changedIds = true; }
+        }
+        if (res && !res.ok && !err) err = res.status === 403 ? 'Kanalpunkte gibt es nur für Twitch Affiliates und Partner'
+          : res.status === 400 && /duplicate|title/i.test(res.j.message || '') ? `Name „${r.title}“ gibt es auf deinem Kanal schon`
+          : 'Fehler: ' + (res.j.message || res.status);
+        if (enabled && r.id) active++;
       }
-      if (!r) return this.setStatus('points', 'aus');
-      if (r.ok) this.setStatus('points', c.cp_on ? `aktiv – „${body.title}“ für ${H.num(c.cp_cost)} Punkte` : 'aus (Belohnung auf Twitch deaktiviert)');
-      else if (r.status === 403) this.setStatus('points', 'Kanalpunkte gibt es nur für Twitch Affiliates und Partner');
-      else this.setStatus('points', 'Fehler: ' + (r.j.message || r.status));
-      if (this.esSession && c.cp_rewardId) this.subPoints(this.esSession);
+      if (changedIds) { H.writeJson(this.cfgFile, this.cfg); this.broadcast(); }
+      this.setStatus('points', err || (c.cp_on ? `aktiv – ${active} Belohnung${active === 1 ? '' : 'en'}` : 'aus (Belohnungen auf Twitch deaktiviert)'));
+      if (this.esSession) this.subPoints(this.esSession);
     } catch (e) { this.setStatus('points', 'keine Verbindung zu Twitch'); }
+    this._cpBusy = false;
+    if (this._cpAgain) { this._cpAgain = false; this.syncReward(); }
   };
   P.subPoints = async function (session) {
-    const c = this.cfg;
-    if (!c.cp_rewardId || this.bid !== this.uid || this._cpSubFor === session) return;
+    if (this.bid !== this.uid || this._cpSubFor === session || !(this.cfg.cp_rewards || []).some(r => r.id)) return;
     this._cpSubFor = session;
     const r = await this.helix('POST', 'eventsub/subscriptions', {
       type: 'channel.channel_points_custom_reward_redemption.add', version: '1',
-      condition: { broadcaster_user_id: this.uid, reward_id: c.cp_rewardId },
+      condition: { broadcaster_user_id: this.uid },
       transport: { method: 'websocket', session_id: session }
     }).catch(() => ({ ok: false }));
-    if (!r.ok) this.addDiag('Kanalpunkte-Abo fehlgeschlagen: ' + ((r.j && r.j.message) || r.status));
+    if (!r.ok) { this._cpSubFor = null; this.addDiag('Kanalpunkte-Abo fehlgeschlagen: ' + ((r.j && r.j.message) || r.status)); }
   };
   P.extraSubscribe = function (session) {
     this.esSession = session;
@@ -390,8 +422,9 @@ function install(Core, DEF, H) {
     this.syncReward();
   };
   P.onEventSub = function (type, ev) {
-    if (type === 'channel.channel_points_custom_reward_redemption.add' && ev.reward && ev.reward.id === this.cfg.cp_rewardId) {
-      this.addTime(this.cfg.cp_sec, `💠 ${ev.user_name} löst „${ev.reward.title}“ ein`, null, { kind: 'points', user: ev.user_name });
+    const rw = type === 'channel.channel_points_custom_reward_redemption.add' && ev.reward && (this.cfg.cp_rewards || []).find(r => r.id === ev.reward.id);
+    if (rw && this.cfg.cp_on && rw.on) {
+      this.addTime(rw.sec, `💠 ${ev.user_name} löst „${ev.reward.title}“ ein`, null, { kind: 'points', user: ev.user_name });
     }
   };
 
