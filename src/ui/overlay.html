@@ -126,7 +126,8 @@ function embed(c) {
     const [W0, H0] = EMB[w], W = W0 * sz(w), H = H0 * sz(w), pos = c['p_' + w];
     const target = pos === 'tc' ? $('below') : document.body;
     if (e.box.parentNode !== target) target.appendChild(e.box);
-    Object.assign(e.box.style, { width: W * sc + 'px', height: H * sc + 'px' });
+    e.sc = sc; e.W = W; e.H = H;
+    Object.assign(e.box.style, { width: W * sc + 'px', height: (e.fitH ?? H) * sc + 'px' });
     Object.assign(e.f.style, { width: W + 'px', height: H + 'px', transform: `scale(${sc})` });
     e.box.style.order = ['hh', 'goals', 'top', 'wheel'].indexOf(w); // Happy Hour immer direkt unter dem Timer
     if (pos === 'tc') { e.box.style.left = e.box.style.top = e.box.style.right = e.box.style.bottom = e.box.style.transform = ''; }
@@ -134,6 +135,21 @@ function embed(c) {
   }
   document.body.classList.toggle('full', any);
 }
+
+// Höhe der eingebetteten Overlays an den Inhalt anpassen (z. B. Top-Supporter mit nur 2 Einträgen)
+function fitEmbeds() {
+  for (const w in embeds) {
+    const e = embeds[w]; if (w === 'ticker' || !e.sc) continue;
+    let h = e.H;
+    try {
+      const d = e.f.contentDocument, el = d && d.querySelector('.panel:not(.hide), #hh:not(.hide), #wheel:not(.hide)');
+      if (d && d.body) h = el ? Math.ceil(el.getBoundingClientRect().bottom + 6) : 0;
+    } catch (err) {}
+    h = Math.max(0, Math.min(e.H, h));
+    if (h !== e.fitH) { e.fitH = h; e.box.style.height = h * e.sc + 'px'; }
+  }
+}
+setInterval(fitEmbeds, 300);
 
 function render() {
   if (!S) return;
