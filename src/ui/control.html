@@ -11,7 +11,7 @@
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif;font-size:14px}
 body{display:flex;overflow:hidden}
-button,input,select{font:inherit;color:inherit}
+button,input,select,textarea{font:inherit;color:inherit}
 ::-webkit-scrollbar{width:10px}::-webkit-scrollbar-thumb{background:#2f2f35;border-radius:5px}
 
 /* Seitenleiste */
@@ -48,7 +48,8 @@ h1{font-size:22px;margin:0 0 4px}
 .card h2{font-size:14px;margin:0 0 12px;display:flex;align-items:center;gap:8px}
 .card h2 .sw{margin-left:auto}
 label.f{display:block;font-size:12px;color:var(--muted);margin:12px 0 5px}
-input[type=text],input[type=number],input[type=password],select{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;outline:none}
+input[type=text],input[type=number],input[type=password],select,textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;outline:none}
+textarea{min-height:72px;resize:vertical;font:inherit;line-height:1.45}
 input:focus,select:focus{border-color:var(--brand)}
 input[type=color]{width:100%;height:36px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:3px;cursor:pointer}
 input[type=range]{width:100%;accent-color:var(--brand)}
@@ -754,12 +755,31 @@ a{color:#bf94ff}
     <h1>🛡️ Admin <button class="btn dang" id="bLock" style="float:right;padding:6px 12px;font-size:12px">🔒 Sperren</button></h1>
     <p class="sub">Profi-Werkzeuge – nur für dich. Änderungen wirken sofort im Stream. <span id="admUntil"></span></p>
     <div class="g3">
-      <div class="card"><h2>🚨 Notfall-Schalter</h2>
-        <button class="btn dang panicbtn" id="bPanic">🙈 Alle Overlays sofort ausblenden</button>
-        <button class="btn" id="bPauseScr" style="width:100%;margin-top:6px">☕ Pause-Bildschirm zeigen</button>
+      <div class="card"><h2>☕ Pause-Bildschirm</h2>
+        <button class="btn" id="bPauseScr" style="width:100%">☕ Pause-Bildschirm zeigen</button>
         <label class="chk"><span class="sw"><input type="checkbox" data-k="pauseTimer"><span></span></span>Timer während der Pause anhalten</label>
         <label class="f">Text auf dem Pause-Bildschirm</label><input type="text" data-k="pauseText">
         <div class="hint">Auch per Hotkey (Allgemein) und Stream Deck.</div>
+      </div>
+      <div class="card" style="grid-column:span 2"><h2>📣 Ankündigung an alle</h2>
+        <p class="hint" style="margin-top:0">Blendet bei <b>allen</b> Nutzern oben im Steuerfenster einen Hinweis ein (nie im Stream). Nur du kannst senden.</p>
+        <div id="ghBox">
+          <label class="f" style="margin-top:0">GitHub-Token <span class="s" id="ghState"></span></label>
+          <div class="row"><input type="password" id="ghTok" placeholder="github_pat_… (nur einmal nötig)"><button class="btn" id="bGhSave" style="flex:none">Speichern</button><button class="btn" id="bGhDel" style="flex:none;display:none">Entfernen</button></div>
+          <div class="hint">Einmalig: auf GitHub einen <b>Fine-grained Token</b> nur für dein Repo <code>stream-marathon</code> mit Recht <b>„Contents: Read and write"</b> erstellen. Wird nur lokal auf deinem PC gespeichert und nur an GitHub geschickt. <a href="https://github.com/settings/personal-access-tokens/new" target="_blank">Token erstellen ↗</a></div>
+        </div>
+        <div class="two" style="margin-top:14px">
+          <div><label class="f" style="margin-top:0">Typ</label>
+            <div class="seg" id="ntLevel"><button data-v="info" class="on">📣 Info</button><button data-v="warn">⚠️ Warnung</button></div></div>
+          <div><label class="f" style="margin-top:0">Titel</label><input type="text" id="ntTitle" maxlength="120" placeholder="z. B. Neue Version ist da"></div>
+        </div>
+        <label class="f">Text</label><textarea id="ntText" maxlength="1000" placeholder="Was sollen die Nutzer wissen?"></textarea>
+        <div class="row" style="margin-top:12px">
+          <button class="btn pri" id="bNtSend" style="flex:none">📣 An alle senden</button>
+          <button class="btn dang" id="bNtClear" style="flex:none">Aktive Ankündigung entfernen</button>
+          <span class="s" id="ntState" style="align-self:center"></span>
+        </div>
+        <div id="ntNow" class="hint" style="margin-top:10px"></div>
       </div>
       <div class="card"><h2>🚫 Namen- & Wortfilter</h2>
         <label class="f" style="margin-top:0">Gesperrte Namen (mit Komma getrennt)</label><input type="text" data-k="fNames" placeholder="troll123, nervig">
@@ -818,7 +838,6 @@ a{color:#bf94ff}
       <div class="hk"><span>Zeit hinzufügen</span><input type="text" data-hk="hk_plus" readonly><span class="s" id="hs_hk_plus"></span></div>
       <div class="hk"><span>Zeit abziehen</span><input type="text" data-hk="hk_minus" readonly><span class="s" id="hs_hk_minus"></span></div>
       <div class="hk"><span>Happy Hour an/aus</span><input type="text" data-hk="hk_hh" readonly><span class="s" id="hs_hk_hh"></span></div>
-      <div class="hk"><span>🚨 Notfall (Overlays aus)</span><input type="text" data-hk="hk_panic" readonly><span class="s" id="hs_hk_panic"></span></div>
       <div class="hk"><span>☕ Pause-Bildschirm</span><input type="text" data-hk="hk_pausescr" readonly><span class="s" id="hs_hk_pausescr"></span></div>
       <label class="f">Wie viel Zeit die Hotkeys ändern (Sekunden)</label>
       <input type="number" data-k="hkSec" class="dur" min="1"><div class="dh"></div>
@@ -1174,7 +1193,7 @@ $('bAddCmd').onclick = () => { cmdDraft.push({ cmd: '!neu', text: 'Antwort…', 
 
 // ================= Stream Deck =================
 const DECK = [['⏯ Start / Pause', 'toggle'], ['➕ +5 Min', 'add?min=5'], ['➖ −5 Min', 'sub?min=5'], ['⚡ Happy Hour', 'happyhour'],
-  ['🙈 Notfall', 'panic'], ['☕ Pause-Bildschirm', 'pausescreen'], ['👤 Nächstes Profil', 'profile'], ['🎡 Rad testen', 'wheel']];
+  ['☕ Pause-Bildschirm', 'pausescreen'], ['👤 Nächstes Profil', 'profile'], ['🎡 Rad testen', 'wheel']];
 $('bPlugin').onclick = () => { const a = document.createElement('a'); a.href = '/deck-plugin'; a.download = 'StreamMarathon.streamDeckPlugin'; a.click(); };
 $('deckList').addEventListener('click', e => {
   const b = e.target.closest('[data-dc]'); if (!b) return; const el = b.previousElementSibling; el.select();
@@ -1219,7 +1238,7 @@ $('bUnlock').onclick = async () => {
 };
 $('admPw').onkeydown = e => { if (e.key === 'Enter') $('bUnlock').click(); };
 $('bLock').onclick = () => apost('lock', {});
-$('bPanic').onclick = () => act('panic'); $('bPauseScr').onclick = () => act('pauseScreen');
+$('bPauseScr').onclick = () => act('pauseScreen');
 $('bReconn2').onclick = () => act('reconnect');
 $('bClearStats').onclick = () => apost('clearStats', {});
 const dl = (url, name) => fetch(url).then(r => r.blob()).then(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = name; a.click(); });
@@ -1246,10 +1265,15 @@ function renderAdmin() {
   $('admDefault').textContent = A.defaultPw ? 'Das Passwort ist noch „admin“ – bitte nach dem Entsperren ändern.' : '';
   if (!A.unlocked) return;
   $('admUntil').textContent = A.until ? `· sperrt automatisch um ${new Date(A.until).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}` : '';
-  $('bPanic').textContent = s.panic === 'hide' ? '👁 Overlays wieder einblenden' : '🙈 Alle Overlays sofort ausblenden';
-  $('bPanic').className = 'btn panicbtn ' + (s.panic === 'hide' ? 'panicon' : 'dang');
   $('bPauseScr').textContent = s.panic === 'pause' ? (c => c.pauseTimer ? '▶ Pause beenden & Timer starten' : '▶ Pause-Bildschirm beenden')(S.cfg) : (S.cfg.pauseTimer ? '☕ Pause-Bildschirm + Timer anhalten' : '☕ Pause-Bildschirm zeigen');
   $('bPauseScr').className = 'btn ' + (s.panic === 'pause' ? 'panicon' : '');
+  // Ankündigung: Token-Status + aktuelle Meldung
+  if (!$('ghState').textContent || S.hasGhToken) { $('ghState').textContent = S.hasGhToken ? '✔ gespeichert' : ''; $('ghState').style.color = 'var(--ok)'; }
+  $('ghTok').placeholder = S.hasGhToken ? 'Gespeichert – zum Ändern neuen Token eingeben' : 'github_pat_… (nur einmal nötig)';
+  $('bGhDel').style.display = S.hasGhToken ? '' : 'none';
+  const nowN = S.status && S.status.notice;
+  $('ntNow').innerHTML = nowN ? `Aktuell aktiv: <b>${esc(nowN.title || '(ohne Titel)')}</b> ${nowN.level === 'warn' ? '⚠️' : '📣'}` : 'Zurzeit ist keine Ankündigung aktiv.';
+  $('bNtClear').style.display = nowN ? '' : 'none';
   // Statistik: letzte 24 Stunden
   const H = s.hourly || {}, keys = [], now = new Date();
   for (let i = 23; i >= 0; i--) { const d = new Date(now - i * 3600000); keys.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + 'T' + String(d.getHours()).padStart(2, '0')); }
@@ -1371,6 +1395,14 @@ function renderNotice(c, st) {
   box.dataset.id = n.id; box.classList.remove('hide');
 }
 $('noticeClose').onclick = () => { const id = $('notice').dataset.id; if (id) queue('noticeSeen', id); $('notice').classList.add('hide'); };
+// --- Ankündigung senden (Admin) ---
+let ntLevel = 'info';
+$('ntLevel').querySelectorAll('button').forEach(b => b.onclick = () => { ntLevel = b.dataset.v; $('ntLevel').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); });
+$('bGhSave').onclick = () => { const v = $('ghTok').value.trim(); if (!v) return; queue('ghToken', v); $('ghTok').value = ''; $('ghState').textContent = '✔ gespeichert'; $('ghState').style.color = 'var(--ok)'; };
+$('bGhDel').onclick = () => { queue('ghToken', ''); $('ghState').textContent = 'entfernt'; };
+async function admPost(a, body) { const t = $('ntState'); t.style.color = 'var(--muted)'; t.textContent = '… wird gesendet'; try { const r = await apost(a, body || {}); t.style.color = r.ok ? 'var(--ok)' : 'var(--bad)'; t.textContent = r.ok ? (a === 'clearNotice' ? '✔ entfernt' : '✔ an alle gesendet') : ('✖ ' + (r.error || 'Fehler')); if (r.ok && a === 'publishNotice') { $('ntTitle').value = ''; $('ntText').value = ''; } } catch (e) { t.style.color = 'var(--bad)'; t.textContent = '✖ keine Verbindung'; } }
+$('bNtSend').onclick = () => { if (!S.hasGhToken) { $('ntState').style.color = 'var(--bad)'; $('ntState').textContent = '✖ Erst GitHub-Token speichern'; return; } admPost('publishNotice', { title: $('ntTitle').value, text: $('ntText').value, level: ntLevel }); };
+$('bNtClear').onclick = () => admPost('clearNotice', {});
 function renderReports() {
   const R = (S.reports || []).slice().reverse();
   const h = R.map(r => `<div class="rep"><span class="tt">${new Date(r.t).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span><b>${esc(r.title)}</b>
@@ -1405,7 +1437,7 @@ function renderSnap() {
   ['dIrc', 'dIrc2', 'dIrc3'].forEach(id => setDot(id, st.irc, /kein Kanal/));
   ['dFol', 'dFol2', 'dFol3'].forEach(id => setDot(id, st.follow, /deaktiviert|nicht verbunden/));
   const hk = st.hotkeys || {};
-  ['hk_toggle', 'hk_plus', 'hk_minus', 'hk_hh', 'hk_panic', 'hk_pausescr'].forEach(k => {
+  ['hk_toggle', 'hk_plus', 'hk_minus', 'hk_hh', 'hk_pausescr'].forEach(k => {
     const v = hk[k] || ''; const el = $('hs_' + k);
     el.textContent = v; el.style.color = v === 'aktiv' ? 'var(--ok)' : v === 'aus' ? 'var(--dim)' : 'var(--warn)';
   });

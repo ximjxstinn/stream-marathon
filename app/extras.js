@@ -7,15 +7,15 @@ const crypto = require('crypto');
 
 // Einstellungen, die NICHT pro Profil gespeichert werden
 const GLOBAL_KEYS = new Set(['port', 'channel', 'clientId', 'token', 'login', 'telemetry', 'installId', 'lastPing', 'announced',
-  'hk_toggle', 'hk_plus', 'hk_minus', 'hkSec', 'hk_hh', 'hk_panic', 'hk_pausescr',
+  'hk_toggle', 'hk_plus', 'hk_minus', 'hkSec', 'hk_hh', 'hk_pausescr',
   'adminHash', 'adminAutoLock', 'updChannel', 'autoBackup', 'deckKey',
-  'yt_key', 'yt_channel', 'cp_rewardId', 'cp_on', 'cp_rewards', 'cp_migrated', 'noticeSeen']);
+  'yt_key', 'yt_channel', 'cp_rewardId', 'cp_on', 'cp_rewards', 'cp_migrated', 'noticeSeen', 'ghToken']);
 // Diese Einstellungen gehen nur bei entsperrtem Admin-Bereich
 const ADMIN_KEYS = new Set(['fNames', 'fWords', 'nightOn', 'nightFrom', 'nightTo', 'nightPct', 'hourCap',
-  'adminAutoLock', 'updChannel', 'autoBackup', 'pauseText']);
+  'adminAutoLock', 'updChannel', 'autoBackup', 'pauseText', 'ghToken']);
 
 const NEW_DEF = {
-  hk_panic: '', noticeSeen: '',
+  noticeSeen: '', ghToken: '',
   // Admin
   adminHash: '', adminAutoLock: true, updChannel: 'stable', autoBackup: true,
   fNames: '', fWords: '', nightOn: false, nightFrom: '02:00', nightTo: '08:00', nightPct: 50, hourCap: 0,
@@ -130,8 +130,9 @@ function install(Core, DEF, H) {
   };
   P.extraSnapshot = function (snap) {
     const pub = snap.cfg;
-    delete pub.adminHash; delete pub.yt_key;
+    delete pub.adminHash; delete pub.yt_key; delete pub.ghToken;
     snap.hasYtKey = !!this.cfg.yt_key;
+    snap.hasGhToken = !!this.cfg.ghToken;
     snap.scopes = this.scopes || null;
     snap.profiles = { active: this.prof.active, names: Object.keys(this.prof.list) };
     snap.admin = { unlocked: this.isAdmin(), until: this.adminUntil === Infinity ? 0 : this.adminUntil, defaultPw: checkPw('admin', this.cfg.adminHash) };
@@ -238,6 +239,7 @@ function install(Core, DEF, H) {
     if (k === 'nightFrom' || k === 'nightTo') { if (hm(v) !== null) this.cfg[k] = String(v).trim(); return true; }
     if (k === 'yt_key' || k === 'yt_channel') { this.cfg[k] = String(v).trim().slice(0, 200); return true; }
     if (k === 'noticeSeen') { this.cfg.noticeSeen = String(v || '').slice(0, 64); return true; }
+    if (k === 'ghToken') { this.cfg.ghToken = String(v || '').trim().slice(0, 255); return true; }
     return false;
   };
   P.afterConfig = function (old) {
@@ -293,8 +295,8 @@ function install(Core, DEF, H) {
       if (this.state.panic === 'pause' && this.state.running) { this.pause(); this.state.pausedByScreen = true; }
       else if (was === 'pause' && this.state.panic !== 'pause' && this.state.pausedByScreen) { this.state.pausedByScreen = false; this.start(); }
     }
-    this.pushLog(this.state.panic === 'hide' ? '🙈 Overlays ausgeblendet' : this.state.panic === 'pause' ? '☕ Pause-Bildschirm an' : '👁 Overlays wieder sichtbar', 0, 'info');
-    this.addDiag('Notfall: ' + (this.state.panic || 'aus'));
+    this.pushLog(this.state.panic === 'pause' ? '☕ Pause-Bildschirm an' : '👁 Overlays wieder sichtbar', 0, 'info');
+    this.addDiag('Pause-Bildschirm: ' + (this.state.panic === 'pause' ? 'an' : 'aus'));
     this.changed();
   };
 
@@ -554,7 +556,6 @@ function install(Core, DEF, H) {
 
   // ================= Aktionen & HTTP =================
   P.extraAction = function (a, b) {
-    if (a === 'panic') return this.setPanic('hide');
     if (a === 'pauseScreen') return this.setPanic('pause');
     if (a === 'dismissNews') { this.status.justUpdated = null; return this.broadcast(); }
     if (a.startsWith('profile.')) return this.profileAction(a.slice(8), b);
@@ -564,7 +565,7 @@ function install(Core, DEF, H) {
       toggle: () => this.toggle(), start: () => this.start(), pause: () => this.pause(),
       add: () => this.addTime((Number(q.get('min')) || 5) * 60, 'Stream Deck', null, { manual: true, kind: 'manual' }),
       sub: () => this.addTime(-(Number(q.get('min')) || 5) * 60, 'Stream Deck', null, { manual: true, kind: 'manual' }),
-      happyhour: () => this.hhToggle(), panic: () => this.setPanic('hide'), pausescreen: () => this.setPanic('pause'),
+      happyhour: () => this.hhToggle(), pausescreen: () => this.setPanic('pause'),
       profile: () => q.get('n') ? this.profileAction('nth', { n: q.get('n') }) : this.profileAction('next', {}),
       wheel: () => this.test('wheel')
     };
@@ -627,7 +628,50 @@ function install(Core, DEF, H) {
     if (a === 'forceUpdate') { this._installing = false; this._apiAt = 0; await this.checkLatest(); const L = this.status.latest || {}; if (L.cdn && !this._installing) this.installUpdate(L.cdn); json(200, { ok: true }); return true; }
     if (a === 'rollback') { this.rollback(); json(200, { ok: true }); return true; }
     if (a === 'clearStats') { this.state.hourly = {}; this.state.evCount = 0; this.changed(); json(200, { ok: true }); return true; }
+    if (a === 'publishNotice') {
+      const id = 'n' + Date.now();
+      const notice = { id, title: String(b.title || '').slice(0, 120), text: String(b.text || '').slice(0, 1000), level: b.level === 'warn' ? 'warn' : 'info', date: new Date().toISOString() };
+      if (!notice.title && !notice.text) { json(200, { ok: false, error: 'Titel oder Text fehlt' }); return true; }
+      const r = await this.ghWriteNotice(notice);
+      if (r.ok) { this.setStatus('notice', notice); this.cfg.noticeSeen = id; H.writeJson(this.cfgFile, this.cfg); this.addDiag('Ankündigung gesendet'); this.broadcast(); }
+      else this.addDiag('Ankündigung fehlgeschlagen: ' + r.error);
+      json(200, r); return true;
+    }
+    if (a === 'clearNotice') {
+      const r = await this.ghWriteNotice({ id: '', title: '', text: '', cleared: true, date: new Date().toISOString() });
+      if (r.ok) { this.setStatus('notice', null); this.addDiag('Ankündigung entfernt'); this.broadcast(); }
+      json(200, r); return true;
+    }
     json(404, { ok: false }); return true;
+  };
+
+  // Schreibt notice.json ins GitHub-Repo (nur mit dem lokal hinterlegten Token des Entwicklers)
+  P.ghWriteNotice = async function (notice) {
+    const tok = this.cfg.ghToken;
+    if (!tok) return { ok: false, error: 'Kein GitHub-Token hinterlegt' };
+    if (typeof fetch === 'undefined') return { ok: false, error: 'Nicht verfügbar' };
+    const m = /raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\//.exec(H.UPDATE_URL || '');
+    if (!m) return { ok: false, error: 'Repo nicht erkannt' };
+    const [, owner, repo, branch] = m;
+    const api = `https://api.github.com/repos/${owner}/${repo}/contents/notice.json`;
+    const head = { Authorization: 'Bearer ' + tok, Accept: 'application/vnd.github+json', 'User-Agent': 'StreamMarathon', 'X-GitHub-Api-Version': '2022-11-28' };
+    let sha;
+    try {
+      const g = await fetch(api + '?ref=' + branch, { headers: head, cache: 'no-store' });
+      if (g.ok) { sha = (await g.json()).sha; }
+      else if (g.status === 401) return { ok: false, error: 'Token ungültig' };
+      else if (g.status !== 404) return { ok: false, error: 'GitHub ' + g.status };
+    } catch (e) { return { ok: false, error: 'Keine Verbindung zu GitHub' }; }
+    const content = Buffer.from(JSON.stringify(notice, null, 2)).toString('base64');
+    try {
+      const r = await fetch(api, { method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, head),
+        body: JSON.stringify({ message: 'notice: ' + (notice.id || 'entfernt'), content, sha, branch }) });
+      if (r.ok) return { ok: true };
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 401) return { ok: false, error: 'Token ungültig' };
+      if (r.status === 403 || r.status === 404) return { ok: false, error: 'Token fehlt das Recht „Contents: Read and write“' };
+      return { ok: false, error: 'GitHub: ' + (j.message || r.status) };
+    } catch (e) { return { ok: false, error: 'Keine Verbindung zu GitHub' }; }
   };
 }
 

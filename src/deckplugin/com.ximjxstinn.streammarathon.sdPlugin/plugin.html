@@ -21,7 +21,7 @@ async function call(path) {
 function pathFor(action, s) {
   const a = action.replace(PRE, ''), min = Math.max(1, parseInt(s.min, 10) || 5);
   return ({ time: 'toggle', toggle: 'toggle', add: 'add?min=' + min, sub: 'sub?min=' + min, happyhour: 'happyhour',
-    panic: 'panic', pausescreen: 'pausescreen', profile: s.n ? 'profile?n=' + s.n : 'profile', wheel: 'wheel' })[a];
+    pausescreen: 'pausescreen', profile: s.n ? 'profile?n=' + s.n : 'profile', wheel: 'wheel' })[a];
 }
 
 // Titel live aktualisieren
@@ -39,7 +39,6 @@ async function refresh() {
     else if (a === 'add') t = '+' + (parseInt(settings.min, 10) || 5) + ' Min';
     else if (a === 'sub') t = '−' + (parseInt(settings.min, 10) || 5) + ' Min';
     else if (a === 'happyhour') t = st.happyHour ? 'AN' : 'Happy H.';
-    else if (a === 'panic') t = st.panic === 'hide' ? 'AUS!' : 'Notfall';
     else if (a === 'pausescreen') t = st.panic === 'pause' ? 'AN' : 'Pause';
     else if (a === 'profile') t = st.profile || '';
     else if (a === 'wheel') t = 'Rad';

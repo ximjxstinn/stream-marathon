@@ -28,7 +28,7 @@ body.ended #time{color:#ff4d6d}
 #pops.pp-center .pop{text-align:center}
 /* Eingebettete Overlays */
 body.full{height:100vh}
-body.panic #wrap,body.panic .emb,body.pausing #wrap,body.pausing .emb,body.panic #pops,body.pausing #pops{visibility:hidden}
+body.pausing #wrap,body.pausing .emb,body.pausing #pops{visibility:hidden}
 #pauseScr{position:fixed;inset:0;display:none;place-items:center;text-align:center;z-index:5}
 body.pausing #pauseScr{display:grid}
 #pauseScr .pb{background:rgba(14,14,16,.85);border:2px solid var(--a);border-radius:24px;padding:40px 60px;font-weight:900;font-size:calc(var(--s)*.5);text-shadow:0 3px 12px #000c;animation:breath 2.4s ease-in-out infinite}
@@ -170,7 +170,6 @@ function render() {
   const c = S.cfg, s = S.state;
   const ms = s.running ? Math.max(0, s.endsAt - (Date.now() + off)) : s.remaining;
   $('time').textContent = fmt(ms, c.format);
-  document.body.classList.toggle('panic', s.panic === 'hide');
   document.body.classList.toggle('pausing', s.panic === 'pause');
   if (s.panic === 'pause') { $('pauseTxt').textContent = c.pauseText || ''; $('pauseTime').textContent = (s.running ? '⏱ ' : '⏸ Timer pausiert · ') + fmt(ms, c.format); }
   document.body.classList.toggle('ended', s.ended);

@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.5.2",
+    "date": "27.10.2026",
+    "items": [
+      "🗑️ Notfallschalter entfernt (der Pause-Bildschirm bleibt wie gewohnt)",
+      "📣 Ankündigungen jetzt im Admin-Bereich: Titel + Text direkt aus der App an alle Nutzer senden und wieder entfernen (einmalig ein GitHub-Token nötig, wird nur lokal gespeichert)"
+    ]
+  },
+  {
     "version": "1.5.1",
     "date": "27.10.2026",
     "items": [
