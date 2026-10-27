@@ -113,7 +113,7 @@ class Core extends EventEmitter {
   }
 
   newState() {
-    return { running: false, started: false, endsAt: 0, remaining: this.cfg.startMin * 60000, added: 0, ended: false, n: { f: 0, s: 0, b: 0, r: 0 }, hh: { until: 0, mult: 1 }, top: {} };
+    return { running: false, started: false, endsAt: 0, remaining: this.cfg.startMin * 60000, added: 0, ended: false, n: { f: 0, s: 0, b: 0, r: 0 }, hh: { until: 0, mult: 1 }, top: {}, hourly: {}, evCount: 0 };
   }
   rem() { const s = this.state; return s.running ? Math.max(0, s.endsAt - Date.now()) : s.remaining; }
 

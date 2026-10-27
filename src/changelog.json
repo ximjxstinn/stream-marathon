@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.5.3",
+    "date": "27.10.2026",
+    "items": [
+      "🐛 Absturz behoben: Nach „Zurücksetzen“ führte das nächste Event (Kanalpunkt, Sub, Bits, Follow …) zu einem Fehler – die Statistik-Zähler werden jetzt immer korrekt neu angelegt"
+    ]
+  },
+  {
     "version": "1.5.2",
     "date": "27.10.2026",
     "items": [
