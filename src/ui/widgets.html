@@ -214,6 +214,8 @@ function smConnect(handlers) {
 }
 smConnect({
   snap: d => {
+    if (window.__ver && d.version && d.version !== window.__ver && window.parent === window) return location.reload();
+    window.__ver = window.__ver || d.version;
     const first = !S; S = d; off = S.now - Date.now(); apply(S.cfg);
     if (W === 'wheel' && first) drawWheel(S.cfg.wheelFields);
     if (W === 'wheel' && DEMO && !wheelTimer) drawWheel(S.cfg.wheelFields);

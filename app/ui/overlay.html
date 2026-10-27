@@ -219,7 +219,12 @@ function smConnect(handlers) {
   if (bus.last) setTimeout(() => f('snap', bus.last), 0);
 }
 smConnect({
-  snap: d => { S = d; off = S.now - Date.now(); apply(S.cfg); embed(S.cfg); render(); },
+  snap: d => {
+    // Nach einem App-Update lädt OBS die Seite nicht von selbst neu – das übernehmen wir
+    if (window.__ver && d.version && d.version !== window.__ver) return location.reload();
+    window.__ver = window.__ver || d.version;
+    S = d; off = S.now - Date.now(); apply(S.cfg); embed(S.cfg); render();
+  },
   pop: d => { q.push(d); if (!busy) { busy = true; setTimeout(nextPop, d.kind === 'gift' ? 500 : 0); } }
 });
 setInterval(render, 200);

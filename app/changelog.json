@@ -1,47 +1,98 @@
 [
-  { "version": "1.4.0", "date": "27.10.2026", "items": [
-    "👤 Mehrere Profile – Einstellungen speichern und mit einem Klick wechseln",
-    "🛡️ Admin-Bereich mit Passwort: Notfall-Schalter, Namen- & Wortfilter, Nachtmodus, Live-Statistik, Diagnose, Backups, Update-Kanal",
-    "💬 Chat-Befehle: !timer, !ziele, !top, !subathon, !happyhour – eigene Befehle möglich",
-    "💠 Kanalpunkte: Zuschauer kaufen Zeit, Belohnung wird automatisch angelegt",
-    "▶️ YouTube: Super Chats und Mitgliedschaften verlängern den Timer",
-    "♪ Event-Eingang für TikTok über Zusatz-Tools (z. B. Streamer.bot, TikFinity)",
-    "🎛️ Stream Deck: eigenes Plugin mit Live-Restzeit und Adressen für die Website-Aktion",
-    "📋 Changelog und „Was ist neu“ nach jedem Update"
-  ]},
-  { "version": "1.3.9", "date": "27.10.2026", "items": [
-    "Mehrere Overlays „Unter dem Timer“ werden sauber untereinander gestapelt",
-    "Positions-Auswahl zeigt immer die echte Stelle"
-  ]},
-  { "version": "1.3.8", "date": "27.10.2026", "items": [
-    "Updates laden sich sofort automatisch – nur noch ein Fortschrittsbalken"
-  ]},
-  { "version": "1.3.7", "date": "27.10.2026", "items": [
-    "Update-Anzeige unter Allgemein"
-  ]},
-  { "version": "1.3.6", "date": "27.10.2026", "items": [
-    "Timer frei verschiebbar (Design → Position)",
-    "Design-Vorschau zeigt den ganzen Bildschirm",
-    "OBS-Anleitung auf 1920 × 1080"
-  ]},
-  { "version": "1.3.4", "date": "27.10.2026", "items": [
-    "Overlays können nicht mehr übereinander liegen",
-    "Gift-Bomben als eine einzige Einblendung"
-  ]},
-  { "version": "1.3.3", "date": "26.10.2026", "items": [
-    "Größe der Zahlen und Größe jedes Overlays einstellbar",
-    "Laufband langsamer einstellbar und sofort übernommen"
-  ]},
-  { "version": "1.3.2", "date": "26.10.2026", "items": [
-    "Knöpfe hängen nicht mehr, wenn viele Vorschauen offen sind"
-  ]},
-  { "version": "1.3.1", "date": "26.10.2026", "items": [
-    "Overlays wahlweise im Hauptoverlay anzeigen – mit Position und Größe"
-  ]},
-  { "version": "1.3.0", "date": "26.10.2026", "items": [
-    "Neue Overlays: Ziele, Happy Hour, Top-Supporter, Glücksrad, Event-Laufband"
-  ]},
-  { "version": "1.2.0", "date": "26.10.2026", "items": [
-    "Automatische Updates"
-  ]}
+  {
+    "version": "1.4.1",
+    "date": "27.10.2026",
+    "items": [
+      "Overlays in OBS laden sich nach einem Update automatisch neu – neue Funktionen (z. B. Notfall-Schalter) wirken sofort"
+    ]
+  },
+  {
+    "version": "1.4.0",
+    "date": "27.10.2026",
+    "items": [
+      "👤 Mehrere Profile – Einstellungen speichern und mit einem Klick wechseln",
+      "🛡️ Admin-Bereich mit Passwort: Notfall-Schalter, Namen- & Wortfilter, Nachtmodus, Live-Statistik, Diagnose, Backups, Update-Kanal",
+      "💬 Chat-Befehle: !timer, !ziele, !top, !subathon, !happyhour – eigene Befehle möglich",
+      "💠 Kanalpunkte: Zuschauer kaufen Zeit, Belohnung wird automatisch angelegt",
+      "▶️ YouTube: Super Chats und Mitgliedschaften verlängern den Timer",
+      "♪ Event-Eingang für TikTok über Zusatz-Tools (z. B. Streamer.bot, TikFinity)",
+      "🎛️ Stream Deck: eigenes Plugin mit Live-Restzeit und Adressen für die Website-Aktion",
+      "📋 Changelog und „Was ist neu“ nach jedem Update"
+    ]
+  },
+  {
+    "version": "1.3.9",
+    "date": "27.10.2026",
+    "items": [
+      "Mehrere Overlays „Unter dem Timer“ werden sauber untereinander gestapelt",
+      "Positions-Auswahl zeigt immer die echte Stelle"
+    ]
+  },
+  {
+    "version": "1.3.8",
+    "date": "27.10.2026",
+    "items": [
+      "Updates laden sich sofort automatisch – nur noch ein Fortschrittsbalken"
+    ]
+  },
+  {
+    "version": "1.3.7",
+    "date": "27.10.2026",
+    "items": [
+      "Update-Anzeige unter Allgemein"
+    ]
+  },
+  {
+    "version": "1.3.6",
+    "date": "27.10.2026",
+    "items": [
+      "Timer frei verschiebbar (Design → Position)",
+      "Design-Vorschau zeigt den ganzen Bildschirm",
+      "OBS-Anleitung auf 1920 × 1080"
+    ]
+  },
+  {
+    "version": "1.3.4",
+    "date": "27.10.2026",
+    "items": [
+      "Overlays können nicht mehr übereinander liegen",
+      "Gift-Bomben als eine einzige Einblendung"
+    ]
+  },
+  {
+    "version": "1.3.3",
+    "date": "26.10.2026",
+    "items": [
+      "Größe der Zahlen und Größe jedes Overlays einstellbar",
+      "Laufband langsamer einstellbar und sofort übernommen"
+    ]
+  },
+  {
+    "version": "1.3.2",
+    "date": "26.10.2026",
+    "items": [
+      "Knöpfe hängen nicht mehr, wenn viele Vorschauen offen sind"
+    ]
+  },
+  {
+    "version": "1.3.1",
+    "date": "26.10.2026",
+    "items": [
+      "Overlays wahlweise im Hauptoverlay anzeigen – mit Position und Größe"
+    ]
+  },
+  {
+    "version": "1.3.0",
+    "date": "26.10.2026",
+    "items": [
+      "Neue Overlays: Ziele, Happy Hour, Top-Supporter, Glücksrad, Event-Laufband"
+    ]
+  },
+  {
+    "version": "1.2.0",
+    "date": "26.10.2026",
+    "items": [
+      "Automatische Updates"
+    ]
+  }
 ]
