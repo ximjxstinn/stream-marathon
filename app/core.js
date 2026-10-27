@@ -250,6 +250,7 @@ class Core extends EventEmitter {
       fields.push({ name: 'Länge', value: fmtDur(c.startMin * 60 + s.added / 1000), inline: true });
       fields.push({ name: 'Statistik', value: `❤️ ${num(s.n.f)} · ⭐ ${num(s.n.s)} · 💎 ${num(s.n.b)} · 🚀 ${num(s.n.r || 0)}`, inline: true });
     }
+    if (this.recordReport) this.recordReport(title, fields);
     fetch(this.webhook, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'Stream Marathon', embeds: [{ title, color, fields, timestamp: new Date().toISOString() }] })
@@ -565,12 +566,12 @@ class Core extends EventEmitter {
       else if (typeof d === 'boolean') this.cfg[k] = !!v;
       else this.cfg[k] = String(v).slice(0, 300).trim();
     }
-    for (const w of ['goals', 'hh', 'top', 'wheel']) if (!['tl', 'tr', 'bl', 'br', 'tc', 'bc', 'ml', 'mr'].includes(this.cfg['p_' + w])) this.cfg['p_' + w] = DEF['p_' + w];
+    for (const w of ['goals', 'hh', 'top', 'wheel', 'price']) if (!['tl', 'tr', 'bl', 'br', 'tc', 'bc', 'ml', 'mr'].includes(this.cfg['p_' + w])) this.cfg['p_' + w] = DEF['p_' + w];
     // Keine zwei Overlays an derselben Stelle: das gerade geänderte springt zur nächsten freien Stelle
     {
       const ORDER = ['tl', 'tr', 'ml', 'mr', 'bl', 'bc', 'br'];
       const changed = w => ['m_', 'p_', 'ov_'].some(pre => (pre + w) in patch);
-      const act = ['goals', 'hh', 'top', 'wheel'].filter(w => this.cfg['ov_' + w] && this.cfg['m_' + w]);
+      const act = ['goals', 'hh', 'top', 'wheel', 'price'].filter(w => this.cfg['ov_' + w] && this.cfg['m_' + w]);
       const used = new Set();
       for (const w of [...act.filter(w => !changed(w)), ...act.filter(changed)]) {
         let p = this.cfg['p_' + w];
@@ -583,7 +584,7 @@ class Core extends EventEmitter {
       }
     }
     this.cfg.mScale = Math.max(30, Math.min(300, this.cfg.mScale || 100));
-    for (const k of ['statSize', 'sz_goals', 'sz_hh', 'sz_top', 'sz_wheel', 'sz_ticker']) this.cfg[k] = Math.max(30, Math.min(400, this.cfg[k] || 100));
+    for (const k of ['statSize', 'sz_goals', 'sz_hh', 'sz_top', 'sz_wheel', 'sz_ticker', 'sz_price', 'popSize']) this.cfg[k] = Math.max(30, Math.min(400, this.cfg[k] || 100));
     this.cfg.timerX = Math.max(0, Math.min(100, this.cfg.timerX));
     this.cfg.timerY = Math.max(0, Math.min(100, this.cfg.timerY));
     this.cfg.tickerSpeed = Math.max(5, Math.min(300, this.cfg.tickerSpeed || 40));
@@ -647,7 +648,7 @@ class Core extends EventEmitter {
     if (req.method === 'GET') {
       if (p === '/' || p === '/control') return html('control.html');
       if (p === '/overlay') return html('overlay.html');
-      if (/^\/overlay\/(goals|hh|top|wheel|ticker)$/.test(p)) return html('widgets.html');
+      if (/^\/overlay\/(goals|hh|top|wheel|ticker|price)$/.test(p)) return html('widgets.html');
       if (p === '/auth') return html('auth.html');
       if (p === '/api/snap') return json(200, this.snapshot());
       if (p === '/api/authurl') return json(200, { url: this.cfg.clientId ? this.authUrl() : '' });

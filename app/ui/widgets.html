@@ -48,6 +48,13 @@ html,body{background:transparent;overflow:hidden;color:var(--c);font-family:var(
 .wt .res{color:#ffe14d;font-size:30px;display:block;animation:pop .6s ease}
 @keyframes pop{0%{transform:scale(.5);opacity:0}70%{transform:scale(1.15)}100%{transform:scale(1);opacity:1}}
 
+/* Preisliste */
+#price h3{color:var(--pc,var(--a))}
+.pr{display:flex;justify-content:space-between;align-items:baseline;gap:18px;padding:5px 0;font-weight:700;font-size:16px;border-bottom:1px solid rgba(255,255,255,.06)}
+.pr:last-of-type{border:0}
+.pr em{font-style:normal;color:#00f593;white-space:nowrap}
+.pr .ic{display:inline-block;width:1.4em}
+.credit{margin-top:8px;font-size:10px;color:rgba(255,255,255,.4);text-align:right;font-weight:600}
 /* Laufband */
 #ticker{position:absolute;left:0;right:0;bottom:0;height:60px;background:rgba(14,14,16,.92);border-top:3px solid var(--a);display:flex;align-items:center;overflow:hidden}
 .tag{background:var(--a);height:100%;display:flex;align-items:center;padding:0 22px;font-weight:900;font-size:19px;flex:none;z-index:1}
@@ -65,6 +72,7 @@ html,body{background:transparent;overflow:hidden;color:var(--c);font-family:var(
   <div class="wbox"><div class="pin"></div><div class="wheel" id="wh"></div><div class="cap">🎁</div></div>
   <div class="wt sh" id="wt"></div>
 </div>
+<div id="price" class="panel hide"><h3 id="ptitle"></h3><div id="plist"></div><div class="credit" id="pcredit">Stream Marathon · by xImJxstinn</div></div>
 <div id="ticker" class="hide"><div class="tag">LIVE</div><div class="track"><div class="run" id="run"></div></div></div>
 
 <script>
@@ -128,6 +136,34 @@ function topList() {
     : '<div class="empty">Noch keine Supporter – sei der Erste!</div>';
   if ($('tlist').innerHTML !== html) $('tlist').innerHTML = html;
 }
+function fmtT(sec, f) {
+  sec = Math.round(sec);
+  if (f === 'sec') return '+' + sec + 's';
+  if (f === 'clock') { const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), x = sec % 60; return '+' + (h ? h + ':' + pad(m) : m) + ':' + pad(x); }
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), x = sec % 60;
+  return '+' + [h ? h + ' Std' : '', m ? m + ' Min' : '', x && !h ? x + ' Sek' : ''].filter(Boolean).join(' ') || '+0 Sek';
+}
+function autoVal(k, c) {
+  const f = c.priceFmt, rw = (c.cp_rewards || []).find(r => r.on);
+  const m = {
+    follow: c.en_follow && fmtT(c.follow, f), t1: c.en_sub && fmtT(c.t1, f), t2: c.en_sub && fmtT(c.t2, f), t3: c.en_sub && fmtT(c.t3, f),
+    prime: c.en_sub && fmtT(c.prime, f), gift: c.en_gift && fmtT(c.t1 * c.giftPct / 100, f),
+    bits: c.en_bits && fmtT(c.bits, f) + ' / 100 Bits', raid: c.en_raid && fmtT(c.raid, f) + ' / Zuschauer',
+    points: c.cp_on && rw && fmtT(rw.sec, f) + ' / ' + num(rw.cost) + ' Punkte',
+    yt: c.yt_on && fmtT(c.yt_sc, f) + ' / 1 €', tiktok: c.tt_on && fmtT(c.tt_coin, f) + ' / Coin'
+  };
+  return m[k] || '';
+}
+function priceList() {
+  const c = S.cfg; show('price', c.ov_price || DEMO); if (!(c.ov_price || DEMO)) return;
+  $('price').style.setProperty('--pc', c.priceColor || '');
+  $('ptitle').textContent = c.priceTitle || '';
+  $('ptitle').style.display = c.priceTitle ? '' : 'none';
+  $('pcredit').style.display = c.priceCredit === false ? 'none' : '';
+  const rows = (c.priceRows || []).filter(r => r.on).map(r => ({ r, v: r.v || (r.k ? autoVal(r.k, c) : '') })).filter(x => x.v || !x.r.k);
+  const html = rows.map(({ r, v }) => `<div class="pr"><span><span class="ic">${esc(r.ic)}</span>${esc(r.n)}</span><em>${esc(v)}</em></div>`).join('') || '<div class="empty">Keine Zeilen aktiv.</div>';
+  if ($('plist').innerHTML !== html) $('plist').innerHTML = html;
+}
 function ticker() {
   const c = S.cfg; show('ticker', c.ov_ticker); if (!c.ov_ticker) return;
   let ev = S.log.filter(x => x.sec > 0 && ICON[x.kind]).slice(-c.tickerCount).reverse();
@@ -180,6 +216,7 @@ function render() {
   else if (W === 'hh') hh();
   else if (W === 'top') topList();
   else if (W === 'ticker') ticker();
+  else if (W === 'price') priceList();
   else if (W === 'wheel') {
     show('wheel', S.cfg.ov_wheel);
     if (DEMO && !wheelTimer && S.cfg.ov_wheel) { drawWheel(S.cfg.wheelFields); $('wheel').classList.remove('idle'); $('wt').textContent = 'Dreht sich bei einer Gift-Bombe'; }

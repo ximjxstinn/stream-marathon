@@ -1,5 +1,16 @@
 [
   {
+    "version": "1.5.0",
+    "date": "27.10.2026",
+    "items": [
+      "🖱️ „In OBS ziehen“ – Link direkt in die OBS-Vorschau ziehen, die Quelle bekommt automatisch die richtige Größe (Hauptoverlay 1920×1080)",
+      "✨ Einblendungen (+2h 30m …) frei platzierbar: unter, links, rechts vom Timer, oben links/rechts oder Mitte – plus Feinverschiebung und Größe",
+      "📋 Neues Overlay „Preisliste“ – Namen, Zeiten, Icons, eigene Zeilen, Reihenfolge per Ziehen, Farbe, Format, Position und Größe",
+      "📨 Unter Allgemein siehst du jetzt, welche Meldungen die App gesendet hat",
+      "💜 „entwickelt von xImJxstinn“ + Über-Fenster"
+    ]
+  },
+  {
     "version": "1.4.4",
     "date": "27.10.2026",
     "items": [

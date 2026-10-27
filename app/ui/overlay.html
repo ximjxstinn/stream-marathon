@@ -17,10 +17,18 @@ html,body{height:100%}
 #time{display:inline-block;font-weight:900;font-size:var(--s);line-height:1;font-variant-numeric:tabular-nums;white-space:nowrap}
 #stats{margin-top:10px;font-weight:700;font-size:calc(var(--s)*.2*var(--st,1));display:flex;gap:calc(var(--s)*.2*var(--st,1));justify-content:var(--just)}
 body.ended #time{color:#ff4d6d}
-#pops{position:relative;height:calc(var(--s)*.9);margin-top:6px;width:100%}
+#pops{position:relative;height:calc(var(--s)*.9*var(--ps,1));margin-top:6px;width:100%;transform:translate(var(--px,0px),var(--py,0px))}
+#pops.pp-left,#pops.pp-right{position:absolute;top:calc(var(--s)*.3);width:calc(var(--s)*4*var(--ps,1));margin:0}
+#pops.pp-left{right:calc(100% + 16px)}#pops.pp-right{left:calc(100% + 16px)}
+#pops.pp-tl,#pops.pp-tr{position:absolute;top:24px;width:calc(var(--s)*4.5*var(--ps,1));margin:0}
+#pops.pp-tl{left:24px}#pops.pp-tr{right:24px}
+#pops.pp-center{position:absolute;left:50%;top:45%;width:calc(var(--s)*5*var(--ps,1));margin:0;transform:translate(calc(-50% + var(--px,0px)),calc(-50% + var(--py,0px)))}
+#pops.pp-left .pop,#pops.pp-tr .pop{text-align:right;transform-origin:right center}
+#pops.pp-right .pop,#pops.pp-tl .pop{text-align:left;transform-origin:left center}
+#pops.pp-center .pop{text-align:center}
 /* Eingebettete Overlays */
 body.full{height:100vh}
-body.panic #wrap,body.panic .emb,body.pausing #wrap,body.pausing .emb{visibility:hidden}
+body.panic #wrap,body.panic .emb,body.pausing #wrap,body.pausing .emb,body.panic #pops,body.pausing #pops{visibility:hidden}
 #pauseScr{position:fixed;inset:0;display:none;place-items:center;text-align:center;z-index:5}
 body.pausing #pauseScr{display:grid}
 #pauseScr .pb{background:rgba(14,14,16,.85);border:2px solid var(--a);border-radius:24px;padding:40px 60px;font-weight:900;font-size:calc(var(--s)*.5);text-shadow:0 3px 12px #000c;animation:breath 2.4s ease-in-out infinite}
@@ -30,7 +38,7 @@ body.pausing #pauseScr{display:grid}
 .emb iframe{border:0;background:transparent;transform-origin:0 0;display:block}
 #below{display:flex;flex-direction:column;align-items:var(--just);gap:4px;width:100%}
 #below .emb{position:relative}
-.pop{position:absolute;left:0;right:0;font-weight:900;font-size:calc(var(--s)*.3);color:var(--a);text-align:var(--align);animation:pop var(--pd,3.2s) ease forwards}
+.pop{position:absolute;left:0;right:0;font-weight:900;font-size:calc(var(--s)*.3*var(--ps,1));color:var(--a);text-align:var(--align);animation:pop var(--pd,3.2s) ease forwards}
 .pop small{display:block;font-size:.55em;color:var(--c);font-weight:700}
 @keyframes pop{0%{opacity:0;transform:translateY(20px) scale(.8)}12%{opacity:1;transform:translateY(0) scale(1.08)}20%{transform:scale(1)}80%{opacity:1}100%{opacity:0;transform:translateY(-30px)}}
 .blink{animation:bl .45s 3}
@@ -85,12 +93,18 @@ function apply(c) {
   r.setProperty('--pad', c.boxOn ? (c.size * .18) + 'px' : '0px');
   r.setProperty('--pd', c.popDur + 's');
   r.setProperty('--st', (c.statSize || 100) / 100);
+  // Einblendungen: Position und Größe
+  const pos = c.popPos || 'below', P = $('pops');
+  r.setProperty('--ps', (c.popSize || 100) / 100); r.setProperty('--px', (c.popX || 0) + 'px'); r.setProperty('--py', (c.popY || 0) + 'px');
+  const parent = ['tl', 'tr', 'center'].includes(pos) ? document.body : $('wrap');
+  if (P.parentNode !== parent) parent.appendChild(P);
+  P.className = 'pp-' + pos;
   r.setProperty('--tx', (c.timerX ?? 50) + '%'); r.setProperty('--ty', (c.timerY ?? 0) + '%');
   $('pops').style.display = c.pops ? '' : 'none';
 }
 
 // ---------- Eingebettete Overlays ----------
-const EMB = { goals: [440, 300], hh: [600, 100], top: [360, 330], wheel: [400, 440] };
+const EMB = { goals: [440, 300], hh: [600, 100], top: [360, 330], wheel: [400, 440], price: [400, 480] };
 const embeds = {};
 function place(box, pos, w, h, bottomGap) {
   const g = 20, st = box.style;
@@ -107,7 +121,7 @@ function embed(c) {
   let any = false;
   const sz = w => (c['sz_' + w] || 100) / 100;
   const tickGap = c.ov_ticker && c.m_ticker ? 60 * sz('ticker') * sc : 0;
-  for (const w of ['goals', 'hh', 'top', 'wheel', 'ticker']) {
+  for (const w of ['goals', 'hh', 'top', 'wheel', 'price', 'ticker']) {
     const on = c['ov_' + w] && c['m_' + w];
     let e = embeds[w];
     if (!on) { if (e) { e.box.remove(); delete embeds[w]; } continue; }
@@ -129,7 +143,7 @@ function embed(c) {
     e.sc = sc; e.W = W; e.H = H;
     Object.assign(e.box.style, { width: W * sc + 'px', height: (e.fitH ?? H) * sc + 'px' });
     Object.assign(e.f.style, { width: W + 'px', height: H + 'px', transform: `scale(${sc})` });
-    e.box.style.order = ['hh', 'goals', 'top', 'wheel'].indexOf(w); // Happy Hour immer direkt unter dem Timer
+    e.box.style.order = ['hh', 'goals', 'top', 'price', 'wheel'].indexOf(w); // Happy Hour immer direkt unter dem Timer
     if (pos === 'tc') { e.box.style.left = e.box.style.top = e.box.style.right = e.box.style.bottom = e.box.style.transform = ''; }
     else place(e.box, pos, W * sc, H * sc, tickGap);
   }

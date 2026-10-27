@@ -119,6 +119,30 @@ ol b{color:var(--text)}
 .hk .s{font-size:12px;text-align:right}
 .toast{position:fixed;right:20px;bottom:20px;background:#00f59322;border:1px solid var(--ok);color:var(--ok);padding:8px 14px;border-radius:8px;font-weight:700;opacity:0;transition:.2s;pointer-events:none}
 .toast.on{opacity:1}
+.dragbig{display:flex;align-items:center;gap:12px;background:linear-gradient(135deg,var(--brand),#ff4fd8);border-radius:10px;padding:12px 14px;font-weight:800;cursor:grab;user-select:none;color:#fff;text-decoration:none;margin-bottom:10px}
+.dragbig:active{cursor:grabbing}
+.dragbig i{font-style:normal;font-size:22px}
+.dragbig small{display:block;font-weight:600;opacity:.9;font-size:11.5px;margin-top:1px}
+.dragmini{display:inline-flex;align-items:center;gap:6px;background:#9146ff33;border:1px solid #9146ff88;color:#fff;border-radius:8px;padding:8px 10px;font-weight:700;font-size:12px;cursor:grab;text-decoration:none;white-space:nowrap}
+.posg{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.posg button{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 4px;color:var(--muted);font-weight:700;font-size:12px;cursor:pointer}
+.posg button.on{background:#9146ff33;border-color:var(--brand);color:#fff}
+.prow{display:grid;grid-template-columns:16px 42px 1fr 140px 38px 30px;gap:6px;align-items:center;margin-top:6px;border-radius:8px}
+.prow .h{color:var(--dim);cursor:grab;text-align:center;user-select:none}
+.prow input{padding:6px 8px}
+.prow .ic{text-align:center;font-size:16px;padding:4px!important}
+.prow input::placeholder{color:#00f59399}
+.prow.over{outline:2px dashed var(--brand)}
+.prow.dragging{opacity:.4}
+.rep{background:var(--bg);border:1px solid var(--line);border-left:4px solid var(--brand);border-radius:8px;padding:9px 12px;margin-top:8px;font-size:12.5px}
+.rep .tt{color:var(--dim);float:right;font-size:11px}
+.rep .kv{display:grid;grid-template-columns:100px 1fr;gap:2px 10px;margin-top:5px;color:var(--muted)}
+.rep .kv span:nth-child(odd){color:var(--dim)}
+.credit{margin-top:10px;text-align:center;font-size:11px;color:var(--dim);line-height:1.5;cursor:pointer}
+.credit b{background:linear-gradient(90deg,#bf94ff,#ff4fd8);-webkit-background-clip:text;background-clip:text;color:transparent;font-weight:900}
+.about .card{text-align:center;padding:30px 40px;max-width:420px;margin:0}
+.about .lg{width:64px;height:64px;border-radius:16px;margin:0 auto 10px;background:linear-gradient(135deg,var(--brand),#ff4fd8);display:grid;place-items:center;font-size:34px}
+
 /* Profile */
 .prof{margin:0 0 14px;position:relative}
 .prof .sel{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-weight:700;cursor:pointer}
@@ -213,6 +237,7 @@ a{color:#bf94ff}
     <button data-tab="changelog">📋 Changelog</button>
     <button data-tab="admin">🛡️ Admin</button>
   </nav>
+  <div class="credit" id="credit" title="Über Stream Marathon"><span id="credVer"></span> · entwickelt von <b>xImJxstinn</b></div>
   <div class="mini">
     <div class="t" id="miniTime">0:00:00</div>
     <div><span class="dot" id="dIrc"></span>Subs & Bits</div>
@@ -262,11 +287,13 @@ a{color:#bf94ff}
     </div>
     <div class="card">
       <h2>📺 In OBS einfügen</h2>
-      <div class="copy"><input type="text" id="ovUrl" readonly><button class="btn pri" data-copy="ovUrl">Kopieren</button></div>
+      <a class="dragbig" data-drag="main" draggable="true"><i>⤵</i><div>Hauptoverlay in OBS ziehen<small>Mit der Maus auf das OBS-Vorschaubild ziehen – Name und Größe 1920 × 1080 automatisch</small></div></a>
+      <div class="hint" style="margin:0 0 6px">Oder klassisch: Adresse kopieren</div>
+      <div class="copy"><input type="text" id="ovUrl" readonly><button class="btn" data-copy="ovUrl">Kopieren</button></div>
       <ol>
         <li>In OBS: <b>Quelle hinzufügen → Browser</b></li>
         <li>Die Adresse oben bei <b>URL</b> einfügen</li>
-        <li>Breite <b>1920</b>, Höhe <b>1080</b> (ganzer Bildschirm – nicht in OBS verkleinern)</li>
+        <li>Breite <b>1920</b>, Höhe <b>1080</b> eintragen (beim Ziehen passiert das automatisch)</li>
         <li>Timer verschieben: in der App unter <b>🎨 Design → Position</b>, nicht in OBS</li>
         <li>Die App muss während des Streams offen bleiben</li>
       </ol>
@@ -434,6 +461,17 @@ a{color:#bf94ff}
 
       <div class="card">
         <h2>✨ Einblendungen <label class="sw"><input type="checkbox" data-k="pops"><span></span></label></h2>
+        <label class="f" style="margin-top:0">Wo erscheint „+5 Min …“?</label>
+        <div class="posg" data-seg="popPos">
+          <button data-v="left">◀ Links vom Timer</button><button data-v="below">▼ Unter dem Timer</button><button data-v="right">Rechts vom Timer ▶</button>
+          <button data-v="tl">↖ Oben links</button><button data-v="center">● Bildmitte</button><button data-v="tr">↗ Oben rechts</button>
+        </div>
+        <div class="two">
+          <div><label class="f">Verschieben ↔ (px)</label><div class="rng"><input type="range" data-k="popX" min="-600" max="600" step="5"><input type="number" data-k="popX"></div></div>
+          <div><label class="f">Verschieben ↕ (px)</label><div class="rng"><input type="range" data-k="popY" min="-400" max="400" step="5"><input type="number" data-k="popY"></div></div>
+        </div>
+        <label class="f">Größe der Einblendungen (%)</label>
+        <div class="rng"><input type="range" data-k="popSize" min="40" max="250" step="5"><input type="number" data-k="popSize" min="30" max="400"></div>
         <label class="f">Anzeigedauer (Sekunden)</label>
         <div class="rng"><input type="range" data-k="popDur" min="1.5" max="8" step="0.1"><input type="number" data-k="popDur" min="1" step="0.1"></div>
         <label class="chk"><span class="sw"><input type="checkbox" data-k="popManual"><span></span></span>Auch bei manuellen Änderungen einblenden</label>
@@ -508,7 +546,7 @@ a{color:#bf94ff}
       <div class="stage"><iframe data-src="/overlay/goals?demo"></iframe></div>
       <label class="f">Größe (%)</label>
       <div class="rng"><input type="range" data-k="sz_goals" min="40" max="200" step="5"><input type="number" data-k="sz_goals" min="30" max="400"></div>
-      <div class="copy" style="margin-top:10px"><input type="text" data-url="goals" readonly><button class="btn" data-copyurl>Kopieren</button></div>
+      <div class="copy" style="margin-top:10px"><input type="text" data-url="goals" readonly><button class="btn" data-copyurl>Kopieren</button><a class="dragmini" data-drag="goals" draggable="true" title="Auf das OBS-Vorschaubild ziehen">⤵ In OBS ziehen</a></div>
       <div class="mainrow"><label class="chk" style="margin:0"><span class="sw"><input type="checkbox" data-k="m_goals"><span></span></span>Im Hauptoverlay anzeigen</label><select data-k="p_goals"><option value="tl">Oben links</option><option value="tc">Unter dem Timer</option><option value="tr">Oben rechts</option><option value="ml">Mitte links</option><option value="mr">Mitte rechts</option><option value="bl">Unten links</option><option value="bc">Unten Mitte</option><option value="br">Unten rechts</option></select></div>
       <label class="f">Deine Ziele</label>
       <div id="goalList"></div>
@@ -521,7 +559,7 @@ a{color:#bf94ff}
       <div class="stage"><iframe data-src="/overlay/hh?demo"></iframe></div>
       <label class="f">Größe (%)</label>
       <div class="rng"><input type="range" data-k="sz_hh" min="40" max="200" step="5"><input type="number" data-k="sz_hh" min="30" max="400"></div>
-      <div class="copy" style="margin-top:10px"><input type="text" data-url="hh" readonly><button class="btn" data-copyurl>Kopieren</button></div>
+      <div class="copy" style="margin-top:10px"><input type="text" data-url="hh" readonly><button class="btn" data-copyurl>Kopieren</button><a class="dragmini" data-drag="hh" draggable="true" title="Auf das OBS-Vorschaubild ziehen">⤵ In OBS ziehen</a></div>
       <div class="mainrow"><label class="chk" style="margin:0"><span class="sw"><input type="checkbox" data-k="m_hh"><span></span></span>Im Hauptoverlay anzeigen</label><select data-k="p_hh"><option value="tl">Oben links</option><option value="tc">Unter dem Timer</option><option value="tr">Oben rechts</option><option value="ml">Mitte links</option><option value="mr">Mitte rechts</option><option value="bl">Unten links</option><option value="bc">Unten Mitte</option><option value="br">Unten rechts</option></select></div>
       <div class="two">
         <div><label class="f">Multiplikator (×)</label><input type="number" data-k="hhMult" min="1" step="0.5"></div>
@@ -535,7 +573,7 @@ a{color:#bf94ff}
       <div class="stage"><iframe data-src="/overlay/top?demo"></iframe></div>
       <label class="f">Größe (%)</label>
       <div class="rng"><input type="range" data-k="sz_top" min="40" max="200" step="5"><input type="number" data-k="sz_top" min="30" max="400"></div>
-      <div class="copy" style="margin-top:10px"><input type="text" data-url="top" readonly><button class="btn" data-copyurl>Kopieren</button></div>
+      <div class="copy" style="margin-top:10px"><input type="text" data-url="top" readonly><button class="btn" data-copyurl>Kopieren</button><a class="dragmini" data-drag="top" draggable="true" title="Auf das OBS-Vorschaubild ziehen">⤵ In OBS ziehen</a></div>
       <div class="mainrow"><label class="chk" style="margin:0"><span class="sw"><input type="checkbox" data-k="m_top"><span></span></span>Im Hauptoverlay anzeigen</label><select data-k="p_top"><option value="tl">Oben links</option><option value="tc">Unter dem Timer</option><option value="tr">Oben rechts</option><option value="ml">Mitte links</option><option value="mr">Mitte rechts</option><option value="bl">Unten links</option><option value="bc">Unten Mitte</option><option value="br">Unten rechts</option></select></div>
       <div class="two">
         <div><label class="f">Anzahl Plätze</label><input type="number" data-k="topCount" min="1" max="15"></div>
@@ -549,7 +587,7 @@ a{color:#bf94ff}
       <div class="stage tall"><iframe data-src="/overlay/wheel?demo"></iframe></div>
       <label class="f">Größe (%)</label>
       <div class="rng"><input type="range" data-k="sz_wheel" min="40" max="200" step="5"><input type="number" data-k="sz_wheel" min="30" max="400"></div>
-      <div class="copy" style="margin-top:10px"><input type="text" data-url="wheel" readonly><button class="btn" data-copyurl>Kopieren</button></div>
+      <div class="copy" style="margin-top:10px"><input type="text" data-url="wheel" readonly><button class="btn" data-copyurl>Kopieren</button><a class="dragmini" data-drag="wheel" draggable="true" title="Auf das OBS-Vorschaubild ziehen">⤵ In OBS ziehen</a></div>
       <div class="mainrow"><label class="chk" style="margin:0"><span class="sw"><input type="checkbox" data-k="m_wheel"><span></span></span>Im Hauptoverlay anzeigen</label><select data-k="p_wheel"><option value="tl">Oben links</option><option value="tc">Unter dem Timer</option><option value="tr">Oben rechts</option><option value="ml">Mitte links</option><option value="mr">Mitte rechts</option><option value="bl">Unten links</option><option value="bc">Unten Mitte</option><option value="br">Unten rechts</option></select></div>
       <div class="two">
         <div><label class="f">Dreht ab … Gift-Subs auf einmal</label><input type="number" data-k="wheelMin" min="1"></div>
@@ -560,12 +598,31 @@ a{color:#bf94ff}
       <div class="hint">Bei einer Gift-Bombe dreht sich das Rad, die Bonuszeit kommt zusätzlich zu den Gift-Subs. Größe: 400 × 440.</div>
     </div>
 
+    <div class="card ov" data-ov="ov_price">
+      <h2>📜 Preisliste <label class="sw"><input type="checkbox" data-k="ov_price"><span></span></label></h2>
+      <div class="stage tall"><iframe data-src="/overlay/price?demo"></iframe></div>
+      <label class="f">Größe (%)</label>
+      <div class="rng"><input type="range" data-k="sz_price" min="40" max="200" step="5"><input type="number" data-k="sz_price" min="30" max="400"></div>
+      <div class="copy" style="margin-top:10px"><input type="text" data-url="price" readonly><button class="btn" data-copyurl>Kopieren</button><a class="dragmini" data-drag="price" draggable="true" title="Auf das OBS-Vorschaubild ziehen">⤵ In OBS ziehen</a></div>
+      <div class="mainrow"><label class="chk" style="margin:0"><span class="sw"><input type="checkbox" data-k="m_price"><span></span></span>Im Hauptoverlay anzeigen</label><select data-k="p_price"><option value="tl">Oben links</option><option value="tc">Unter dem Timer</option><option value="tr">Oben rechts</option><option value="ml">Mitte links</option><option value="mr">Mitte rechts</option><option value="bl">Unten links</option><option value="bc">Unten Mitte</option><option value="br">Unten rechts</option></select></div>
+      <label class="f">Überschrift</label><input type="text" data-k="priceTitle" maxlength="60">
+      <div class="prow" style="color:var(--dim);font-size:11px;font-weight:700;margin-top:10px"><span></span><span>Symbol</span><span>Name</span><span>Zeit / Text</span><span>An</span><span></span></div>
+      <div id="priceList"></div>
+      <div class="row" style="margin-top:8px"><button class="btn" id="bPriceAdd" style="flex:none">+ Eigene Zeile</button><button class="btn" id="bPriceReset" style="flex:none">↺ Standard</button></div>
+      <div class="two">
+        <div><label class="f">Akzentfarbe</label><input type="color" data-k="priceColor"></div>
+        <div><label class="f">Zeitformat (automatisch)</label><select data-k="priceFmt"><option value="min">+20 Min</option><option value="sec">+1200s</option><option value="clock">+20:00</option></select></div>
+      </div>
+      <label class="chk"><span class="sw"><input type="checkbox" data-k="priceCredit"><span></span></span>„Stream Marathon · by xImJxstinn“ anzeigen</label>
+      <div class="hint">Leeres Zeit-Feld = Wert kommt <b>automatisch</b> aus „Events & Zeiten“ (grün angezeigt) und ändert sich mit. Ist ein Event aus, verschwindet die Zeile von selbst. Reihenfolge: an ⠿ ziehen.</div>
+    </div>
+
     <div class="card ov" data-ov="ov_ticker" style="grid-column:1/-1">
       <h2>📰 Event-Laufband <label class="sw"><input type="checkbox" data-k="ov_ticker"><span></span></label></h2>
       <div class="stage wide"><iframe data-src="/overlay/ticker?demo"></iframe></div>
       <label class="f">Größe (%)</label>
       <div class="rng"><input type="range" data-k="sz_ticker" min="40" max="200" step="5"><input type="number" data-k="sz_ticker" min="30" max="400"></div>
-      <div class="copy" style="margin-top:10px"><input type="text" data-url="ticker" readonly><button class="btn" data-copyurl>Kopieren</button></div>
+      <div class="copy" style="margin-top:10px"><input type="text" data-url="ticker" readonly><button class="btn" data-copyurl>Kopieren</button><a class="dragmini" data-drag="ticker" draggable="true" title="Auf das OBS-Vorschaubild ziehen">⤵ In OBS ziehen</a></div>
       <div class="mainrow"><label class="chk" style="margin:0"><span class="sw"><input type="checkbox" data-k="m_ticker"><span></span></span>Im Hauptoverlay anzeigen (unten über die ganze Breite)</label></div>
       <div class="two">
         <div><label class="f">Anzahl Events</label><input type="number" data-k="tickerCount" min="1" max="30"></div>
@@ -770,9 +827,10 @@ a{color:#bf94ff}
       <div class="hint" id="portNote" style="color:var(--warn)"></div>
     </div>
     <div class="card">
-      <h2>📡 Nutzungsmeldung</h2>
+      <h2>📡 Nutzungsmeldung <span class="hint" style="margin:0 0 0 auto">letzte 20</span></h2>
       <div class="hint" style="margin-top:0">Stream Marathon meldet dem Entwickler <b>xImJxstinn</b>, welcher Kanal die App nutzt. Gesendet wird nur: dein Kanalname, App-Version, eine zufällige ID, deine Timer-Einstellungen und am Ende die Marathon-Statistik. <b>Nie</b> dein Twitch-Login oder deine Client-ID. Gemeldet wird beim App-Start (höchstens alle 6 Std.) sowie beim Start und Ende eines Marathons.</div>
       <div class="hint" id="verTxt"></div>
+      <div id="repList"></div>
     </div>
   </div>
 </section>
@@ -795,6 +853,13 @@ a{color:#bf94ff}
 </main>
 
 <div class="toast" id="toast">✔ Gespeichert</div>
+<div class="modal about" id="about"><div class="card">
+  <div class="lg">⏱</div><h2 style="justify-content:center;font-size:20px">Stream Marathon</h2>
+  <div class="hint" style="margin:0" id="aboutVer"></div>
+  <p style="margin:14px 0 4px;font-size:15px">entwickelt von <b style="background:linear-gradient(90deg,#bf94ff,#ff4fd8);-webkit-background-clip:text;background-clip:text;color:transparent;font-weight:900">xImJxstinn</b></p>
+  <div class="hint"><a href="https://twitch.tv/ximjxstinn" target="_blank">twitch.tv/ximjxstinn</a></div>
+  <button class="btn" id="bAboutClose" style="margin-top:16px">Schließen</button>
+</div></div>
 <div class="modal" id="news"><div class="card new">
   <h2 id="newsTitle">🎉 Neu</h2>
   <p class="hint" style="margin:4px 0 0">Die App hat sich gerade aktualisiert.</p>
@@ -1027,7 +1092,7 @@ function renderOverlays(c) {
   const port = location.port || 7777;
   $$('[data-url]').forEach(el => el.value = `http://localhost:${port}/overlay/${el.dataset.url}`);
   $$('.ov').forEach(el => el.classList.toggle('off', !c[el.dataset.ov]));
-  ['goals', 'hh', 'top', 'wheel'].forEach(w => {
+  ['goals', 'hh', 'top', 'wheel', 'price'].forEach(w => {
     const sel = document.querySelector(`select[data-k="p_${w}"]`);
     if (sel) sel.disabled = !c['m_' + w];
   });
@@ -1222,12 +1287,82 @@ $('bAddCp').onclick = () => {
   drawCp(); saveCp();
 };
 
+
+// ================= In OBS ziehen =================
+const LAYER = { main: ['Stream Marathon', 1920, 1080, '/overlay'], goals: ['SM Ziele', 440, 300], hh: ['SM Happy Hour', 600, 100], top: ['SM Top-Supporter', 360, 330],
+  wheel: ['SM Glücksrad', 400, 440], ticker: ['SM Laufband', 1920, 60], price: ['SM Preisliste', 400, 480] };
+function dragUrl(w) {
+  const port = location.port || 7777, L = LAYER[w], sz = w === 'main' || w === 'ticker' ? 1 : ((S && S.cfg['sz_' + w]) || 100) / 100;
+  const W = Math.round(L[1] * (w === 'ticker' ? 1 : sz)), H = Math.round(L[2] * sz);
+  return `http://localhost:${port}${L[3] || '/overlay/' + w}?layer-name=${encodeURIComponent(L[0])}&layer-width=${W}&layer-height=${H}`;
+}
+$$('[data-drag]').forEach(a => {
+  a.addEventListener('click', e => e.preventDefault());
+  a.addEventListener('dragstart', e => { const u = dragUrl(a.dataset.drag); a.href = u; e.dataTransfer.setData('text/uri-list', u); e.dataTransfer.setData('text/plain', u); });
+});
+function renderDrag() { $$('[data-drag]').forEach(a => a.href = dragUrl(a.dataset.drag)); }
+
+// ================= Preisliste =================
+const PRICE_DEF = [['follow', '❤️', 'Follow', true], ['t1', '💜', 'Sub (Tier 1)', true], ['t2', '💜', 'Sub (Tier 2)', false], ['t3', '💜', 'Sub (Tier 3)', false],
+  ['prime', '👑', 'Prime-Sub', true], ['gift', '🎁', 'Sub verschenken', true], ['bits', '✨', 'Bits', true], ['raid', '🚀', 'Raid', true],
+  ['points', '💠', 'Kanalpunkte', false], ['yt', '▶️', 'YouTube Super Chat', false], ['tiktok', '♪', 'TikTok-Geschenke', false]].map(([k, ic, n, on]) => ({ k, ic, n, v: '', on }));
+let prDraft = null, prT = null, prDragI = null;
+function fmtP(sec, f) {
+  sec = Math.round(sec);
+  if (f === 'sec') return '+' + sec + 's';
+  if (f === 'clock') { const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), x = sec % 60; return '+' + (h ? h + ':' + pad(m) : m) + ':' + pad(x); }
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), x = sec % 60;
+  return '+' + [h ? h + ' Std' : '', m ? m + ' Min' : '', x && !h ? x + ' Sek' : ''].filter(Boolean).join(' ') || '+0 Sek';
+}
+function autoP(k, c) {
+  const f = c.priceFmt, rw = (c.cp_rewards || []).find(r => r.on);
+  return ({ follow: fmtP(c.follow, f), t1: fmtP(c.t1, f), t2: fmtP(c.t2, f), t3: fmtP(c.t3, f), prime: fmtP(c.prime, f), gift: fmtP(c.t1 * c.giftPct / 100, f),
+    bits: fmtP(c.bits, f) + ' / 100 Bits', raid: fmtP(c.raid, f) + ' / Zuschauer', points: rw ? fmtP(rw.sec, f) + ' / ' + num(rw.cost) + ' Punkte' : '',
+    yt: fmtP(c.yt_sc, f) + ' / 1 €', tiktok: fmtP(c.tt_coin, f) + ' / Coin' })[k] || '';
+}
+function drawPrice() {
+  const c = S.cfg;
+  $('priceList').innerHTML = prDraft.map((r, i) => `<div class="prow" data-i="${i}" draggable="true">
+    <span class="h" title="Ziehen zum Sortieren">⠿</span><input type="text" class="ic" data-pf="ic" value="${esc(r.ic)}">
+    <input type="text" data-pf="n" value="${esc(r.n)}" placeholder="Name"><input type="text" data-pf="v" value="${esc(r.v)}" placeholder="${esc(r.k ? autoP(r.k, c) : 'Text')}">
+    <label class="sw"><input type="checkbox" data-pf="on" ${r.on ? 'checked' : ''}><span></span></label>
+    <button class="btn minus" data-pdel style="padding:6px 0">✕</button></div>`).join('');
+}
+const savePrice = () => { clearTimeout(prT); prT = setTimeout(() => queue('priceRows', prDraft), 500); };
+$('priceList').addEventListener('input', e => {
+  const row = e.target.closest('.prow'), f = e.target.dataset.pf; if (!row || !f) return;
+  prDraft[+row.dataset.i][f] = f === 'on' ? e.target.checked : e.target.value; savePrice();
+});
+$('priceList').addEventListener('change', e => { if (e.target.dataset.pf === 'on') e.target.dispatchEvent(new Event('input', { bubbles: true })); });
+$('priceList').addEventListener('click', e => { if (!e.target.matches('[data-pdel]')) return; prDraft.splice(+e.target.closest('.prow').dataset.i, 1); drawPrice(); savePrice(); });
+$('priceList').addEventListener('dragstart', e => { const r = e.target.closest && e.target.closest('.prow'); if (!r) return; prDragI = +r.dataset.i; r.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', 'row'); });
+$('priceList').addEventListener('dragover', e => { const r = e.target.closest('.prow'); if (prDragI === null || !r) return; e.preventDefault(); $$('#priceList .prow').forEach(x => x.classList.toggle('over', x === r)); });
+$('priceList').addEventListener('drop', e => {
+  const r = e.target.closest('.prow'); if (prDragI === null || !r) return; e.preventDefault();
+  const to = +r.dataset.i, [m] = prDraft.splice(prDragI, 1); prDraft.splice(to, 0, m); prDragI = null; drawPrice(); savePrice();
+});
+$('priceList').addEventListener('dragend', () => { prDragI = null; $$('#priceList .prow').forEach(x => x.classList.remove('over', 'dragging')); });
+$('bPriceAdd').onclick = () => { prDraft.push({ k: '', ic: '⭐', n: '', v: '', on: true }); drawPrice(); savePrice(); const ins = $$('#priceList [data-pf="n"]'); ins[ins.length - 1].focus(); };
+$('bPriceReset').onclick = () => ask('Preisliste auf Standard zurücksetzen?', '', () => { prDraft = JSON.parse(JSON.stringify(PRICE_DEF)); drawPrice(); queue('priceRows', prDraft); }, 'Zurücksetzen');
+
+// ================= Meldungen & Credits =================
+$('credit').onclick = () => $('about').classList.add('on');
+$('bAboutClose').onclick = () => $('about').classList.remove('on');
+function renderReports() {
+  const R = (S.reports || []).slice().reverse();
+  const h = R.map(r => `<div class="rep"><span class="tt">${new Date(r.t).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span><b>${esc(r.title)}</b>
+    <div class="kv">${r.fields.map(f => `<span>${esc(f.name)}</span><span>${esc(f.value).replace(/\n/g, '<br>')}</span>`).join('')}</div></div>`).join('') || '<div class="hint">Noch keine Meldung gesendet.</div>';
+  if ($('repList').dataset.h !== h) { $('repList').dataset.h = h; $('repList').innerHTML = h; }
+}
+
 function renderSnap() {
   const c = S.cfg, s = S.state, st = S.status;
   fillForm(c);
   renderOverlays(c);
   renderUpdate();
-  renderProfiles(); renderDeck(c); renderChangelog(); renderAdmin();
+  renderProfiles(); renderDeck(c); renderChangelog(); renderAdmin(); renderDrag(); renderReports();
+  $('credVer').textContent = 'v' + (S.version || '?'); $('aboutVer').textContent = 'Version ' + (S.version || '?');
+  if (!prDraft || !document.activeElement.closest('#priceList')) { const j = JSON.stringify(c.priceRows || []); if ($('priceList').dataset.j !== j && !('priceRows' in pending) && prDragI === null) { $('priceList').dataset.j = j; prDraft = JSON.parse(j); drawPrice(); } }
   if (!cpDraft || !document.activeElement.closest('#cpList')) { const j = JSON.stringify(c.cp_rewards || []); if ($('cpList').dataset.j !== j && !('cp_rewards' in pending)) { $('cpList').dataset.j = j; cpDraft = JSON.parse(j); drawCp(); } }
   if (!cmdDraft || !document.activeElement.closest('#cmdList')) { const j = JSON.stringify(c.cmds); if ($('cmdList').dataset.j !== j) { $('cmdList').dataset.j = j; cmdDraft = JSON.parse(j); drawCmds(); } }
   $('ytKeyState').textContent = S.hasYtKey ? '✔ gespeichert' : '';

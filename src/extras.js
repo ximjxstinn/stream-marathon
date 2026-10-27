@@ -35,6 +35,24 @@ const NEW_DEF = {
   cp_migrated: false, cp_rewards: [{ title: '+1 Minute Subathon', cost: 500, sec: 60, max: 3, cool: 300, color: '#9146FF', on: true, id: '' }],
   // YouTube
   yt_on: false, yt_key: '', yt_channel: '', yt_sc: 60, yt_member: 300, yt_poll: 45,
+  // Einblendungen (+5m …): Position und Größe
+  popPos: 'below', popX: 0, popY: 0, popSize: 100,
+  // Preisliste
+  ov_price: false, m_price: false, p_price: 'mr', sz_price: 100, priceCredit: true,
+  priceTitle: '⏱ So verlängerst du den Timer', priceColor: '#bf94ff', priceFmt: 'min',
+  priceRows: [
+    { k: 'follow', ic: '❤️', n: 'Follow', v: '', on: true },
+    { k: 't1', ic: '💜', n: 'Sub (Tier 1)', v: '', on: true },
+    { k: 't2', ic: '💜', n: 'Sub (Tier 2)', v: '', on: false },
+    { k: 't3', ic: '💜', n: 'Sub (Tier 3)', v: '', on: false },
+    { k: 'prime', ic: '👑', n: 'Prime-Sub', v: '', on: true },
+    { k: 'gift', ic: '🎁', n: 'Sub verschenken', v: '', on: true },
+    { k: 'bits', ic: '✨', n: 'Bits', v: '', on: true },
+    { k: 'raid', ic: '🚀', n: 'Raid', v: '', on: true },
+    { k: 'points', ic: '💠', n: 'Kanalpunkte', v: '', on: false },
+    { k: 'yt', ic: '▶️', n: 'YouTube Super Chat', v: '', on: false },
+    { k: 'tiktok', ic: '♪', n: 'TikTok-Geschenke', v: '', on: false }
+  ],
   // TikTok über Zusatz-Tools (Event-Eingang)
   tt_on: true, tt_coin: 2, tt_follow: 0, tt_share: 0, tt_sub: 300
 };
@@ -86,6 +104,13 @@ function install(Core, DEF, H) {
       orig(k, v);
     };
   };
+  P.recordReport = function (title, fields) {
+    this.reports = this.reports || H.readJson(path.join(this.dir, 'reports.json'), []);
+    this.reports.push({ t: Date.now(), title, fields: (fields || []).map(f => ({ name: f.name, value: String(f.value).replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/`/g, '') })) });
+    this.reports = this.reports.slice(-20);
+    H.writeJson(path.join(this.dir, 'reports.json'), this.reports);
+    this.broadcast();
+  };
   P.addDiag = function (text) {
     this.diag.push({ t: Date.now(), text: String(text).slice(0, 200) });
     if (this.diag.length > 200) this.diag = this.diag.slice(-150);
@@ -112,6 +137,7 @@ function install(Core, DEF, H) {
     snap.admin = { unlocked: this.isAdmin(), until: this.adminUntil === Infinity ? 0 : this.adminUntil, defaultPw: checkPw('admin', this.cfg.adminHash) };
     snap.diag = this.diag.slice(-40);
     snap.changelog = this.changelog;
+    snap.reports = (this.reports || H.readJson(path.join(this.dir, 'reports.json'), [])).slice(-20);
     return snap;
   };
 
@@ -195,6 +221,19 @@ function install(Core, DEF, H) {
       }));
       return true;
     }
+    if (k === 'priceRows') {
+      if (!Array.isArray(v)) return true;
+      const KEYS = ['follow', 't1', 't2', 't3', 'prime', 'gift', 'bits', 'raid', 'points', 'yt', 'tiktok', ''];
+      this.cfg.priceRows = v.slice(0, 30).map(x => ({
+        k: KEYS.includes(x && x.k) ? x.k : '',
+        ic: String(x && x.ic || '').slice(0, 8), n: String(x && x.n || '').slice(0, 40), v: String(x && x.v || '').slice(0, 40), on: !!(x && x.on)
+      }));
+      return true;
+    }
+    if (k === 'popX' || k === 'popY') { const n = Number(v); if (isFinite(n)) this.cfg[k] = Math.max(-1500, Math.min(1500, Math.round(n))); return true; }
+    if (k === 'popPos') { this.cfg.popPos = ['below', 'left', 'right', 'tl', 'tr', 'center'].includes(v) ? v : 'below'; return true; }
+    if (k === 'priceFmt') { this.cfg.priceFmt = ['min', 'sec', 'clock'].includes(v) ? v : 'min'; return true; }
+    if (k === 'priceColor') { if (/^#[0-9a-f]{6}$/i.test(v)) this.cfg.priceColor = v; return true; }
     if (k === 'updChannel') { this.cfg.updChannel = v === 'beta' ? 'beta' : 'stable'; return true; }
     if (k === 'nightFrom' || k === 'nightTo') { if (hm(v) !== null) this.cfg[k] = String(v).trim(); return true; }
     if (k === 'yt_key' || k === 'yt_channel') { this.cfg[k] = String(v).trim().slice(0, 200); return true; }
