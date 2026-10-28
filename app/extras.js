@@ -555,6 +555,12 @@ function install(Core, DEF, H) {
       else if (type === 'sub') { sec = c.tt_sub; text = `${user} abonniert`; }
     }
     if (!c.tt_on || !(sec > 0)) return false;
+    // Re-Follow-Schutz auch für den Event-Eingang (Follows über Tools)
+    if (type === 'follow' && c.dedupe !== false) {
+      const hk = 'f:' + src.toLowerCase() + ':' + user.toLowerCase();
+      if (this.seen.has(hk)) { this.pushLog(`${user} folgt (schon gezählt)`, 0, 'info'); this.changed(); return true; }
+      this.seen.add(hk);
+    }
     this.addTime(sec, `♪ ${src}: ${text || user}`, null, { kind: 'tiktok', user });
     return true;
   };

@@ -481,7 +481,8 @@ class Core extends EventEmitter {
     if (!c.en_follow) return;
     // Erkennung über die feste Twitch-User-ID (ändert sich nie), sonst Login/Name – so zählt ein Re-Follow nicht erneut
     const key = 'f:' + String(ev.user_id || ev.user_login || ev.user_name || '').toLowerCase();
-    if (c.dedupe) {
+    // Schutz ist an, außer er wurde ausdrücklich ausgeschaltet (fehlender Wert = an)
+    if (c.dedupe !== false) {
       // Altes Format (nur Login/Name) weiter beachten, damit nach dem Update niemand doppelt zählt
       const oldKey = ev.user_login || ev.user_name;
       if (this.seen.has(key) || (oldKey && this.seen.has(oldKey))) { this.pushLog(`Follow von ${ev.user_name} (schon gezählt)`, 0, 'info'); this.changed(); return; }
