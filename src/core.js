@@ -353,7 +353,8 @@ class Core extends EventEmitter {
         const n = await r.json();
         this.setStatus('notice', (n && n.id && (n.text || n.title)) ? {
           id: String(n.id).slice(0, 64), title: String(n.title || '').slice(0, 120),
-          text: String(n.text || '').slice(0, 1000), level: n.level === 'warn' ? 'warn' : 'info', date: n.date || ''
+          text: String(n.text || '').slice(0, 1000), level: n.level === 'warn' ? 'warn' : 'info',
+          action: n.action === 'restart' ? 'restart' : '', date: n.date || ''
         } : null);
       } else if (r.status === 404) { this.setStatus('notice', null); }
     } catch (e) {}

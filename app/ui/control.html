@@ -259,7 +259,7 @@ a{color:#bf94ff}
 
 <main>
 <div id="notice" class="notice hide">
-  <div class="ni"><div class="nt" id="noticeTitle"></div><div class="nx" id="noticeText"></div></div>
+  <div class="ni"><div class="nt" id="noticeTitle"></div><div class="nx" id="noticeText"></div><button class="btn pri hide" id="noticeAct" style="margin-top:12px;flex:none">🔄 Jetzt neu starten</button></div>
   <button class="nb" id="noticeClose" title="Ausblenden">✕</button>
 </div>
 <!-- ================= ÜBERSICHT ================= -->
@@ -789,6 +789,7 @@ a{color:#bf94ff}
           <div><label class="f" style="margin-top:0">Titel</label><input type="text" id="ntTitle" maxlength="120" placeholder="z. B. Neue Version ist da"></div>
         </div>
         <label class="f">Text</label><textarea id="ntText" maxlength="1000" placeholder="Was sollen die Nutzer wissen?"></textarea>
+        <label class="chk" id="ntRestart" style="margin-top:12px" title="Zeigt jedem Nutzer einen „Jetzt neu starten“-Button im Banner – die Person klickt selbst."><input type="checkbox"> 🔄 Neustart-Button anzeigen <span class="s" style="opacity:.75">(jeder startet selbst neu – z. B. nach einem wichtigen Update)</span></label>
         <div class="row" style="margin-top:12px">
           <button class="btn pri" id="bNtSend" style="flex:none">📣 An alle senden</button>
           <button class="btn dang" id="bNtClear" style="flex:none">Aktive Ankündigung entfernen</button>
@@ -1295,7 +1296,7 @@ function renderAdmin() {
   $('ghTok').placeholder = S.hasGhToken ? 'Gespeichert – zum Ändern neuen Token eingeben' : 'github_pat_… (nur einmal nötig)';
   $('bGhDel').style.display = S.hasGhToken ? '' : 'none';
   const nowN = S.status && S.status.notice;
-  $('ntNow').innerHTML = nowN ? `Aktuell aktiv: <b>${esc(nowN.title || '(ohne Titel)')}</b> ${nowN.level === 'warn' ? '⚠️' : '📣'}` : 'Zurzeit ist keine Ankündigung aktiv.';
+  $('ntNow').innerHTML = nowN ? `Aktuell aktiv: <b>${esc(nowN.title || '(ohne Titel)')}</b> ${nowN.level === 'warn' ? '⚠️' : '📣'}${nowN.action === 'restart' ? ' · 🔄 mit Neustart-Button' : ''}` : 'Zurzeit ist keine Ankündigung aktiv.';
   $('bNtClear').style.display = nowN ? '' : 'none';
   const dg = (S.diag || []).slice().reverse().map(d => `${new Date(d.t).toLocaleTimeString('de-DE')}  ${esc(d.text)}`).join('<br>');
   if ($('diag').dataset.h !== dg) { $('diag').dataset.h = dg; $('diag').innerHTML = dg; }
@@ -1405,16 +1406,18 @@ function renderNotice(c, st) {
   box.classList.toggle('warn', n.level === 'warn');
   $('noticeTitle').textContent = n.title || 'Hinweis vom Entwickler';
   $('noticeText').textContent = n.text || '';
+  $('noticeAct').classList.toggle('hide', n.action !== 'restart');
   box.dataset.id = n.id; box.classList.remove('hide');
 }
 $('noticeClose').onclick = () => { const id = $('notice').dataset.id; if (id) queue('noticeSeen', id); $('notice').classList.add('hide'); };
+$('noticeAct').onclick = () => { $('noticeAct').textContent = '… wird neu gestartet'; $('noticeAct').disabled = true; act('restartNow'); };
 // --- Ankündigung senden (Admin) ---
 let ntLevel = 'info';
 $('ntLevel').querySelectorAll('button').forEach(b => b.onclick = () => { ntLevel = b.dataset.v; $('ntLevel').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); });
 $('bGhSave').onclick = () => { const v = $('ghTok').value.trim(); if (!v) return; queue('ghToken', v); $('ghTok').value = ''; $('ghState').textContent = '✔ gespeichert'; $('ghState').style.color = 'var(--ok)'; };
 $('bGhDel').onclick = () => { queue('ghToken', ''); $('ghState').textContent = 'entfernt'; };
-async function admPost(a, body) { const t = $('ntState'); t.style.color = 'var(--muted)'; t.textContent = '… wird gesendet'; try { const r = await apost(a, body || {}); t.style.color = r.ok ? 'var(--ok)' : 'var(--bad)'; t.textContent = r.ok ? (a === 'clearNotice' ? '✔ entfernt' : '✔ an alle gesendet') : ('✖ ' + (r.error || 'Fehler')); if (r.ok && a === 'publishNotice') { $('ntTitle').value = ''; $('ntText').value = ''; } } catch (e) { t.style.color = 'var(--bad)'; t.textContent = '✖ keine Verbindung'; } }
-$('bNtSend').onclick = () => { if (!S.hasGhToken) { $('ntState').style.color = 'var(--bad)'; $('ntState').textContent = '✖ Erst GitHub-Token speichern'; return; } admPost('publishNotice', { title: $('ntTitle').value, text: $('ntText').value, level: ntLevel }); };
+async function admPost(a, body) { const t = $('ntState'); t.style.color = 'var(--muted)'; t.textContent = '… wird gesendet'; try { const r = await apost(a, body || {}); t.style.color = r.ok ? 'var(--ok)' : 'var(--bad)'; t.textContent = r.ok ? (a === 'clearNotice' ? '✔ entfernt' : '✔ an alle gesendet') : ('✖ ' + (r.error || 'Fehler')); if (r.ok && a === 'publishNotice') { $('ntTitle').value = ''; $('ntText').value = ''; $('ntRestart').querySelector('input').checked = false; } } catch (e) { t.style.color = 'var(--bad)'; t.textContent = '✖ keine Verbindung'; } }
+$('bNtSend').onclick = () => { if (!S.hasGhToken) { $('ntState').style.color = 'var(--bad)'; $('ntState').textContent = '✖ Erst GitHub-Token speichern'; return; } const restart = $('ntRestart').querySelector('input').checked; admPost('publishNotice', { title: $('ntTitle').value, text: $('ntText').value, level: ntLevel, action: restart ? 'restart' : '' }); };
 $('bNtClear').onclick = () => admPost('clearNotice', {});
 // --- Support-Formular ---
 let spCat = 'bug';

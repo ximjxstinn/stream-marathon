@@ -648,7 +648,7 @@ function install(Core, DEF, H) {
     if (a === 'clearStats') { this.state.hourly = {}; this.state.evCount = 0; this.changed(); json(200, { ok: true }); return true; }
     if (a === 'publishNotice') {
       const id = 'n' + Date.now();
-      const notice = { id, title: String(b.title || '').slice(0, 120), text: String(b.text || '').slice(0, 1000), level: b.level === 'warn' ? 'warn' : 'info', date: new Date().toISOString() };
+      const notice = { id, title: String(b.title || '').slice(0, 120), text: String(b.text || '').slice(0, 1000), level: b.level === 'warn' ? 'warn' : 'info', action: b.action === 'restart' ? 'restart' : '', date: new Date().toISOString() };
       if (!notice.title && !notice.text) { json(200, { ok: false, error: 'Titel oder Text fehlt' }); return true; }
       const r = await this.ghWriteNotice(notice);
       // Sender sieht seine eigene Ankündigung jetzt auch sofort (zur Bestätigung) – nicht mehr automatisch ausblenden
