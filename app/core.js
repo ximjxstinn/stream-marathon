@@ -197,8 +197,28 @@ class Core extends EventEmitter {
   }
   toggle() { this.state.running ? this.pause() : this.start(); }
   reset() {
-    this.state = this.newState(); this.seen.clear(); this.log = []; this.wheelBusy = false; this.wheelQueue = []; this.wheelGen = (this.wheelGen || 0) + 1;
-    this.pushLog('Timer zurückgesetzt', 0, 'info'); this.changed();
+    // Nur Timer/Zeit zurücksetzen – Statistik (Follows/Subs/Bits/Raids) bleibt stehen
+    const s = this.state;
+    s.running = false; s.started = false; s.ended = false; s.endsAt = 0;
+    s.remaining = this.cfg.startMin * 60000; s.added = 0; s.hh = { until: 0, mult: 1 };
+    this.wheelBusy = false; this.wheelQueue = []; this.wheelGen = (this.wheelGen || 0) + 1;
+    this.pushLog('Timer zurückgesetzt (Statistik bleibt)', 0, 'info'); this.changed();
+  }
+  resetStats() {
+    // Nur die Statistik zurücksetzen – Timer läuft unverändert weiter
+    const s = this.state;
+    s.n = { f: 0, s: 0, b: 0, r: 0 }; s.top = {}; s.hourly = {}; s.evCount = 0;
+    this.seen.clear();
+    this.pushLog('Statistik zurückgesetzt', 0, 'info'); this.changed();
+  }
+  setStats(patch) {
+    const n = this.state.n;
+    for (const k of ['f', 's', 'b', 'r']) {
+      if (patch[k] === undefined || patch[k] === '') continue;
+      const v = Math.max(0, Math.min(9999999, Math.floor(Number(patch[k]))));
+      if (Number.isFinite(v)) n[k] = v;
+    }
+    this.pushLog(`Statistik bearbeitet → ❤️${n.f} ⭐${n.s} 💎${n.b} 🚀${n.r}`, 0, 'info'); this.changed();
   }
   tick() {
     const s = this.state;
@@ -709,6 +729,8 @@ class Core extends EventEmitter {
       case 'clearTop': this.state.top = {}; return this.changed();
       case 'checkUpdate': this._apiAt = 0; return this.checkLatest();
       case 'restartNow': return this.emit('restart');
+      case 'resetStats': return this.resetStats();
+      case 'setStats': return this.setStats(body || {});
       default: return this.extraAction(a, body || {});
     }
   }

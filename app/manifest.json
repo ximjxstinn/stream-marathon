@@ -1,16 +1,16 @@
 {
-  "version": "1.6.0",
-  "date": "2026-10-28T17:07:17.913Z",
+  "version": "1.6.1",
+  "date": "2026-10-28T20:31:16.744Z",
   "files": {
     "shell.js": "cf0241e24754e38d459a8cdc5e596b2bf0d60434b0d2bf3719e08de60a7cba66",
-    "core.js": "0f48ee79c6c09d62d4240d4a818a8d6d71ed8f600d4a8c34eb1668515e755ecf",
+    "core.js": "bc8dde4b5907b9763ae09089ff81876c72a3432502d55b146c9c062c2872d103",
     "extras.js": "6324f75bc11f020f975f23bb90dd4a4bd4538156a647fd02ff84d44d02cacc88",
-    "changelog.json": "0ff6750e1009ac1ef5b8e342e4d7e280b96e52f331843cde88656a867f34601f",
-    "package.json": "5f49a570ff95b9414bfb6eae18683036d47089c81742ed173e392acc0d564894",
+    "changelog.json": "0827e5da6d53f501e3f6ae6c0f7f5adac9df1af968ea3ed75618d75918ffcb45",
+    "package.json": "7bb137c2df7f41ccd075d204a7b69316c92b08f7bb4a5393d5959b6b044cf243",
     "icon.png": "59d889eb70cb73dcdbf47a6d6e9395fb3d308987ea1da43a17bf007993269fb0",
     "ui/StreamMarathon.streamDeckPlugin": "3b56242d56b1cc1ccc45d37d6374c955b9b7284c0ce2754d5b98ce954353a302",
     "ui/auth.html": "ae37ef8a740764b31ec889fdb4e9a6405300481d4c4c3dc4182f367ff0a8154e",
-    "ui/control.html": "1c83dd1823f2021b1389ea0f27cce3e97aa83460c7e169aafbfda821d0638c24",
+    "ui/control.html": "247d2900e8102ec832c66deb868481d63ac8735c6182b56e1cca12293fdefd47",
     "ui/overlay.html": "27fd448c377c74eb014171637e4acc15d5c276271f7a94856c52989a45e83b57",
     "ui/widgets.html": "948feebb38ded24c6cbbf4c56011dbab4236e4249ef6815ed45512a5b4e8ee4b"
   }

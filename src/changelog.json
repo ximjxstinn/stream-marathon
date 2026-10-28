@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.6.1",
+    "date": "28.10.2026",
+    "items": [
+      "✏️ Neuer Bereich „Statistik“: Follows, Subs, Bits und Raids von Hand korrigieren – wirkt sofort im Overlay.",
+      "↺ Timer-„Zurücksetzen“ setzt jetzt nur noch die Zeit zurück – die Statistik bleibt stehen.",
+      "🗑 Eigener Knopf „Statistik zurücksetzen“ (setzt nur die Zähler auf 0, der Timer läuft weiter)."
+    ]
+  },
+  {
     "version": "1.6.0",
     "date": "28.10.2026",
     "items": [

@@ -237,6 +237,7 @@ a{color:#bf94ff}
     <div class="menu" id="profMenu"></div></div>
   <nav>
     <button data-tab="home" class="on">🏠 Übersicht</button>
+    <button data-tab="stats">✏️ Statistik</button>
     <button data-tab="events">⚡ Events & Zeiten</button>
     <button data-tab="design">🎨 Design</button>
     <button data-tab="twitch">🟣 Twitch</button>
@@ -340,6 +341,37 @@ a{color:#bf94ff}
     <div class="card">
       <h2>📜 Verlauf <button class="btn" id="bClear" style="margin-left:auto;padding:4px 10px;font-size:12px">Leeren</button></h2>
       <ul id="log"></ul>
+    </div>
+  </div>
+</section>
+
+<!-- ================= STATISTIK ================= -->
+<section id="stats">
+  <h1>Statistik</h1>
+  <p class="sub">Zählerstände deines Kanals ansehen, von Hand korrigieren oder zurücksetzen.</p>
+  <div class="grid2">
+    <div class="card"><h2>✏️ Statistik bearbeiten</h2>
+      <p class="hint" style="margin-top:0">Bearbeitet die Statistik von <b id="edChan">deinem Kanal</b>. Zählerstände von Hand korrigieren (z. B. wenn ein Event doppelt kam) – wirkt sofort im Overlay.</p>
+      <div class="two">
+        <div><label class="f" style="margin-top:0">❤️ Follows</label><input type="number" id="edF" min="0"></div>
+        <div><label class="f" style="margin-top:0">⭐ Subs</label><input type="number" id="edS" min="0"></div>
+      </div>
+      <div class="two">
+        <div><label class="f">💎 Bits</label><input type="number" id="edB" min="0"></div>
+        <div><label class="f">🚀 Raids</label><input type="number" id="edR" min="0"></div>
+      </div>
+      <div class="row" style="margin-top:12px"><button class="btn pri" id="bStatsSave" style="flex:none">💾 Übernehmen</button><span class="s" id="edState" style="align-self:center"></span></div>
+    </div>
+    <div class="card"><h2>↺ Statistik zurücksetzen</h2>
+      <p class="hint" style="margin-top:0">Setzt Follows, Subs, Bits und Raids auf 0 – für einen neuen Marathon. Der <b>Timer bleibt davon unberührt</b>.</p>
+      <div class="stats" style="margin-bottom:14px">
+        <div class="stat"><span>❤️ Follows</span><b id="sF">0</b></div>
+        <div class="stat"><span>⭐ Subs</span><b id="sS">0</b></div>
+        <div class="stat"><span>💎 Bits</span><b id="sB">0</b></div>
+        <div class="stat"><span>🚀 Raids</span><b id="sR">0</b></div>
+      </div>
+      <button class="btn dang" id="bStatsReset" style="width:100%">↺ Statistik auf 0 setzen</button>
+      <div class="hint" style="margin-top:10px">Hinweis: Das „Zurücksetzen“ beim Timer (Übersicht) setzt nur die <b>Zeit</b> zurück – die Statistik bleibt stehen.</div>
     </div>
   </div>
 </section>
@@ -1301,6 +1333,21 @@ function renderAdmin() {
   const dg = (S.diag || []).slice().reverse().map(d => `${new Date(d.t).toLocaleTimeString('de-DE')}  ${esc(d.text)}`).join('<br>');
   if ($('diag').dataset.h !== dg) { $('diag').dataset.h = dg; $('diag').innerHTML = dg; }
 }
+// ================= Statistik (eigener Bereich) =================
+function renderStats() {
+  const n = (S.state && S.state.n) || {};
+  const setIf = (id, v) => { const el = $(id); if (el && document.activeElement !== el) el.value = v; };
+  setIf('edF', n.f || 0); setIf('edS', n.s || 0); setIf('edB', n.b || 0); setIf('edR', n.r || 0);
+  if ($('sF')) { $('sF').textContent = num(n.f || 0); $('sS').textContent = num(n.s || 0); $('sB').textContent = num(n.b || 0); $('sR').textContent = num(n.r || 0); }
+  const chan = (S.cfg && S.cfg.channel || '').replace(/^#/, '');
+  if ($('edChan')) $('edChan').textContent = chan ? '@' + chan : 'deinem Kanal (noch keiner eingetragen)';
+}
+$('bStatsSave').onclick = () => {
+  act('setStats', { f: $('edF').value, s: $('edS').value, b: $('edB').value, r: $('edR').value });
+  const t = $('edState'); t.style.color = 'var(--ok)'; t.textContent = '✔ übernommen';
+  setTimeout(() => { t.textContent = ''; }, 1800);
+};
+$('bStatsReset').onclick = () => ask('Statistik zurücksetzen? Follows, Subs, Bits und Raids gehen auf 0. Der Timer läuft normal weiter.', '', () => act('resetStats'), 'Zurücksetzen');
 
 
 // ================= Kanalpunkte: mehrere Belohnungen =================
@@ -1435,7 +1482,7 @@ function renderSnap() {
   fillForm(c);
   renderOverlays(c);
   renderUpdate();
-  renderProfiles(); renderDeck(c); renderChangelog(); renderAdmin(); renderDrag(); renderReports(); renderNotice(c, st);
+  renderProfiles(); renderDeck(c); renderChangelog(); renderAdmin(); renderStats(); renderDrag(); renderReports(); renderNotice(c, st);
   $('credVer').textContent = 'v' + (S.version || '?'); $('aboutVer').textContent = 'Version ' + (S.version || '?');
   if (!prDraft || !document.activeElement.closest('#priceList')) { const j = JSON.stringify(c.priceRows || []); if ($('priceList').dataset.j !== j && !('priceRows' in pending) && prDragI === null) { $('priceList').dataset.j = j; prDraft = JSON.parse(j); drawPrice(); } }
   if (!cpDraft || !document.activeElement.closest('#cpList')) { const j = JSON.stringify(c.cp_rewards || []); if ($('cpList').dataset.j !== j && !('cp_rewards' in pending)) { $('cpList').dataset.j = j; cpDraft = JSON.parse(j); drawCp(); } }
