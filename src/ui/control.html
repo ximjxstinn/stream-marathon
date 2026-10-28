@@ -220,7 +220,7 @@ ol b{color:var(--text)}
 a{color:#bf94ff}
 .modal{position:fixed;inset:0;background:#000b;display:none;place-items:center;z-index:10}
 .modal.on{display:grid}
-.modal .card{max-width:480px;margin:0;padding:24px}
+.modal .card{max-width:480px;margin:0;padding:24px;max-height:85vh;overflow-y:auto}
 .modal h2{font-size:18px}
 .modal p{color:var(--muted);line-height:1.55;margin:0 0 10px}
 .modal ul{color:var(--muted);margin:0 0 16px;padding-left:20px;line-height:1.6}
@@ -473,6 +473,9 @@ a{color:#bf94ff}
         <label class="chk"><span class="sw"><input type="checkbox" data-k="st_r"><span></span></span>🚀 Raids</label>
         <label class="f">Größe der Zahlen (%)</label>
         <div class="rng"><input type="range" data-k="statSize" min="50" max="300" step="5"><input type="number" data-k="statSize" min="30" max="400"></div>
+        <label class="chk"><span class="sw"><input type="checkbox" data-k="showEnd"><span></span></span>🕒 Voraussichtliches Ende + Status (Läuft/Pausiert) anzeigen</label>
+        <label class="f">Text davor</label><input type="text" data-k="endLabel" placeholder="Ende ca." maxlength="30">
+        <div class="hint">Zeigt im Overlay „Ende ca. &lt;Datum&gt; · &lt;Uhrzeit&gt;" aus der aktuellen Restzeit – ändert sich automatisch, wenn Zeit dazukommt oder abgeht. Darunter „▶ Läuft" bzw. „⏸ Pausiert".</div>
       </div>
 
       <div class="card">
@@ -756,12 +759,6 @@ a{color:#bf94ff}
     <h1>🛡️ Admin <button class="btn dang" id="bLock" style="float:right;padding:6px 12px;font-size:12px">🔒 Sperren</button></h1>
     <p class="sub">Profi-Werkzeuge – nur für dich. Änderungen wirken sofort im Stream. <span id="admUntil"></span></p>
     <div class="g3">
-      <div class="card"><h2>☕ Pause-Bildschirm</h2>
-        <button class="btn" id="bPauseScr" style="width:100%">☕ Pause-Bildschirm zeigen</button>
-        <label class="chk"><span class="sw"><input type="checkbox" data-k="pauseTimer"><span></span></span>Timer während der Pause anhalten</label>
-        <label class="f">Text auf dem Pause-Bildschirm</label><input type="text" data-k="pauseText">
-        <div class="hint">Auch per Hotkey (Allgemein) und Stream Deck.</div>
-      </div>
       <div class="card" style="grid-column:span 2"><h2>📣 Ankündigung an alle</h2>
         <p class="hint" style="margin-top:0">Blendet bei <b>allen</b> Nutzern oben im Steuerfenster einen Hinweis ein (nie im Stream). Nur du kannst senden.</p>
         <div id="ghBox">
@@ -786,17 +783,6 @@ a{color:#bf94ff}
         <label class="f" style="margin-top:0">Gesperrte Namen (mit Komma getrennt)</label><input type="text" data-k="fNames" placeholder="troll123, nervig">
         <label class="f">Wörter ausblenden</label><input type="text" data-k="fWords" placeholder="beleidigung, spam">
         <div class="hint">Gesperrte Namen zählen weiter (Zeit kommt dazu), erscheinen aber als „Anonym“ in Laufband, Top-Liste und Einblendungen. Wörter werden zu „***“.</div>
-      </div>
-      <div class="card"><h2>🌙 Zeit-Regeln</h2>
-        <label class="chk" style="margin-top:0"><span class="sw"><input type="checkbox" data-k="nightOn"><span></span></span>Nachtmodus</label>
-        <div class="three"><div><label class="f">Von</label><input type="text" data-k="nightFrom" placeholder="02:00"></div><div><label class="f">Bis</label><input type="text" data-k="nightTo" placeholder="08:00"></div><div><label class="f">Zeit zählt %</label><input type="number" data-k="nightPct" min="0" max="100"></div></div>
-        <label class="f">Höchstens dazu pro Stunde (Min., 0 = ∞)</label><input type="number" data-k="hourCap" min="0">
-        <div class="hint">Gilt für Events, nicht für manuelle Änderungen.</div>
-      </div>
-      <div class="card" style="grid-column:span 2"><h2>📈 Live-Statistik <span class="hint" style="margin:0 0 0 auto">Zeit dazugekommen pro Stunde (letzte 24 Std.)</span></h2>
-        <div class="chart" id="chart"></div><div class="chartL" id="chartL"></div>
-        <div class="kv3"><div>Beste Stunde<b id="stBest">–</b></div><div>Ø pro aktiver Stunde<b id="stAvg">–</b></div><div>Events gesamt<b id="stEv">–</b></div></div>
-        <button class="btn" id="bClearStats" style="margin-top:10px;padding:5px 10px;font-size:12px">Statistik zurücksetzen</button>
       </div>
       <div class="card"><h2>🩺 Live-Diagnose</h2>
         <div class="log2" id="diag"></div>
@@ -1262,9 +1248,7 @@ $('bUnlock').onclick = async () => {
 };
 $('admPw').onkeydown = e => { if (e.key === 'Enter') $('bUnlock').click(); };
 $('bLock').onclick = () => apost('lock', {});
-$('bPauseScr').onclick = () => act('pauseScreen');
 $('bReconn2').onclick = () => act('reconnect');
-$('bClearStats').onclick = () => apost('clearStats', {});
 const dl = (url, name) => fetch(url).then(r => r.blob()).then(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = name; a.click(); });
 $('bBackup').onclick = () => dl('/api/admin/backup?t=' + admTok, `StreamMarathon-Backup-${new Date().toISOString().slice(0, 10)}.json`);
 $('bCsv').onclick = () => dl('/api/admin/csv?t=' + admTok, `StreamMarathon-Verlauf-${new Date().toISOString().slice(0, 10)}.csv`);
@@ -1289,8 +1273,6 @@ function renderAdmin() {
   $('admDefault').textContent = A.defaultPw ? 'Das Passwort ist noch „admin“ – bitte nach dem Entsperren ändern.' : '';
   if (!A.unlocked) return;
   $('admUntil').textContent = A.until ? `· sperrt automatisch um ${new Date(A.until).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}` : '';
-  $('bPauseScr').textContent = s.panic === 'pause' ? (c => c.pauseTimer ? '▶ Pause beenden & Timer starten' : '▶ Pause-Bildschirm beenden')(S.cfg) : (S.cfg.pauseTimer ? '☕ Pause-Bildschirm + Timer anhalten' : '☕ Pause-Bildschirm zeigen');
-  $('bPauseScr').className = 'btn ' + (s.panic === 'pause' ? 'panicon' : '');
   // Ankündigung: Token-Status + aktuelle Meldung
   if (!$('ghState').textContent || S.hasGhToken) { $('ghState').textContent = S.hasGhToken ? '✔ gespeichert' : ''; $('ghState').style.color = 'var(--ok)'; }
   $('ghTok').placeholder = S.hasGhToken ? 'Gespeichert – zum Ändern neuen Token eingeben' : 'github_pat_… (nur einmal nötig)';
@@ -1298,16 +1280,6 @@ function renderAdmin() {
   const nowN = S.status && S.status.notice;
   $('ntNow').innerHTML = nowN ? `Aktuell aktiv: <b>${esc(nowN.title || '(ohne Titel)')}</b> ${nowN.level === 'warn' ? '⚠️' : '📣'}` : 'Zurzeit ist keine Ankündigung aktiv.';
   $('bNtClear').style.display = nowN ? '' : 'none';
-  // Statistik: letzte 24 Stunden
-  const H = s.hourly || {}, keys = [], now = new Date();
-  for (let i = 23; i >= 0; i--) { const d = new Date(now - i * 3600000); keys.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + 'T' + String(d.getHours()).padStart(2, '0')); }
-  const vals = keys.map(k => H[k] || 0), max = Math.max(60, ...vals);
-  const ch = vals.map((v, i) => `<div style="height:${Math.max(2, v / max * 130)}px" title="${keys[i].slice(11)} Uhr: +${dur(v, false)}"></div>`).join('');
-  if ($('chart').dataset.h !== ch) { $('chart').dataset.h = ch; $('chart').innerHTML = ch; $('chartL').innerHTML = keys.map((k, i) => `<span>${i % 3 === 0 ? k.slice(11) : ''}</span>`).join(''); }
-  const all = Object.entries(H), best = all.sort((a, b) => b[1] - a[1])[0], active = all.filter(x => x[1] > 0);
-  $('stBest').textContent = best ? `${best[0].slice(11)}–${String((+best[0].slice(11) + 1) % 24).padStart(2, '0')} Uhr · ${dur(best[1])}` : '–';
-  $('stAvg').textContent = active.length ? dur(active.reduce((a, x) => a + x[1], 0) / active.length) : '–';
-  $('stEv').textContent = num(s.evCount || 0);
   const dg = (S.diag || []).slice().reverse().map(d => `${new Date(d.t).toLocaleTimeString('de-DE')}  ${esc(d.text)}`).join('<br>');
   if ($('diag').dataset.h !== dg) { $('diag').dataset.h = dg; $('diag').innerHTML = dg; }
 }

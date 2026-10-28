@@ -37,6 +37,7 @@ const NEW_DEF = {
   yt_on: false, yt_key: '', yt_channel: '', yt_sc: 60, yt_member: 300, yt_poll: 45,
   // Einblendungen (+5m …): Position und Größe
   popPos: 'below', popX: 0, popY: 0, popSize: 100,
+  showEnd: true, endLabel: 'Ende ca.',
   // Preisliste
   ov_price: false, m_price: false, p_price: 'mr', sz_price: 100, priceCredit: true,
   priceTitle: '⏱ So verlängerst du den Timer', priceColor: '#bf94ff', priceFmt: 'min',
@@ -640,7 +641,8 @@ function install(Core, DEF, H) {
       const notice = { id, title: String(b.title || '').slice(0, 120), text: String(b.text || '').slice(0, 1000), level: b.level === 'warn' ? 'warn' : 'info', date: new Date().toISOString() };
       if (!notice.title && !notice.text) { json(200, { ok: false, error: 'Titel oder Text fehlt' }); return true; }
       const r = await this.ghWriteNotice(notice);
-      if (r.ok) { this.setStatus('notice', notice); this.cfg.noticeSeen = id; H.writeJson(this.cfgFile, this.cfg); this.addDiag('Ankündigung gesendet'); this.broadcast(); }
+      // Sender sieht seine eigene Ankündigung jetzt auch sofort (zur Bestätigung) – nicht mehr automatisch ausblenden
+      if (r.ok) { this.cfg.noticeSeen = ''; H.writeJson(this.cfgFile, this.cfg); this.setStatus('notice', notice); this.addDiag('Ankündigung gesendet'); this.broadcast(); }
       else this.addDiag('Ankündigung fehlgeschlagen: ' + r.error);
       json(200, r); return true;
     }

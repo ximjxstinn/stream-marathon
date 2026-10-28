@@ -1,5 +1,15 @@
 [
   {
+    "version": "1.5.5",
+    "date": "28.10.2026",
+    "items": [
+      "🕒 Neu: Voraussichtliches Ende (Datum + Uhrzeit) und „▶ Läuft / ⏸ Pausiert“ im Overlay – ändert sich automatisch mit der Restzeit (im Design an/aus)",
+      "🧹 Admin-Bereich aufgeräumt: Pause-Bildschirm, Zeit-Regeln und Live-Statistik entfernt",
+      "📣 Ankündigung: erscheint jetzt sofort bei dir, wenn du sie sendest",
+      "📋 Changelog-Fenster ist jetzt scrollbar"
+    ]
+  },
+  {
     "version": "1.5.4",
     "date": "27.10.2026",
     "items": [
