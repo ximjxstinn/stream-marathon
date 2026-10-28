@@ -473,9 +473,26 @@ a{color:#bf94ff}
         <label class="chk"><span class="sw"><input type="checkbox" data-k="st_r"><span></span></span>🚀 Raids</label>
         <label class="f">Größe der Zahlen (%)</label>
         <div class="rng"><input type="range" data-k="statSize" min="50" max="300" step="5"><input type="number" data-k="statSize" min="30" max="400"></div>
-        <label class="chk"><span class="sw"><input type="checkbox" data-k="showEnd"><span></span></span>🕒 Voraussichtliches Ende + Status (Läuft/Pausiert) anzeigen</label>
+        <label class="chk"><span class="sw"><input type="checkbox" data-k="showEnd"><span></span></span>🕒 Voraussichtliches Ende anzeigen</label>
+        <div class="hint" style="margin-top:0">Zeigt „Ende ca. &lt;Datum&gt; · &lt;Uhrzeit&gt;" aus der aktuellen Restzeit – ändert sich automatisch.</div>
+        <div class="two">
+          <label class="chk"><span class="sw"><input type="checkbox" data-k="endShowDate"><span></span></span>Datum/Uhrzeit</label>
+          <label class="chk"><span class="sw"><input type="checkbox" data-k="endShowStat"><span></span></span>▶ Läuft/⏸ Pausiert</label>
+        </div>
         <label class="f">Text davor</label><input type="text" data-k="endLabel" placeholder="Ende ca." maxlength="30">
-        <div class="hint">Zeigt im Overlay „Ende ca. &lt;Datum&gt; · &lt;Uhrzeit&gt;" aus der aktuellen Restzeit – ändert sich automatisch, wenn Zeit dazukommt oder abgeht. Darunter „▶ Läuft" bzw. „⏸ Pausiert".</div>
+        <label class="f">Format</label>
+        <select data-k="endFmt">
+          <option value="full">Sa, 08.11.2026 · 10:09 Uhr</option>
+          <option value="dm">Sa 08.11. · 10:09 Uhr</option>
+          <option value="short">08.11.2026, 10:09</option>
+          <option value="time">nur 10:09 Uhr</option>
+        </select>
+        <label class="f">Position</label>
+        <div class="seg" data-seg="endPos"><button data-v="timer">Unter Timer</button><button data-v="top">Oben</button><button data-v="bottom">Unten</button></div>
+        <label class="f">Größe (%)</label>
+        <div class="rng"><input type="range" data-k="endSize" min="50" max="300" step="5"><input type="number" data-k="endSize" min="30" max="400"></div>
+        <label class="chk"><span class="sw"><input type="checkbox" data-k="endColorOn"><span></span></span>Eigene Farbe</label>
+        <input type="color" data-k="endColor">
       </div>
 
       <div class="card">

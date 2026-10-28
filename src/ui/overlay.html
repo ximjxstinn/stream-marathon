@@ -43,8 +43,10 @@ body.pausing #pauseScr{display:grid}
 @keyframes pop{0%{opacity:0;transform:translateY(20px) scale(.8)}12%{opacity:1;transform:translateY(0) scale(1.08)}20%{transform:scale(1)}80%{opacity:1}100%{opacity:0;transform:translateY(-30px)}}
 .blink{animation:bl .45s 3}
 @keyframes bl{50%{color:var(--a);transform:scale(1.04)}}
-#endInfo{margin-top:calc(var(--s)*.08);font-size:calc(var(--s)*.15);line-height:1.3;font-weight:700}
+#endInfo{margin-top:calc(var(--s)*.08);font-size:calc(var(--s)*.15*var(--esz,1));line-height:1.3;font-weight:700}
 #endStat{font-weight:900;color:var(--a)}
+#endInfo.ep-top,#endInfo.ep-bottom{position:fixed;left:50%;transform:translateX(-50%);text-align:center;margin:0;z-index:5}
+#endInfo.ep-top{top:24px}#endInfo.ep-bottom{bottom:24px}
 </style>
 </head>
 <body>
@@ -104,6 +106,15 @@ function apply(c) {
   P.className = 'pp-' + pos;
   r.setProperty('--tx', (c.timerX ?? 50) + '%'); r.setProperty('--ty', (c.timerY ?? 0) + '%');
   $('pops').style.display = c.pops ? '' : 'none';
+  // Ende-Anzeige: Größe, Farbe, Position
+  r.setProperty('--esz', (c.endSize || 100) / 100);
+  const ei = $('endInfo');
+  if (c.endColorOn && c.endColor) { ei.style.color = c.endColor; $('endStat').style.color = c.endColor; }
+  else { ei.style.color = ''; $('endStat').style.color = ''; }
+  const epos = ['top', 'bottom'].includes(c.endPos) ? c.endPos : 'timer';
+  const eParent = epos === 'timer' ? $('box') : document.body;
+  if (ei.parentNode !== eParent) eParent.appendChild(ei);
+  ei.className = 'fx ep-' + epos;
 }
 
 // ---------- Eingebettete Overlays ----------
@@ -187,20 +198,27 @@ function render() {
   if ($('stats').innerHTML !== html) $('stats').innerHTML = html;
   $('stats').style.display = c.showStats && items.length ? '' : 'none';
   // Voraussichtliches Ende (Datum + Uhrzeit) und Status – aktualisiert sich automatisch
-  const showEnd = c.showEnd !== false;
-  $('endInfo').style.display = showEnd ? '' : 'none';
-  if (showEnd) {
+  const showDate = c.showEnd !== false && c.endShowDate !== false;
+  const showStat = c.showEnd !== false && c.endShowStat !== false;
+  $('endInfo').style.display = (showDate || showStat) ? '' : 'none';
+  if (showDate || showStat) {
     const running = s.running && s.panic !== 'pause';
     if (s.ended) {
       $('endDate').textContent = '';
-      $('endStat').textContent = '🏁 Marathon vorbei';
+      $('endStat').textContent = showStat ? '🏁 Marathon vorbei' : '';
     } else {
-      const d = new Date(Date.now() + off + ms);
-      const ds = d.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\.,/, ',');
-      $('endDate').textContent = (c.endLabel || 'Ende ca.') + ' ' + ds + ' · ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ' Uhr';
-      $('endStat').textContent = running ? '▶ Läuft' : '⏸ Pausiert';
+      $('endDate').textContent = showDate ? ((c.endLabel || 'Ende ca.') + ' ' + fmtEnd(new Date(Date.now() + off + ms), c.endFmt)) : '';
+      $('endStat').textContent = showStat ? (running ? '▶ Läuft' : '⏸ Pausiert') : '';
     }
   }
+}
+function fmtEnd(d, f) {
+  const wd = d.toLocaleDateString('de-DE', { weekday: 'short' }).replace('.', '');
+  const dd = pad(d.getDate()), mm = pad(d.getMonth() + 1), yy = d.getFullYear(), hh = pad(d.getHours()), mi = pad(d.getMinutes());
+  if (f === 'time') return hh + ':' + mi + ' Uhr';
+  if (f === 'short') return dd + '.' + mm + '.' + yy + ', ' + hh + ':' + mi;
+  if (f === 'dm') return wd + ' ' + dd + '.' + mm + '. · ' + hh + ':' + mi + ' Uhr';
+  return wd + ', ' + dd + '.' + mm + '.' + yy + ' · ' + hh + ':' + mi + ' Uhr';
 }
 
 // Ton

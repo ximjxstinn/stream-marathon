@@ -37,7 +37,8 @@ const NEW_DEF = {
   yt_on: false, yt_key: '', yt_channel: '', yt_sc: 60, yt_member: 300, yt_poll: 45,
   // Einblendungen (+5m …): Position und Größe
   popPos: 'below', popX: 0, popY: 0, popSize: 100,
-  showEnd: true, endLabel: 'Ende ca.',
+  showEnd: true, endLabel: 'Ende ca.', endShowDate: true, endShowStat: true,
+  endFmt: 'full', endSize: 100, endPos: 'timer', endColorOn: false, endColor: '#9146ff',
   // Preisliste
   ov_price: false, m_price: false, p_price: 'mr', sz_price: 100, priceCredit: true,
   priceTitle: '⏱ So verlängerst du den Timer', priceColor: '#bf94ff', priceFmt: 'min',
@@ -235,6 +236,9 @@ function install(Core, DEF, H) {
     if (k === 'popX' || k === 'popY') { const n = Number(v); if (isFinite(n)) this.cfg[k] = Math.max(-1500, Math.min(1500, Math.round(n))); return true; }
     if (k === 'popPos') { this.cfg.popPos = ['below', 'left', 'right', 'tl', 'tr', 'center'].includes(v) ? v : 'below'; return true; }
     if (k === 'priceFmt') { this.cfg.priceFmt = ['min', 'sec', 'clock'].includes(v) ? v : 'min'; return true; }
+    if (k === 'endFmt') { this.cfg.endFmt = ['full', 'short', 'dm', 'time'].includes(v) ? v : 'full'; return true; }
+    if (k === 'endPos') { this.cfg.endPos = ['timer', 'top', 'bottom'].includes(v) ? v : 'timer'; return true; }
+    if (k === 'endColor') { if (/^#[0-9a-f]{6}$/i.test(v)) this.cfg.endColor = v; return true; }
     if (k === 'priceColor') { if (/^#[0-9a-f]{6}$/i.test(v)) this.cfg.priceColor = v; return true; }
     if (k === 'updChannel') { this.cfg.updChannel = v === 'beta' ? 'beta' : 'stable'; return true; }
     if (k === 'nightFrom' || k === 'nightTo') { if (hm(v) !== null) this.cfg[k] = String(v).trim(); return true; }

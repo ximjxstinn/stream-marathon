@@ -657,7 +657,7 @@ class Core extends EventEmitter {
       }
     }
     this.cfg.mScale = Math.max(30, Math.min(300, this.cfg.mScale || 100));
-    for (const k of ['statSize', 'sz_goals', 'sz_hh', 'sz_top', 'sz_wheel', 'sz_ticker', 'sz_price', 'popSize']) this.cfg[k] = Math.max(30, Math.min(400, this.cfg[k] || 100));
+    for (const k of ['statSize', 'sz_goals', 'sz_hh', 'sz_top', 'sz_wheel', 'sz_ticker', 'sz_price', 'popSize', 'endSize']) this.cfg[k] = Math.max(30, Math.min(400, this.cfg[k] || 100));
     this.cfg.timerX = Math.max(0, Math.min(100, this.cfg.timerX));
     this.cfg.timerY = Math.max(0, Math.min(100, this.cfg.timerY));
     this.cfg.tickerSpeed = Math.max(5, Math.min(300, this.cfg.tickerSpeed || 40));
