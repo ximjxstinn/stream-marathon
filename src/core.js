@@ -479,10 +479,13 @@ class Core extends EventEmitter {
   onFollow(ev) {
     const c = this.cfg;
     if (!c.en_follow) return;
-    const login = ev.user_login || ev.user_name;
+    // Erkennung über die feste Twitch-User-ID (ändert sich nie), sonst Login/Name – so zählt ein Re-Follow nicht erneut
+    const key = 'f:' + String(ev.user_id || ev.user_login || ev.user_name || '').toLowerCase();
     if (c.dedupe) {
-      if (this.seen.has(login)) { this.pushLog(`Follow von ${ev.user_name} (schon gezählt)`, 0, 'info'); this.changed(); return; }
-      this.seen.add(login);
+      // Altes Format (nur Login/Name) weiter beachten, damit nach dem Update niemand doppelt zählt
+      const oldKey = ev.user_login || ev.user_name;
+      if (this.seen.has(key) || (oldKey && this.seen.has(oldKey))) { this.pushLog(`Follow von ${ev.user_name} (schon gezählt)`, 0, 'info'); this.changed(); return; }
+      this.seen.add(key);
     }
     this.addTime(c.follow, `Follow von ${ev.user_name}`, { f: 1 }, { kind: 'follow', user: ev.user_name });
   }

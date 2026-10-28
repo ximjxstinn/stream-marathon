@@ -1,7 +1,7 @@
 {
   "name": "stream-marathon",
   "productName": "Stream Marathon",
-  "version": "1.5.7",
+  "version": "1.5.8",
   "description": "Subathon-Timer für OBS mit Twitch Follows, Subs, Bits und Raids",
   "main": "main.js",
   "author": "xImJxstinn",
