@@ -9,7 +9,9 @@
 $ADMIN_KEY       = 'HIER-EINEN-LANGEN-GEHEIMEN-KEY-EINTRAGEN';   // nur DU kennst den – kommt in die App
 $DISCORD_WEBHOOK = '';   // optional: Discord-Webhook-URL -> du bekommst eine Nachricht bei neuen Tickets
 $DISCORD_PUBKEY  = '';   // optional: Public Key deiner Discord-App (fuer das Antworten per /ticket-Befehl)
-$DATA_FILE       = __DIR__ . '/tickets.json';
+// Datendatei bekommt einen aus dem Admin-Key abgeleiteten, nicht erratbaren Namen,
+// damit niemand sie direkt im Browser öffnen kann.
+$DATA_FILE       = __DIR__ . '/data_' . substr(hash('sha256', $ADMIN_KEY), 0, 32) . '.json';
 // ===========================================
 
 header('Content-Type: application/json; charset=utf-8');
