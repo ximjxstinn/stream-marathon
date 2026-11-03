@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.7.2",
+    "date": "03.11.2026",
+    "items": [
+      "🗑 Tickets lassen sich im Admin-Bereich jetzt auch löschen – einzeln oder alle geschlossenen auf einmal (zum Aufräumen)."
+    ]
+  },
+  {
     "version": "1.7.1",
     "date": "03.11.2026",
     "items": [

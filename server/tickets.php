@@ -118,5 +118,17 @@ if($action==='close'){
   foreach($tickets as &$t){ if($t['id']===$id){ $t['status']='geschlossen'; $t['updated']=round(microtime(true)*1000); store($DATA_FILE,$tickets); out(array('ok'=>true)); }}
   out(array('ok'=>false,'error'=>'Ticket nicht gefunden'));
 }
+if($action==='delete'){
+  $id = clip(@$body['id'],20); $before = count($tickets);
+  $tickets = array_values(array_filter($tickets, function($t) use($id){ return $t['id']!==$id; }));
+  store($DATA_FILE,$tickets);
+  out(array('ok'=> count($tickets) < $before));
+}
+if($action==='deleteClosed'){
+  $before = count($tickets);
+  $tickets = array_values(array_filter($tickets, function($t){ return $t['status']!=='geschlossen'; }));
+  store($DATA_FILE,$tickets);
+  out(array('ok'=>true,'removed'=> $before - count($tickets)));
+}
 
 out(array('ok'=>false,'error'=>'unbekannte Aktion'));

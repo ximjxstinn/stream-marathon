@@ -880,11 +880,14 @@ a{color:#bf94ff}
           <div class="hint">Muss mit dem <code>$ADMIN_KEY</code> in deiner <code>tickets.php</code> übereinstimmen. Wird nur lokal gespeichert.</div>
         </div>
         <div id="atkOpen" style="display:none">
-          <div class="row" style="margin:12px 0"><button class="btn" id="atkBack" style="flex:none">← Zurück</button><span class="s" id="atkInfo" style="align-self:center;flex:1"></span><button class="btn dang" id="atkClose" style="flex:none">🔒 Schließen</button></div>
+          <div class="row" style="margin:12px 0"><button class="btn" id="atkBack" style="flex:none">← Zurück</button><span class="s" id="atkInfo" style="align-self:center;flex:1"></span><button class="btn dang" id="atkClose" style="flex:none">🔒 Schließen</button><button class="btn dang" id="atkDelete" style="flex:none">🗑 Löschen</button></div>
           <div class="tkthread" id="atkThread"></div>
           <div class="tkcompose"><textarea id="atkReply" maxlength="2000" placeholder="Antwort an den Streamer…"></textarea><button class="btn pri" id="atkSend" style="flex:none">Antworten</button></div>
         </div>
-        <div id="atkHome"><div id="atkList" style="margin-top:12px"></div></div>
+        <div id="atkHome">
+          <div class="row" style="margin-top:12px"><span class="s" id="atkCount" style="align-self:center;flex:1"></span><button class="btn" id="atkDelClosed" style="flex:none">🗑 Geschlossene löschen</button></div>
+          <div id="atkList" style="margin-top:12px"></div>
+        </div>
       </div>
       <div class="card"><h2>🚫 Namen- & Wortfilter</h2>
         <label class="f" style="margin-top:0">Gesperrte Namen (mit Komma getrennt)</label><input type="text" data-k="fNames" placeholder="troll123, nervig">
@@ -1619,6 +1622,9 @@ function drawAList() {
       <span class="s">${tkTime(t.updated)}</span></div>`;
   }).join('') : '<div class="hint">Noch keine Tickets eingegangen.</div>';
   $('atkList').querySelectorAll('.tkrow').forEach(r => r.onclick = () => { aSel = r.dataset.id; openA(); });
+  const closed = allTickets.filter(t => t.status === 'geschlossen').length;
+  $('atkCount').textContent = allTickets.length ? `${allTickets.length} Tickets · ${closed} geschlossen` : '';
+  $('atkDelClosed').style.display = closed ? '' : 'none';
 }
 function openA() {
   const t = allTickets.find(x => x.id === aSel); if (!t) return;
@@ -1641,6 +1647,8 @@ $('atkSend').onclick = async () => {
   if (r.ok) loadAll();
 };
 $('atkClose').onclick = () => ask('Ticket schließen? Der Streamer kann durch eine neue Nachricht wieder öffnen.', '', async () => { const r = await tpost('close', { id: aSel }); if (r.ok) loadAll(); }, 'Schließen');
+$('atkDelete').onclick = () => ask('Dieses Ticket endgültig löschen? Das kann man nicht rückgängig machen.', '', async () => { const r = await tpost('delete', { id: aSel }); if (r.ok) { aSel = null; $('atkOpen').style.display = 'none'; $('atkHome').style.display = ''; $('tkAdminKeyBox').style.display = ''; loadAll(); } }, 'Löschen');
+$('atkDelClosed').onclick = () => ask('Alle geschlossenen Tickets löschen? Das kann man nicht rückgängig machen.', '', async () => { const r = await tpost('deleteClosed'); if (r.ok) loadAll(); }, 'Löschen');
 // Polling je nach aktivem Tab
 let tkTimer = setInterval(() => {
   const tab = (document.querySelector('nav button.on') || {}).dataset ? document.querySelector('nav button.on').dataset.tab : '';
