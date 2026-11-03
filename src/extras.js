@@ -720,6 +720,11 @@ function install(Core, DEF, H) {
       const r = await this.ticketApi({ action: 'reply', adminKey: this.cfg.ticketAdminKey, id: b.id, text });
       if (r.ok) this.addDiag('Ticket beantwortet'); json(200, r); return true;
     }
+    if (p === '/api/ticket/close') {
+      if (!this.isAdmin()) { json(403, { ok: false, error: 'gesperrt' }); return true; }
+      const r = await this.ticketApi({ action: 'close', adminKey: this.cfg.ticketAdminKey, id: b.id });
+      if (r.ok) this.addDiag('Ticket geschlossen'); json(200, r); return true;
+    }
     if (!p.startsWith('/api/admin/')) return false;
     if (!this.isAdmin()) { json(403, { ok: false, error: 'gesperrt' }); return true; }
     this.adminTouch();

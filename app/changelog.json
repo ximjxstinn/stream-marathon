@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.7.1",
+    "date": "03.11.2026",
+    "items": [
+      "🔒 Tickets lassen sich jetzt schließen (Admin → 🎫 Tickets). Der Streamer kann durch eine neue Nachricht wieder öffnen.",
+      "🎧 Auf Tickets kann jetzt auch direkt von Discord aus geantwortet/geschlossen werden (Slash-Befehle /ticket reply und /ticket close) – Antworten erscheinen als „via Discord“."
+    ]
+  },
+  {
     "version": "1.7.0",
     "date": "03.11.2026",
     "items": [
