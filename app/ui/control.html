@@ -194,6 +194,24 @@ ol b{color:var(--text)}
 .err{color:var(--bad);font-size:12px;margin-top:8px;min-height:16px}
 .okm{color:var(--ok);font-size:12px;margin-top:6px;min-height:16px}
 .log2{font-family:Consolas,monospace;font-size:11.5px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;height:170px;overflow:auto;color:var(--muted);line-height:1.6}
+/* Ticket-System */
+.tkrow{display:flex;align-items:center;gap:10px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:8px;cursor:pointer;transition:border-color .15s}
+.tkrow:hover{border-color:var(--brand)}
+.tkrow.sel{border-color:var(--brand);background:linear-gradient(135deg,#9146ff14,#772ce814)}
+.tkrow .tkcat{font-size:17px}
+.tkrow .tkmain{flex:1;min-width:0}
+.tkrow .tktop{font-weight:700;font-size:13px;display:flex;gap:8px;align-items:center}
+.tkrow .tksub{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tkbadge{background:#ff4d6d;color:#fff;font-size:10px;font-weight:800;border-radius:9px;padding:1px 7px}
+.tkstat{font-size:10.5px;font-weight:700;border-radius:8px;padding:2px 8px;background:#2a2740;color:var(--muted)}
+.tkstat.offen{background:#1f6f43;color:#b8f5d0}
+.tkthread{background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:12px;max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:8px}
+.tkmsg{max-width:82%;padding:8px 12px;border-radius:14px;font-size:13px;line-height:1.45;word-break:break-word;white-space:pre-wrap}
+.tkmsg.user{align-self:flex-end;background:linear-gradient(135deg,#9146ff,#772ce8);color:#fff;border-bottom-right-radius:4px}
+.tkmsg.dev{align-self:flex-start;background:#26233a;color:var(--fg);border:1px solid var(--line);border-bottom-left-radius:4px}
+.tkmsg .who{display:block;font-size:10px;opacity:.7;margin-bottom:2px;font-weight:700}
+.tkcompose{display:flex;gap:8px;margin-top:10px}
+.tkcompose textarea{flex:1;min-height:42px;max-height:120px}
 .chart{display:flex;align-items:flex-end;gap:4px;height:140px;padding-top:6px}
 .chart div{flex:1;background:linear-gradient(180deg,#ff4fd8,var(--brand));border-radius:3px 3px 0 0;min-height:2px;position:relative}
 .chartL{display:flex;gap:4px;font-size:10px;color:var(--dim);margin-top:4px}
@@ -334,6 +352,7 @@ a{color:#bf94ff}
         <button class="btn" data-test="bits100">100 Bits</button>
         <button class="btn" data-test="bits1000">1.000 Bits</button>
         <button class="btn" data-test="raid">Raid (20)</button>
+        <button class="btn" data-test="msg">💬 Chat</button>
         <button class="btn" data-test="wheel">🎡 Gift-Bombe</button>
       </div>
       <div class="hint">Tests verlängern den Timer und erscheinen im Overlay, zählen aber nicht in die Statistik.</div>
@@ -402,6 +421,19 @@ a{color:#bf94ff}
     </div>
 
     <div class="card">
+      <h2>🛡️ Bot-Schutz (Follows) <label class="sw"><input type="checkbox" data-k="en_botprot"><span></span></label></h2>
+      <p class="hint" style="margin-top:0">Ignoriert verdächtige Follows, damit Fake-/Bot-Accounts die Zeit nicht aufblähen. Ignorierte Follows bringen <b>keine Zeit</b> und erscheinen in der Live-Diagnose.</p>
+      <div id="botBox">
+        <label class="f" style="margin-top:0">Mindest-Kontoalter (Tage, 0 = aus)</label>
+        <input type="number" data-k="botMinAge" min="0">
+        <div class="hint">Konten, die jünger sind, zählen nicht. Braucht den Twitch-Login (zum Prüfen des Kontoalters).</div>
+        <label class="f">Flut-Schutz: max. Follows pro Minute (0 = aus)</label>
+        <input type="number" data-k="botMaxPerMin" min="0">
+        <div class="hint">Kommen mehr Follows rein (Follow-Bombing), zählen die darüber nicht mehr.</div>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>⭐ Subs <label class="sw"><input type="checkbox" data-k="en_sub"><span></span></label></h2>
       <div class="two">
         <div><label class="f">Prime (Sek.)</label><input type="number" data-k="prime" class="dur" min="0"><div class="dh"></div></div>
@@ -433,6 +465,17 @@ a{color:#bf94ff}
       <div class="two">
         <div><label class="f">Sekunden pro Zuschauer</label><input type="number" data-k="raid" class="dur" min="0"><div class="dh"></div></div>
         <div><label class="f">Mindestens Zuschauer</label><input type="number" data-k="raidMin" min="0"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>💬 Chat-Nachrichten <label class="sw"><input type="checkbox" data-k="en_msg"><span></span></label></h2>
+      <p class="hint" style="margin-top:0">Zuschauer bringen durch Schreiben im Chat Zeit – wie bei Follows, nur über Chat-Nachrichten. Befehle (mit <b>!</b>) zählen nicht.</p>
+      <div><label class="f" style="margin-top:0">Sekunden pro Nachricht</label><input type="number" data-k="msg" class="dur" min="0"><div class="dh"></div></div>
+      <label class="chk" style="margin-top:12px"><span class="sw"><input type="checkbox" data-k="msgOnce"><span></span></span>Nur die erste Nachricht pro Zuschauer zählen</label>
+      <div class="hint">An: Jeder Chatter bringt genau einmal Zeit (wie ein Follow – kein Spam möglich).</div>
+      <div id="msgCdBox"><label class="f">Abstand pro Zuschauer (Sekunden)</label><input type="number" data-k="msgCooldown" min="0">
+        <div class="hint">Nur wenn „erste Nachricht“ aus ist: so oft darf <b>derselbe</b> Zuschauer Zeit bringen (z. B. alle 30 Sek.).</div>
       </div>
     </div>
   </div>
@@ -829,6 +872,20 @@ a{color:#bf94ff}
         </div>
         <div id="ntNow" class="hint" style="margin-top:10px"></div>
       </div>
+      <div class="card" style="grid-column:span 2"><h2>🎫 Tickets</h2>
+        <p class="hint" style="margin-top:0">Support-Anfragen der Streamer. Du antwortest hier – der Streamer sieht die Antwort in seiner App (Hilfe &amp; Support). Discord bekommt bei neuen Tickets eine Benachrichtigung.</p>
+        <div id="tkAdminKeyBox">
+          <label class="f" style="margin-top:0">Admin-Key <span class="s" id="tkKeyState"></span></label>
+          <div class="row"><input type="password" id="tkKey" placeholder="dein geheimer Ticket-Admin-Key"><button class="btn" id="bTkKey" style="flex:none">Speichern</button><button class="btn" id="bTkKeyDel" style="flex:none;display:none">Entfernen</button></div>
+          <div class="hint">Muss mit dem <code>$ADMIN_KEY</code> in deiner <code>tickets.php</code> übereinstimmen. Wird nur lokal gespeichert.</div>
+        </div>
+        <div id="atkOpen" style="display:none">
+          <div class="row" style="margin:12px 0"><button class="btn" id="atkBack" style="flex:none">← Zurück</button><span class="s" id="atkInfo" style="align-self:center"></span></div>
+          <div class="tkthread" id="atkThread"></div>
+          <div class="tkcompose"><textarea id="atkReply" maxlength="2000" placeholder="Antwort an den Streamer…"></textarea><button class="btn pri" id="atkSend" style="flex:none">Antworten</button></div>
+        </div>
+        <div id="atkHome"><div id="atkList" style="margin-top:12px"></div></div>
+      </div>
       <div class="card"><h2>🚫 Namen- & Wortfilter</h2>
         <label class="f" style="margin-top:0">Gesperrte Namen (mit Komma getrennt)</label><input type="text" data-k="fNames" placeholder="troll123, nervig">
         <label class="f">Wörter ausblenden</label><input type="text" data-k="fWords" placeholder="beleidigung, spam">
@@ -910,14 +967,27 @@ a{color:#bf94ff}
   <h1>🆘 Hilfe & Support</h1>
   <p class="sub">Melde Fehler, stell Fragen oder schick Wünsche direkt an den Entwickler.</p>
   <div class="grid2">
-    <div class="card">
-      <h2>📨 Nachricht an den Entwickler</h2>
-      <div class="hint" style="margin-top:0">Geht direkt an <b>xImJxstinn</b>. Mitgeschickt werden nur dein <b>Kanalname</b> und die <b>App-Version</b> – sonst nichts.</div>
-      <label class="f">Kategorie</label>
-      <div class="seg" id="spCat"><button data-v="bug" class="on">🐛 Bug</button><button data-v="frage">❓ Frage</button><button data-v="wunsch">💡 Wunsch</button></div>
-      <label class="f">Nachricht</label><textarea id="spMsg" maxlength="1000" placeholder="Was ist passiert bzw. was wünschst du dir?"></textarea>
-      <label class="f">Antwort an (optional)</label><input type="text" id="spContact" maxlength="80" placeholder="Discord-Name oder E-Mail – falls du Antwort möchtest">
-      <div class="row" style="margin-top:10px"><button class="btn pri" id="bSupport" style="flex:none">📨 An Entwickler senden</button><span class="s" id="spState" style="align-self:center"></span></div>
+    <div class="card" style="grid-column:span 2">
+      <h2>🎫 Support-Tickets</h2>
+      <div class="hint" style="margin-top:0">Schreib direkt mit dem Entwickler <b>xImJxstinn</b> – wie ein Chat. Deine Antwort kommt hier in der App an. Mitgeschickt wird nur dein <b>Kanalname</b>.</div>
+
+      <!-- Thread-Ansicht -->
+      <div id="tkOpen" style="display:none">
+        <div class="row" style="margin:12px 0"><button class="btn" id="tkBack" style="flex:none">← Zurück</button><span class="s" id="tkOpenInfo" style="align-self:center"></span></div>
+        <div class="tkthread" id="tkThread"></div>
+        <div class="tkcompose"><textarea id="tkReply" maxlength="2000" placeholder="Antwort schreiben…"></textarea><button class="btn pri" id="tkSend" style="flex:none">Senden</button></div>
+      </div>
+
+      <!-- Listen-Ansicht -->
+      <div id="tkHome">
+        <div id="tkList"></div>
+        <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
+          <label class="f" style="margin-top:0">Neues Ticket</label>
+          <div class="seg" id="tkCat"><button data-v="bug" class="on">🐛 Bug</button><button data-v="frage">❓ Frage</button><button data-v="wunsch">💡 Wunsch</button></div>
+          <textarea id="tkNew" maxlength="2000" placeholder="Was ist los bzw. was wünschst du dir?" style="margin-top:8px"></textarea>
+          <div class="row" style="margin-top:10px"><button class="btn pri" id="tkCreate" style="flex:none">🎫 Ticket öffnen</button><span class="s" id="tkState" style="align-self:center"></span></div>
+        </div>
+      </div>
     </div>
     <div class="card">
       <h2>🐞 Automatische Fehlermeldung</h2>
@@ -993,6 +1063,8 @@ $$('nav button').forEach(b => b.onclick = () => {
   $$('nav button').forEach(x => x.classList.toggle('on', x === b));
   $$('section').forEach(s => s.classList.toggle('on', s.id === b.dataset.tab));
   document.querySelector('main').scrollTop = 0;
+  if (b.dataset.tab === 'support' && typeof loadMine === 'function') loadMine();
+  if (b.dataset.tab === 'admin' && typeof loadAll === 'function' && S.admin && S.admin.unlocked) loadAll();
 });
 
 // ---------- Einstellungen binden ----------
@@ -1040,6 +1112,8 @@ function fillForm(c) {
   });
   $$('[data-seg]').forEach(seg => seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === c[seg.dataset.seg])));
   $$('[data-hk]').forEach(el => { if (el !== document.activeElement) el.value = c[el.dataset.hk] || '—'; });
+  if ($('msgCdBox')) $('msgCdBox').style.display = c.msgOnce ? 'none' : '';
+  if ($('botBox')) $('botBox').style.display = c.en_botprot ? '' : 'none';
   durHints();
 }
 
@@ -1327,6 +1401,7 @@ function renderAdmin() {
   if (!$('ghState').textContent || S.hasGhToken) { $('ghState').textContent = S.hasGhToken ? '✔ gespeichert' : ''; $('ghState').style.color = 'var(--ok)'; }
   $('ghTok').placeholder = S.hasGhToken ? 'Gespeichert – zum Ändern neuen Token eingeben' : 'github_pat_… (nur einmal nötig)';
   $('bGhDel').style.display = S.hasGhToken ? '' : 'none';
+  if ($('tkKey')) { $('tkKey').placeholder = S.hasTicketKey ? 'Gespeichert – zum Ändern neuen Key eingeben' : 'dein geheimer Ticket-Admin-Key'; $('bTkKeyDel').style.display = S.hasTicketKey ? '' : 'none'; if (S.hasTicketKey && !$('tkKeyState').textContent) { $('tkKeyState').textContent = '✔ gespeichert'; $('tkKeyState').style.color = 'var(--ok)'; } }
   const nowN = S.status && S.status.notice;
   $('ntNow').innerHTML = nowN ? `Aktuell aktiv: <b>${esc(nowN.title || '(ohne Titel)')}</b> ${nowN.level === 'warn' ? '⚠️' : '📣'}${nowN.action === 'restart' ? ' · 🔄 mit Neustart-Button' : ''}` : 'Zurzeit ist keine Ankündigung aktiv.';
   $('bNtClear').style.display = nowN ? '' : 'none';
@@ -1467,9 +1542,106 @@ async function admPost(a, body) { const t = $('ntState'); t.style.color = 'var(-
 $('bNtSend').onclick = () => { if (!S.hasGhToken) { $('ntState').style.color = 'var(--bad)'; $('ntState').textContent = '✖ Erst GitHub-Token speichern'; return; } const restart = $('ntRestart').querySelector('input').checked; admPost('publishNotice', { title: $('ntTitle').value, text: $('ntText').value, level: ntLevel, action: restart ? 'restart' : '' }); };
 $('bNtClear').onclick = () => admPost('clearNotice', {});
 // --- Support-Formular ---
-let spCat = 'bug';
-$('spCat').querySelectorAll('button').forEach(b => b.onclick = () => { spCat = b.dataset.v; $('spCat').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); });
-$('bSupport').onclick = async () => { const t = $('spState'), msg = $('spMsg').value.trim(); if (!msg) { t.style.color = 'var(--bad)'; t.textContent = '✖ Bitte etwas schreiben'; return; } t.style.color = 'var(--muted)'; t.textContent = '… wird gesendet'; try { const r = await post('/api/support', { cat: spCat, msg, contact: $('spContact').value.trim() }).then(x => x.json()); t.style.color = r.ok ? 'var(--ok)' : 'var(--bad)'; t.textContent = r.ok ? '✔ gesendet – danke!' : ('✖ ' + (r.error || 'Fehler')); if (r.ok) { $('spMsg').value = ''; $('spContact').value = ''; } } catch (e) { t.style.color = 'var(--bad)'; t.textContent = '✖ keine Verbindung'; } };
+// ================= Ticket-System =================
+const CAT_IC = { bug: '🐛', frage: '❓', wunsch: '💡' };
+const tkTime = t => new Date(t).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const tpost = (p, b) => post('/api/ticket/' + p, b || {}).then(r => r.json());
+function tkBubbles(msgs) {
+  return (msgs || []).map(m => `<div class="tkmsg ${m.from === 'dev' ? 'dev' : 'user'}"><span class="who">${m.from === 'dev' ? '🛠️ xImJxstinn' : 'Du'} · ${tkTime(m.t)}</span>${esc(m.text)}</div>`).join('');
+}
+// ---- Streamer-Seite ----
+let myTickets = [], mySel = null, tkCat = 'bug', tkPoll = null;
+$('tkCat').querySelectorAll('button').forEach(b => b.onclick = () => { tkCat = b.dataset.v; $('tkCat').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); });
+async function loadMine() {
+  const r = await tpost('mine');
+  if (!r.ok) { $('tkList').innerHTML = `<div class="hint">${r.error === 'Ticket-System ist nicht eingerichtet' ? 'Support-Tickets sind in dieser Version noch nicht aktiv.' : 'Keine Verbindung zum Support – später nochmal.'}</div>`; return; }
+  myTickets = r.tickets || [];
+  if (mySel) { const t = myTickets.find(x => x.id === mySel); if (t) drawThread(t); }
+  drawMyList();
+}
+function drawMyList() {
+  $('tkList').innerHTML = myTickets.length ? myTickets.map(t => {
+    const last = t.msgs[t.msgs.length - 1] || {};
+    return `<div class="tkrow" data-id="${t.id}"><span class="tkcat">${CAT_IC[t.cat] || '❓'}</span>
+      <div class="tkmain"><div class="tktop">Ticket ${t.id} <span class="tkstat ${t.status === 'offen' ? 'offen' : ''}">${t.status}</span>${t.unreadUser ? '<span class="tkbadge">NEU</span>' : ''}</div>
+      <div class="tksub">${last.from === 'dev' ? '🛠️ ' : ''}${esc((last.text || '').slice(0, 60))}</div></div>
+      <span class="s">${tkTime(t.updated)}</span></div>`;
+  }).join('') : '<div class="hint">Noch keine Tickets. Stell unten einfach deine Frage.</div>';
+  $('tkList').querySelectorAll('.tkrow').forEach(r => r.onclick = () => { mySel = r.dataset.id; openMine(); });
+}
+function openMine() {
+  const t = myTickets.find(x => x.id === mySel); if (!t) return;
+  $('tkHome').style.display = 'none'; $('tkOpen').style.display = '';
+  drawThread(t);
+}
+function drawThread(t) {
+  $('tkOpenInfo').textContent = `${CAT_IC[t.cat] || ''} Ticket ${t.id} · ${t.status}`;
+  const th = $('tkThread'); const atBottom = th.scrollHeight - th.scrollTop - th.clientHeight < 40;
+  th.innerHTML = tkBubbles(t.msgs);
+  if (atBottom) th.scrollTop = th.scrollHeight;
+}
+$('tkBack').onclick = () => { mySel = null; $('tkOpen').style.display = 'none'; $('tkHome').style.display = ''; loadMine(); };
+$('tkCreate').onclick = async () => {
+  const text = $('tkNew').value.trim(); const t = $('tkState');
+  if (!text) { t.style.color = 'var(--bad)'; t.textContent = '✖ Bitte etwas schreiben'; return; }
+  t.style.color = 'var(--muted)'; t.textContent = '…';
+  const r = await tpost('create', { cat: tkCat, text });
+  if (r.ok) { $('tkNew').value = ''; t.style.color = 'var(--ok)'; t.textContent = '✔ Ticket geöffnet'; mySel = r.id; await loadMine(); openMine(); }
+  else { t.style.color = 'var(--bad)'; t.textContent = '✖ ' + (r.error || 'Fehler'); }
+};
+$('tkSend').onclick = async () => {
+  const text = $('tkReply').value.trim(); if (!text || !mySel) return;
+  $('tkReply').value = '';
+  const r = await tpost('send', { id: mySel, text });
+  if (r.ok) loadMine();
+};
+// ---- Admin-Seite ----
+let allTickets = [], aSel = null;
+$('bTkKey').onclick = () => { const v = $('tkKey').value.trim(); if (!v) return; queue('ticketAdminKey', v); $('tkKey').value = ''; $('tkKeyState').textContent = '✔ gespeichert'; $('tkKeyState').style.color = 'var(--ok)'; setTimeout(loadAll, 500); };
+$('bTkKeyDel').onclick = () => { queue('ticketAdminKey', ''); $('tkKeyState').textContent = 'entfernt'; $('atkList').innerHTML = ''; };
+async function loadAll() {
+  if (!S.hasTicketKey) { $('atkList').innerHTML = '<div class="hint">Erst oben deinen Admin-Key speichern, dann erscheinen hier die Tickets.</div>'; return; }
+  const r = await tpost('list');
+  if (!r.ok) { $('atkList').innerHTML = `<div class="hint">${r.error === 'Kein Zugriff' ? '✖ Admin-Key stimmt nicht mit tickets.php überein.' : 'Keine Verbindung zum Ticket-Server.'}</div>`; return; }
+  allTickets = r.tickets || [];
+  if (aSel) { const t = allTickets.find(x => x.id === aSel); if (t) drawAThread(t); }
+  drawAList();
+}
+function drawAList() {
+  $('atkList').innerHTML = allTickets.length ? allTickets.map(t => {
+    const last = t.msgs[t.msgs.length - 1] || {};
+    return `<div class="tkrow" data-id="${t.id}"><span class="tkcat">${CAT_IC[t.cat] || '❓'}</span>
+      <div class="tkmain"><div class="tktop">🎮 ${esc(t.channel || '?')} <span class="tkstat ${t.status === 'offen' ? 'offen' : ''}">${t.status}</span>${t.unreadDev ? '<span class="tkbadge">NEU</span>' : ''}</div>
+      <div class="tksub">${last.from === 'dev' ? '🛠️ ' : ''}${esc((last.text || '').slice(0, 70))}</div></div>
+      <span class="s">${tkTime(t.updated)}</span></div>`;
+  }).join('') : '<div class="hint">Noch keine Tickets eingegangen.</div>';
+  $('atkList').querySelectorAll('.tkrow').forEach(r => r.onclick = () => { aSel = r.dataset.id; openA(); });
+}
+function openA() {
+  const t = allTickets.find(x => x.id === aSel); if (!t) return;
+  $('atkHome').style.display = 'none'; $('atkOpen').style.display = ''; $('tkAdminKeyBox').style.display = 'none';
+  drawAThread(t);
+}
+function drawAThread(t) {
+  $('atkInfo').textContent = `${CAT_IC[t.cat] || ''} ${t.channel || '?'} · Ticket ${t.id} · ${t.status}`;
+  const th = $('atkThread'); const atBottom = th.scrollHeight - th.scrollTop - th.clientHeight < 40;
+  // Für den Entwickler sind die Blasen gespiegelt: Streamer links, du rechts
+  th.innerHTML = (t.msgs || []).map(m => `<div class="tkmsg ${m.from === 'dev' ? 'user' : 'dev'}"><span class="who">${m.from === 'dev' ? 'Du' : '🎮 ' + esc(t.channel || 'Streamer')} · ${tkTime(m.t)}</span>${esc(m.text)}</div>`).join('');
+  if (atBottom) th.scrollTop = th.scrollHeight;
+}
+$('atkBack').onclick = () => { aSel = null; $('atkOpen').style.display = 'none'; $('atkHome').style.display = ''; $('tkAdminKeyBox').style.display = ''; loadAll(); };
+$('atkSend').onclick = async () => {
+  const text = $('atkReply').value.trim(); if (!text || !aSel) return;
+  $('atkReply').value = '';
+  const r = await tpost('reply', { id: aSel, text });
+  if (r.ok) loadAll();
+};
+// Polling je nach aktivem Tab
+let tkTimer = setInterval(() => {
+  const tab = (document.querySelector('nav button.on') || {}).dataset ? document.querySelector('nav button.on').dataset.tab : '';
+  if (tab === 'support') loadMine();
+  else if (tab === 'admin' && S.admin && S.admin.unlocked) loadAll();
+}, 8000);
 function renderReports() {
   const R = (S.reports || []).slice().reverse();
   const h = R.map(r => `<div class="rep"><span class="tt">${new Date(r.t).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span><b>${esc(r.title)}</b>

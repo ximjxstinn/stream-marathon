@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.7.0",
+    "date": "03.11.2026",
+    "items": [
+      "🎫 Neues Support-Ticket-System: Schreib direkt mit dem Entwickler – wie ein Chat. Tickets öffnen unter „Hilfe & Support“, Antwort kommt in der App an.",
+      "💬 Zeit pro Chat-Nachricht: Zuschauer bringen durchs Schreiben im Chat Zeit – standardmäßig einmal pro Zuschauer (wie ein Follow, kein Spam). Einstellbar im Events-Bereich.",
+      "🛡️ Bot-Schutz für Follows: Ignoriert Fake-/Bot-Follows über Mindest-Kontoalter und Flut-Schutz (Anti-Follow-Bombing), damit sie die Zeit nicht aufblähen."
+    ]
+  },
+  {
     "version": "1.6.1",
     "date": "28.10.2026",
     "items": [

@@ -9,13 +9,13 @@ const crypto = require('crypto');
 const GLOBAL_KEYS = new Set(['port', 'channel', 'clientId', 'token', 'login', 'telemetry', 'installId', 'lastPing', 'announced',
   'hk_toggle', 'hk_plus', 'hk_minus', 'hkSec', 'hk_hh', 'hk_pausescr',
   'adminHash', 'adminAutoLock', 'updChannel', 'autoBackup', 'deckKey',
-  'yt_key', 'yt_channel', 'cp_rewardId', 'cp_on', 'cp_rewards', 'cp_migrated', 'noticeSeen', 'ghToken', 'errReport']);
+  'yt_key', 'yt_channel', 'cp_rewardId', 'cp_on', 'cp_rewards', 'cp_migrated', 'noticeSeen', 'ghToken', 'errReport', 'ticketAdminKey']);
 // Diese Einstellungen gehen nur bei entsperrtem Admin-Bereich
 const ADMIN_KEYS = new Set(['fNames', 'fWords', 'nightOn', 'nightFrom', 'nightTo', 'nightPct', 'hourCap',
-  'adminAutoLock', 'updChannel', 'autoBackup', 'pauseText', 'ghToken']);
+  'adminAutoLock', 'updChannel', 'autoBackup', 'pauseText', 'ghToken', 'ticketAdminKey']);
 
 const NEW_DEF = {
-  noticeSeen: '', ghToken: '', errReport: true,
+  noticeSeen: '', ghToken: '', errReport: true, ticketAdminKey: '',
   // Admin
   adminHash: '', adminAutoLock: true, updChannel: 'stable', autoBackup: true,
   fNames: '', fWords: '', nightOn: false, nightFrom: '02:00', nightTo: '08:00', nightPct: 50, hourCap: 0,
@@ -117,6 +117,56 @@ function install(Core, DEF, H) {
     this.diag.push({ t: Date.now(), text: String(text).slice(0, 200) });
     if (this.diag.length > 200) this.diag = this.diag.slice(-150);
   };
+  // Lesbare Namen für Einstellungen (für das Änderungs-Log in der Live-Diagnose)
+  const CFG_LABELS = {
+    startMin: 'Start-Minuten', capH: 'Max. Stunden', channel: 'Twitch-Kanal', ignoreAfterEnd: 'Nach Ende ignorieren', port: 'Port',
+    en_follow: 'Follows aktiv', follow: 'Sek. pro Follow', dedupe: 'Jeden Follower nur 1×',
+    en_botprot: 'Bot-Schutz aktiv', botMinAge: 'Mindest-Kontoalter (Tage)', botMaxPerMin: 'Max. Follows/Minute',
+    en_sub: 'Subs aktiv', prime: 'Prime-Sub (Sek.)', t1: 'Sub T1 (Sek.)', t2: 'Sub T2 (Sek.)', t3: 'Sub T3 (Sek.)',
+    en_gift: 'Gift-Subs aktiv', giftPct: 'Gift-Sub %',
+    en_bits: 'Bits aktiv', bits: 'Sek. pro Bits-Paket', bitsMin: 'Mindest-Bits',
+    en_raid: 'Raids aktiv', raid: 'Sek. pro Raid-Zuschauer', raidMin: 'Mindest-Zuschauer (Raid)',
+    en_msg: 'Chat-Nachrichten aktiv', msg: 'Sek. pro Chat-Nachricht', msgOnce: 'Nur erste Nachricht pro Zuschauer', msgCooldown: 'Chat-Abstand (Sek.)',
+    color: 'Timer-Farbe', accent: 'Akzentfarbe', shadow: 'Schatten', outline: 'Umrandung', align: 'Ausrichtung',
+    boxOn: 'Hintergrund-Box', boxColor: 'Box-Farbe', boxOpacity: 'Box-Deckkraft', boxRadius: 'Box-Rundung',
+    timerX: 'Timer X', timerY: 'Timer Y', showStats: 'Statistik anzeigen', statSize: 'Statistik-Größe',
+    st_f: 'Statistik: Follows', st_s: 'Statistik: Subs', st_b: 'Statistik: Bits', st_r: 'Statistik: Raids',
+    pops: 'Einblendungen', popDur: 'Einblend-Dauer', popManual: 'Manuelle Einblendungen', sound: 'Ton', volume: 'Lautstärke',
+    popPos: 'Einblendung-Position', popX: 'Einblendung X', popY: 'Einblendung Y', popSize: 'Einblendung-Größe',
+    hhMin: 'Happy Hour (Min.)', hhMult: 'Happy Hour Faktor',
+    nightOn: 'Nachtmodus', nightFrom: 'Nachtmodus von', nightTo: 'Nachtmodus bis', nightPct: 'Nachtmodus %', hourCap: 'Stunden-Limit',
+    showEnd: 'Endzeit anzeigen', endLabel: 'Endzeit-Text', endFmt: 'Endzeit-Format', endPos: 'Endzeit-Position', endSize: 'Endzeit-Größe', endColorOn: 'Endzeit eigene Farbe', endColor: 'Endzeit-Farbe', endShowDate: 'Endzeit: Datum', endShowStat: 'Endzeit: Läuft/Pausiert',
+    cmd_on: 'Chat-Befehle', cmdCooldown: 'Befehl-Cooldown',
+    cp_on: 'Kanalpunkte aktiv', yt_on: 'YouTube aktiv', tt_on: 'TikTok-Tools aktiv',
+    ov_price: 'Preisliste im Overlay', priceTitle: 'Preisliste-Titel', priceColor: 'Preisliste-Farbe',
+    autoBackup: 'Auto-Backup', adminAutoLock: 'Admin Auto-Sperre', updChannel: 'Update-Kanal', errReport: 'Fehler-Report',
+    fNames: 'Gesperrte Namen', fWords: 'Gesperrte Wörter'
+  };
+  // Protokolliert Einstellungsänderungen in der Live-Diagnose
+  P.logConfigChanges = function (old, patch) {
+    const SKIP = ['token', 'login', 'installId', 'lastPing', 'announced', 'adminHash', 'ghToken', 'yt_key', 'noticeSeen', 'deckKey', 'cp_rewardId', 'telemetry', 'ticketAdminKey'];
+    for (const k in patch) {
+      if (SKIP.includes(k) || !(k in this.cfg)) continue;
+      const nv = this.cfg[k], ov = old[k];
+      if (JSON.stringify(nv) === JSON.stringify(ov)) continue;   // nichts geändert
+      const name = CFG_LABELS[k] || k;
+      let v;
+      if (typeof nv === 'boolean') v = nv ? 'an' : 'aus';
+      else if (Array.isArray(nv) || (nv && typeof nv === 'object')) v = '(aktualisiert)';
+      else v = String(nv);
+      this.addDiag(`⚙️ ${name} geändert → ${v}`);
+    }
+  };
+  // Spricht mit dem Ticket-Backend (PHP auf dem Webhosting des Entwicklers)
+  P.ticketApi = async function (payload) {
+    if (!this.ticketUrl) return { ok: false, error: 'Ticket-System ist nicht eingerichtet' };
+    if (typeof fetch === 'undefined') return { ok: false, error: 'offline' };
+    try {
+      const r = await fetch(this.ticketUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const j = await r.json().catch(() => ({}));
+      return (r.ok && j && typeof j === 'object') ? j : { ok: false, error: 'Server ' + r.status };
+    } catch (e) { return { ok: false, error: 'keine Verbindung' }; }
+  };
   P.startExtras = function () {
     this._xTick = setInterval(() => this.extraTick(), 30000);
     this._bak = setInterval(() => { if (this.cfg.autoBackup) this.writeBackup(); }, 15 * 60000);
@@ -132,9 +182,10 @@ function install(Core, DEF, H) {
   };
   P.extraSnapshot = function (snap) {
     const pub = snap.cfg;
-    delete pub.adminHash; delete pub.yt_key; delete pub.ghToken;
+    delete pub.adminHash; delete pub.yt_key; delete pub.ghToken; delete pub.ticketAdminKey;
     snap.hasYtKey = !!this.cfg.yt_key;
     snap.hasGhToken = !!this.cfg.ghToken;
+    snap.hasTicketKey = !!this.cfg.ticketAdminKey;
     snap.scopes = this.scopes || null;
     snap.profiles = { active: this.prof.active, names: Object.keys(this.prof.list) };
     snap.admin = { unlocked: this.isAdmin(), until: this.adminUntil === Infinity ? 0 : this.adminUntil, defaultPw: checkPw('admin', this.cfg.adminHash) };
@@ -371,6 +422,20 @@ function install(Core, DEF, H) {
   };
   P.onChat = function (tags, text) {
     const c = this.cfg;
+    // Zeit pro Chat-Nachricht (Befehle mit ! zählen nicht)
+    if (c.en_msg && text && text[0] !== '!' && c.msg > 0) {
+      const uid = String(tags['user-id'] || tags['display-name'] || tags.login || '').toLowerCase();
+      const name = tags['display-name'] || tags.login || 'Jemand';
+      if (uid) {
+        if (c.msgOnce) {
+          const key = 'm:' + uid;
+          if (!this.seen.has(key)) { this.seen.add(key); this.addTime(c.msg, `💬 Erste Nachricht von ${name}`, null, { kind: 'msg', user: name }); }
+        } else {
+          const now = Date.now(); this.msgLast = this.msgLast || {};
+          if (now - (this.msgLast[uid] || 0) >= Math.max(0, c.msgCooldown) * 1000) { this.msgLast[uid] = now; this.addTime(c.msg, `💬 Chat von ${name}`, null, { kind: 'msg', user: name }); }
+        }
+      }
+    }
     if (!c.cmd_on || !text || text[0] !== '!') return;
     const word = text.trim().split(/\s+/)[0].toLowerCase();
     const cmd = (c.cmds || []).find(x => x.on && x.cmd === word);
@@ -629,6 +694,31 @@ function install(Core, DEF, H) {
       if (!this.webhook) { json(200, { ok: false, error: 'Senden ist nicht eingerichtet' }); return true; }
       this.reportSupport({ cat: b.cat, msg, contact: b.contact }); this.addDiag('Support-Nachricht gesendet');
       json(200, { ok: true }); return true;
+    }
+    // ===== Ticket-System (Streamer-Seite) =====
+    if (p === '/api/ticket/mine') { json(200, await this.ticketApi({ action: 'mine', installId: this.cfg.installId })); return true; }
+    if (p === '/api/ticket/create') {
+      const text = String(b.text || '').trim();
+      if (!text) { json(200, { ok: false, error: 'Bitte etwas schreiben' }); return true; }
+      const r = await this.ticketApi({ action: 'create', installId: this.cfg.installId, channel: this.cfg.channel || '', cat: b.cat || 'frage', text });
+      if (r.ok) this.addDiag('Ticket erstellt'); json(200, r); return true;
+    }
+    if (p === '/api/ticket/send') {
+      const text = String(b.text || '').trim();
+      if (!text) { json(200, { ok: false, error: 'Bitte etwas schreiben' }); return true; }
+      json(200, await this.ticketApi({ action: 'send', installId: this.cfg.installId, id: b.id, text })); return true;
+    }
+    // ===== Ticket-System (Entwickler/Admin-Seite) =====
+    if (p === '/api/ticket/list') {
+      if (!this.isAdmin()) { json(403, { ok: false, error: 'gesperrt' }); return true; }
+      json(200, await this.ticketApi({ action: 'list', adminKey: this.cfg.ticketAdminKey })); return true;
+    }
+    if (p === '/api/ticket/reply') {
+      if (!this.isAdmin()) { json(403, { ok: false, error: 'gesperrt' }); return true; }
+      const text = String(b.text || '').trim();
+      if (!text) { json(200, { ok: false, error: 'Bitte etwas schreiben' }); return true; }
+      const r = await this.ticketApi({ action: 'reply', adminKey: this.cfg.ticketAdminKey, id: b.id, text });
+      if (r.ok) this.addDiag('Ticket beantwortet'); json(200, r); return true;
     }
     if (!p.startsWith('/api/admin/')) return false;
     if (!this.isAdmin()) { json(403, { ok: false, error: 'gesperrt' }); return true; }

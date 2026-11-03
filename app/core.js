@@ -11,10 +11,12 @@ const DEF = {
   channel: '', startMin: 60, capH: 0, ignoreAfterEnd: true,
   // Events
   en_follow: true, follow: 30, dedupe: true,
+  en_botprot: false, botMinAge: 7, botMaxPerMin: 25,
   en_sub: true, prime: 300, t1: 300, t2: 600, t3: 1500,
   en_gift: true, giftPct: 100,
   en_bits: true, bits: 60, bitsMin: 1,
   en_raid: false, raid: 2, raidMin: 5,
+  en_msg: false, msg: 5, msgOnce: true, msgCooldown: 30,
   // Design
   title: 'SUBATHON', endText: 'MARATHON VORBEI', font: 'Rubik', format: 'hms', size: 110,
   color: '#ffffff', accent: '#9146ff', shadow: 60, outline: 0, align: 'center',
@@ -49,6 +51,7 @@ const UPDATE_URL = (() => { try { return require('./package.json').updateUrl || 
 const cmpVer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d; } return 0; };
 const VERSION = (() => { try { return require('./package.json').version; } catch (e) { return '?'; } })();
 const WEBHOOK = (() => { try { return fs.readFileSync(path.join(__dirname, 'webhook.txt'), 'utf8').trim(); } catch (e) { return ''; } })();
+const TICKET_URL = (() => { try { const u = fs.readFileSync(path.join(__dirname, 'tickets.txt'), 'utf8').trim(); if (u) return u; } catch (e) {} return 'https://ximjxstinn.de/marathon/tickets.php'; })();
 const fmtDur = sec => {
   sec = Math.round(Math.abs(sec)); const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60), x = sec % 60;
   return [d ? d + 'T' : '', h ? h + 'h' : '', m ? m + 'm' : '', x ? x + 's' : ''].filter(Boolean).join(' ') || '0s';
@@ -82,6 +85,7 @@ class Core extends EventEmitter {
     super();
     this.version = VERSION;
     this.webhook = opts.webhook || WEBHOOK;
+    this.ticketUrl = opts.ticketUrl || TICKET_URL;
     this.dir = dir;
     fs.mkdirSync(dir, { recursive: true });
     this.cfgFile = path.join(dir, 'config.json');
@@ -497,19 +501,57 @@ class Core extends EventEmitter {
     }
   }
 
-  onFollow(ev) {
+  async onFollow(ev) {
     const c = this.cfg;
     if (!c.en_follow) return;
+    const name = ev.user_name;
     // Erkennung über die feste Twitch-User-ID (ändert sich nie), sonst Login/Name – so zählt ein Re-Follow nicht erneut
     const key = 'f:' + String(ev.user_id || ev.user_login || ev.user_name || '').toLowerCase();
     // Schutz ist an, außer er wurde ausdrücklich ausgeschaltet (fehlender Wert = an)
     if (c.dedupe !== false) {
       // Altes Format (nur Login/Name) weiter beachten, damit nach dem Update niemand doppelt zählt
       const oldKey = ev.user_login || ev.user_name;
-      if (this.seen.has(key) || (oldKey && this.seen.has(oldKey))) { this.pushLog(`Follow von ${ev.user_name} (schon gezählt)`, 0, 'info'); this.changed(); return; }
-      this.seen.add(key);
+      if (this.seen.has(key) || (oldKey && this.seen.has(oldKey))) { this.pushLog(`Follow von ${name} (schon gezählt)`, 0, 'info'); this.changed(); return; }
     }
-    this.addTime(c.follow, `Follow von ${ev.user_name}`, { f: 1 }, { kind: 'follow', user: ev.user_name });
+    // Bot-/Fake-Follow-Schutz: zählt NICHT als Follow, wird aber nicht als „gezählt“ markiert
+    if (c.en_botprot) {
+      const reason = await this.botCheck(ev);
+      if (reason) { this.pushLog(`🛡️ Follow von ${name} ignoriert (${reason})`, 0, 'info'); this.addDiag && this.addDiag(`🛡️ Bot-Schutz: ${name} – ${reason}`); this.changed(); return; }
+    }
+    if (c.dedupe !== false) this.seen.add(key);
+    this.addTime(c.follow, `Follow von ${name}`, { f: 1 }, { kind: 'follow', user: name });
+  }
+
+  // Prüft einen Follow auf Bot-/Fake-Merkmale; gibt einen Grund zurück, wenn er ignoriert werden soll, sonst null
+  async botCheck(ev) {
+    const c = this.cfg;
+    // 1) Flut-Schutz: zu viele Follows in kurzer Zeit = Follow-Bombing
+    if (c.botMaxPerMin > 0) {
+      const now = Date.now();
+      this.folTimes = (this.folTimes || []).filter(t => now - t < 60000);
+      this.folTimes.push(now);
+      if (this.folTimes.length > c.botMaxPerMin) return 'Follow-Flut';
+    }
+    // 2) Mindest-Kontoalter: ganz neue Accounts sind oft Bots
+    if (c.botMinAge > 0 && ev.user_id) {
+      const age = await this.accountAgeDays(ev.user_id);
+      if (age !== null && age < c.botMinAge) return `Konto erst ${age} Tage alt`;
+    }
+    return null;
+  }
+  // Alter eines Twitch-Kontos in Tagen (über Helix), mit Cache; null wenn nicht prüfbar
+  async accountAgeDays(id) {
+    this.ageCache = this.ageCache || {};
+    if (id in this.ageCache) return this.ageCache[id];
+    if (!this.cfg.token || !this.cfg.clientId || typeof this.helix !== 'function') return null;
+    try {
+      const r = await this.helix('GET', 'users?id=' + encodeURIComponent(id));
+      const created = r && r.ok && r.j && r.j.data && r.j.data[0] && r.j.data[0].created_at;
+      if (!created) return null;
+      const days = Math.floor((Date.now() - new Date(created).getTime()) / 86400000);
+      this.ageCache[id] = days;
+      return days;
+    } catch (e) { return null; }
   }
 
   test(kind) {
@@ -523,7 +565,8 @@ class Core extends EventEmitter {
       gift: [c.t1 * c.giftPct / 100, 'Tester schenkt Zuschauer einen T1-Sub', 'gift'],
       bits100: [c.bits, '100 Bits von Tester', 'bits'],
       bits1000: [c.bits * 10, '1.000 Bits von Tester', 'bits'],
-      raid: [20 * c.raid, 'Raid von Tester mit 20 Zuschauern', 'raid']
+      raid: [20 * c.raid, 'Raid von Tester mit 20 Zuschauern', 'raid'],
+      msg: [c.msg, '💬 Chat von Tester', 'msg']
     };
     if (kind === 'wheel') return this.spinWheel('Tester', Math.max(c.wheelMin, 5), true);
     const m = map[kind];
@@ -695,6 +738,7 @@ class Core extends EventEmitter {
     if (this.cfg.startMin !== old.startMin && !s.started && !s.running && s.added === 0) s.remaining = this.cfg.startMin * 60000;
     if (this.cfg.channel !== old.channel) this.connIrc();
     if (this.cfg.channel !== old.channel || this.cfg.clientId !== old.clientId || this.cfg.en_follow !== old.en_follow) this.connFollow();
+    this.logConfigChanges && this.logConfigChanges(old, patch);
     this.emit('config');
     this.changed();
   }
