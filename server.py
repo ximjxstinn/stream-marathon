@@ -74,7 +74,7 @@ DEFAULT_CFG = {
     "shuffle": True,
     # Modus: "videos" (Playlist) oder "countdown" (Live-Timer)
     "mode": "countdown",
-    "cd_theme": "release",            # "release", "konsole" oder "standard"
+    "cd_theme": "ps5",                # "ps5", "release", "konsole" oder "standard"
     "cd_title": "Grand Theft Auto VI",
     "cd_target": "2026-11-19T00:00",  # Ortszeit (Europe/Berlin)
     "cd_done": "GTA 6 IST DA!",
@@ -89,7 +89,7 @@ DEFAULT_CFG = {
     "cd_boxlabel": "Kann gespielt werden in:",
     "cd_volume": 60,
     "cd_shuffle_music": True,
-    "cfg_version": 2,
+    "cfg_version": 3,
 }
 TZ_NAME = "Europe/Berlin"
 CD_DIR = os.path.join(BASE, "countdown")
@@ -113,6 +113,10 @@ def get_cfg():
         if stored.get("server") == "rtmp://live.twitch.tv/app":
             stored.pop("server")
         stored["cfg_version"] = 2
+        save_json(CFG_PATH, {**cfg, **stored})
+    if stored and stored.get("cfg_version", 1) < 3:
+        stored["cd_theme"] = "ps5"           # Update auf Version 3: PS5-Startseite als Design
+        stored["cfg_version"] = 3
         save_json(CFG_PATH, {**cfg, **stored})
     cfg.update(stored)
     return cfg
@@ -267,6 +271,8 @@ RUN_DIR = os.path.join(CD_DIR, "run")
 MUSIC_DIR = os.path.join(CD_DIR, "music")
 BG_LAYER = os.path.join(CD_DIR, "bg_layer.png")
 BG_RAW = os.path.join(CD_DIR, "bg_layer.rgba")
+BG_ORIG = os.path.join(CD_DIR, "bg_orig.png")        # hochgeladenes Hintergrundbild (unverändert)
+COVER_ORIG = os.path.join(CD_DIR, "cover_orig.png")  # hochgeladenes Cover (quadratisch)
 EMPTY_LAYER = os.path.join(RUN_DIR, "empty.png")
 AUDIO_FIFO = os.path.join(RUN_DIR, "audio.pcm")
 IMAGE_FIFO = os.path.join(RUN_DIR, "image.pipe")
@@ -276,7 +282,8 @@ for _f in (AUDIO_FIFO, IMAGE_FIFO):
     if not os.path.exists(_f):
         os.mkfifo(_f)
 
-THEMES = {"release": "PS5-Release", "konsole": "Konsole", "standard": "Standard"}
+THEMES = {"ps5": "PS5-Startseite (Bild + Countdown-Leiste)", "release": "PS5-Release (Schlagzeile)",
+          "konsole": "Konsole (blau, Kacheln)", "standard": "Standard"}
 MUSIC_EXT = (".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac", ".opus")
 # Einstellungen, bei denen der Stream wirklich neu starten muss
 RESTART_KEYS = {"stream_key", "server", "mode", "cd_theme", "cd_color", "quality"}
@@ -375,7 +382,7 @@ class Ticker(threading.Thread):
             "r_tage": hide("Tage"), "r_std": hide("Stunden"), "r_min": hide("Minuten"), "r_sek": hide("Sekunden"),
             "spin": hide(SPINNER[int(now) % 4]),
             # Texte aus dem Panel
-            "title": cfg["cd_title"], "done": show(cfg["cd_done"]), "tile": cfg["cd_tile"],
+            "title": cfg["cd_title"], "done": show(cfg["cd_done"]), "tile": " " if os.path.exists(COVER_ORIG) and cfg["cd_theme"] in ("ps5", "release") else cfg["cd_tile"],
             "release": "Release: " + release, "release_short": release,
             "badge": "●  " + cfg["cd_badge"], "badge_dot": "●",
             "head_full": cfg["cd_head1"] + cfg["cd_hl"], "head1": cfg["cd_head1"] or " ",
@@ -511,21 +518,76 @@ def make_empty_layer():
                         "-frames:v", "1", "-update", "1", EMPTY_LAYER], check=False)
 
 
-def convert_bg(src, cfg):
-    """Bereitet ein hochgeladenes Bild auf (Größe + abdunkeln) und tauscht es live aus."""
-    w, h, _, _ = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
-    tmp = os.path.join(RUN_DIR, "bg_new.png")
-    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-vf",
-                        f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},"
-                        f"drawbox=x=0:y=0:w=iw:h=ih:color=0x05060b@0.55:t=fill,format=rgb24",
+def tile_box(theme, w, h):
+    """Position + Größe der Cover-Kachel (x, y, Kante) je Design."""
+    if theme == "ps5":
+        return int(w * 0.045), int(h * 0.69), int(h * 0.215)
+    return int(w * 0.045), int(h * 0.715), int(h * 0.2)
+
+
+def save_upload_image(src, kind):
+    """Speichert ein hochgeladenes Bild normiert (Hintergrund 1920x1080, Cover 600x600)."""
+    vf = ("scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080" if kind == "bg"
+          else "scale=600:600:force_original_aspect_ratio=increase,crop=600:600")
+    dst = BG_ORIG if kind == "bg" else COVER_ORIG
+    tmp = os.path.join(RUN_DIR, kind + "_orig_new.png")
+    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", vf + ",format=rgb24",
                         "-frames:v", "1", "-update", "1", tmp], capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError("Bild konnte nicht gelesen werden")
-    tmp_raw = os.path.join(RUN_DIR, "bg_new.rgba")
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", tmp, "-f", "rawvideo", "-pix_fmt", "rgba",
+    os.replace(tmp, dst)
+
+
+def rebuild_layers(cfg=None):
+    """Baut aus Hintergrund + Cover die Bild-Ebene für das aktuelle Design. Wird live getauscht."""
+    cfg = cfg or get_cfg()
+    w, h, _, _ = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
+    theme = cfg.get("cd_theme", "ps5")
+    has_bg, has_cover = os.path.exists(BG_ORIG), os.path.exists(COVER_ORIG)
+    needs_strip = theme in ("ps5", "release")
+    if not has_bg and not has_cover and not needs_strip:
+        for fp in (BG_RAW, BG_LAYER):
+            if os.path.exists(fp):
+                os.remove(fp)
+        return
+    cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"color=black@0.0:s={w}x{h},format=rgba"]
+    graph, last, n = [], "[0:v]", 1
+    if has_bg:
+        cmd += ["-i", BG_ORIG]
+        dark = "" if theme == "ps5" else ",drawbox=x=0:y=0:w=iw:h=ih:color=0x05060b@0.55:t=fill"
+        graph.append(f"[{n}:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}{dark},format=rgba[bg]")
+        graph.append(f"{last}[bg]overlay=0:0[l{n}]")
+        last, n = f"[l{n}]", n + 1
+    if needs_strip:
+        x, y, size = tile_box(theme, w, h)
+        top, scol = (int(h * 0.645), "0x0c1120@0.90") if theme == "ps5" else (int(h * 0.655), "0x05060b@0.93")
+        graph.append(f"color=c={scol}:s={w}x{h - top},format=rgba[st]")
+        graph.append(f"color=c=0x1c2244:s={size}x{size},format=rgba[tf]")
+        graph.append(f"{last}[st]overlay=0:{top}:shortest=1[s0]")
+        graph.append(f"[s0][tf]overlay={x}:{y}:shortest=1[s1]")
+        last = "[s1]"
+    if has_cover and needs_strip:
+        x, y, size = tile_box(theme, w, h)
+        cmd += ["-i", COVER_ORIG]
+        graph.append(f"[{n}:v]scale={size}:{size},format=rgba[cv]")
+        graph.append(f"{last}[cv]overlay={x}:{y}[l{n}]")
+        last, n = f"[l{n}]", n + 1
+    graph.append(f"{last}format=rgba[out]")
+    tmp_png = os.path.join(RUN_DIR, "layer_new.png")
+    tmp_raw = os.path.join(RUN_DIR, "layer_new.rgba")
+    r = subprocess.run(cmd + ["-filter_complex", ";".join(graph), "-map", "[out]", "-frames:v", "1",
+                              "-update", "1", tmp_png], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("Bild-Ebene konnte nicht gebaut werden: " + r.stderr.strip()[-200:])
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", tmp_png, "-f", "rawvideo", "-pix_fmt", "rgba",
                     "-frames:v", "1", tmp_raw], check=True)
-    os.replace(tmp, BG_LAYER)
+    os.replace(tmp_png, BG_LAYER)
     os.replace(tmp_raw, BG_RAW)
+
+
+def convert_bg(src, cfg):
+    save_upload_image(src, "bg")
+    rebuild_layers(cfg)
 
 
 def theme_filters(cfg, w, h):
@@ -573,6 +635,20 @@ def theme_filters(cfg, w, h):
         f.append(T("bar_bg", M, bar, "white@0.22", "w*0.05", "h*0.865"))
         f.append(T("bar", M, bar, "white", "w*0.05", "h*0.865"))
 
+    elif theme == "ps5":   # PS5-Startseite: Bild oben, Leiste mit Cover + Countdown unten
+        x, y, size = tile_box("ps5", w, h)
+        f.append(T("tile", B, "h*0.04", "white", f"{x}+({size}-text_w)/2", f"{y}+({size}-text_h)/2"))
+        f.append(f"drawbox=x={x}:y={y}:w={size}:h={size}:color=white@0.35:t=2")
+        f.append(T("game", R, "h*0.042", "white", f"{x}+{size}+h*0.07", "h*0.765"))
+        f.append(T("boxlabel", R, "h*0.036", "white", "w*0.515", "h*0.695"))
+        f.append(T("spin", R, "h*0.07", "white@0.9", "w*0.55-text_w/2", "h*0.795"))
+        for k, lab, cx in (("nd", "r_tage", 0.625), ("nh", "r_std", 0.715), ("nm", "r_min", 0.825), ("ns", "r_sek", 0.935)):
+            f.append(T(lab, R, "h*0.029", "white@0.85", f"w*{cx}-text_w/2", "h*0.748"))
+            f.append(T(k, L, "h*0.085", "white", f"w*{cx}-text_w/2", "h*0.79"))
+        for cx in (0.77, 0.88):
+            f.append(T("colon", R, "h*0.065", "white", f"w*{cx}-text_w/2", "h*0.797"))
+        f.append(T("done", B, "h*0.07", "white", "w*0.515+(w*0.44-text_w)/2", "h*0.78"))
+
     else:  # release (PS5-Release-Stil)
         # Badge (Pille mit Punkt)
         f.append(T("badge", B, "h*0.026", "white@0.92", "w*0.058+h*0.017", "h*0.085",
@@ -585,8 +661,6 @@ def theme_filters(cfg, w, h):
         f.append("drawbox=x=iw*0.058:y=ih*0.395:w=ih*0.075:h=ih*0.009:color=" + col + ":t=fill")
         f.append(T("sub", B, "h*0.033", "white@0.93", "w*0.058", "h*0.445", f":line_spacing={int(h * 0.012)}"))
         # untere Leiste
-        f.append("drawbox=x=0:y=ih*0.655:w=iw:h=ih*0.345:color=0x05060b@0.93:t=fill")
-        f.append("drawbox=x=iw*0.045:y=ih*0.715:w=ih*0.2:h=ih*0.2:color=0x1c2244:t=fill")
         f.append("drawbox=x=iw*0.045:y=ih*0.715:w=ih*0.2:h=ih*0.2:color=white@0.25:t=2")
         f.append(T("tile", B, "h*0.04", "white", "w*0.045+(h*0.2-text_w)/2", "h*0.715+(h*0.2-text_h)/2"))
         f.append(T("game", R, "h*0.034", "white@0.88", "w*0.045+h*0.25", "h*0.795"))
@@ -888,12 +962,16 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
    <label>Text über dem Countdown</label><input type="text" id="cd_boxlabel" maxlength="60">
   </div>
   <div data-th="konsole standard"><label>Titel</label><input type="text" id="cd_title" maxlength="80"></div>
-  <div data-th="release konsole"><label>Text auf der Spielkachel</label><input type="text" id="cd_tile" maxlength="20"></div>
+  <div data-th="ps5 release konsole"><label>Text auf der Spielkachel (wenn kein Cover)</label><input type="text" id="cd_tile" maxlength="20"></div>
+  <div data-th="ps5"><label>Spielname</label><input type="text" id="cd_game_ps5" maxlength="60" oninput="$('cd_game').value=this.value">
+   <label>Text über dem Countdown</label><input type="text" id="cd_boxlabel_ps5" maxlength="60" oninput="$('cd_boxlabel').value=this.value"></div>
   <label>Text, wenn die Zeit abgelaufen ist</label><input type="text" id="cd_done" maxlength="60">
   <div class="btns"><button class="go" id="bCdSave">Speichern (live)</button><button id="bPrev">👁 Vorschau</button></div>
   <img id="prev" style="width:100%;border-radius:10px;margin-top:14px;display:none">
   <label>Hintergrundbild <span id="bgInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">Bild wählen<input type="file" id="bgFile" accept="image/png,image/jpeg,image/webp"></label><button id="bgDel">Entfernen</button></div>
+  <div data-th="ps5 release"><label>Cover (quadratisch) <span id="cvInfo"></span></label>
+  <div class="btns" style="margin-top:0"><label class="filebtn">Cover wählen<input type="file" id="cvFile" accept="image/png,image/jpeg,image/webp"></label><button id="cvDel">Entfernen</button></div></div>
   <label>Musik-Playlist <span id="muInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">＋ Songs hinzufügen<input type="file" id="muFile" accept="audio/*" multiple></label><button id="muSkip">⏭ Nächster Song</button></div>
   <div id="muList" style="margin-top:8px"></div>
@@ -939,10 +1017,10 @@ async function refresh(){
  $('keyinfo').textContent=s.key_set?'✅ gesetzt':'❌ fehlt';
  const cd=s.mode=='countdown';$('mCd').className=cd?'go':'';$('mVid').className=cd?'':'go';
  $('cdBox').style.display=cd?'':'none';$('vidCard').style.opacity=cd?'.45':'1';
- $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
+ $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('cvInfo').textContent=s.cd_cover?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
  $('muList').innerHTML=s.music.map(m=>`<div class="vid"><div class="t">${m==s.now_playing?'🔊 ':''}${esc(m)}</div><button onclick="delSong(this.dataset.n)" data-n="${esc(m)}">Löschen</button></div>`).join('');
  if(!cfgLoaded){$('cd_theme').innerHTML=Object.entries(s.themes).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
-  for(const k of CDF)$(k).value=s.cfg[k];$('cd_shuffle_music').checked=s.cfg.cd_shuffle_music;$('cd_volume').value=s.cfg.cd_volume;$('volV').textContent=s.cfg.cd_volume;showTh()}
+  for(const k of CDF)$(k).value=s.cfg[k];$('cd_game_ps5').value=s.cfg.cd_game;$('cd_boxlabel_ps5').value=s.cfg.cd_boxlabel;$('cd_shuffle_music').checked=s.cfg.cd_shuffle_music;$('cd_volume').value=s.cfg.cd_volume;$('volV').textContent=s.cfg.cd_volume;showTh()}
  if(!cfgLoaded){cfgLoaded=true;$('server').value=s.server;$('shuffle').checked=s.shuffle;
   $('quality').innerHTML=s.qualities.map(q=>`<option ${q==s.quality?'selected':''}>${q}</option>`).join('')}
  $('quality').disabled=s.quality_locked;$('qhint').textContent=s.quality_locked?'Qualität kann nur geändert werden, wenn keine Videos vorhanden sind (alle Videos müssen das gleiche Format haben).':'';
@@ -974,10 +1052,12 @@ $('bPrev').onclick=showPrev;
 let volT;$('cd_volume').oninput=e=>{$('volV').textContent=e.target.value;clearTimeout(volT);volT=setTimeout(()=>api('/api/config',{cd_volume:+e.target.value}),400)};
 $('cd_shuffle_music').onchange=e=>api('/api/config',{cd_shuffle_music:e.target.checked});
 function asset(kind,f){return new Promise(res=>{const x=new XMLHttpRequest();x.open('PUT',`/api/asset?kind=${kind}&name=${encodeURIComponent(f.name)}`);
- x.onload=()=>{if(x.status!=200)alert('Upload fehlgeschlagen: '+x.responseText);refresh();if(kind=='bg')showPrev();res()};x.send(f)})}
+ x.onload=()=>{if(x.status!=200)alert('Upload fehlgeschlagen: '+x.responseText);refresh();if(kind!='music')showPrev();res()};x.send(f)})}
 $('bgFile').onchange=e=>{if(e.target.files[0])asset('bg',e.target.files[0]);e.target.value=''};
 $('muFile').onchange=async e=>{const fs=[...e.target.files];e.target.value='';$('muInfo').textContent='(lädt hoch …)';for(const f of fs)await asset('music',f)};
 $('bgDel').onclick=async()=>{await api('/api/asset_delete',{kind:'bg'});refresh();showPrev()};
+$('cvFile').onchange=e=>{if(e.target.files[0])asset('cover',e.target.files[0]);e.target.value=''};
+$('cvDel').onclick=async()=>{await api('/api/asset_delete',{kind:'cover'});refresh();showPrev()};
 async function delSong(n){if(confirm('Song löschen?')){await api('/api/asset_delete',{kind:'music',name:n});refresh()}}
 $('muSkip').onclick=async()=>{await api('/api/music_skip');setTimeout(refresh,800)};
 $('bUpd').onclick=async()=>{if(!confirm('Neueste Version installieren? Der Stream startet einmal kurz neu.'))return;
@@ -1125,15 +1205,21 @@ class Handler(BaseHTTPRequestHandler):
             changed = {k for k, v in upd.items() if old.get(k) != v}
             if "cd_volume" in changed:
                 audio_feeder.reload = True           # Lautstärke live ändern
+            if changed & {"cd_theme", "quality"}:
+                try:
+                    rebuild_layers()
+                except Exception as e:  # noqa
+                    print("Ebenen-Fehler:", e, flush=True)
             restart = bool(changed & RESTART_KEYS)
             if streamer.want and restart:
                 streamer.restart()
             return self._send(200, {"ok": True, "restarted": restart and streamer.want})
         elif path == "/api/asset_delete":
-            if data.get("kind") == "bg":
-                for fp in (BG_RAW, BG_LAYER):        # wird live entfernt
-                    if os.path.exists(fp):
-                        os.remove(fp)
+            if data.get("kind") in ("bg", "cover"):
+                fp = BG_ORIG if data["kind"] == "bg" else COVER_ORIG
+                if os.path.exists(fp):
+                    os.remove(fp)
+                rebuild_layers()                     # wird live entfernt
             else:
                 name = os.path.basename(str(data.get("name", "")))
                 p = os.path.join(MUSIC_DIR, name)
@@ -1203,7 +1289,8 @@ class Handler(BaseHTTPRequestHandler):
         kind = (qs.get("kind") or [""])[0]
         name = os.path.basename(unquote((qs.get("name") or [""])[0]))
         ext = os.path.splitext(name)[1].lower()
-        allowed = {"bg": (".png", ".jpg", ".jpeg", ".webp"), "music": MUSIC_EXT}
+        allowed = {"bg": (".png", ".jpg", ".jpeg", ".webp"), "cover": (".png", ".jpg", ".jpeg", ".webp"),
+                   "music": MUSIC_EXT}
         if kind not in allowed or ext not in allowed[kind]:
             return self._send(400, {"error": "Dateityp nicht erlaubt"})
         size = int(self.headers.get("Content-Length") or 0)
@@ -1220,8 +1307,9 @@ class Handler(BaseHTTPRequestHandler):
                 fh.write(chunk)
                 remaining -= len(chunk)
         try:
-            if kind == "bg":
-                convert_bg(tmp, get_cfg())           # wird live ausgetauscht
+            if kind in ("bg", "cover"):
+                save_upload_image(tmp, kind)
+                rebuild_layers()                     # wird live ausgetauscht
                 os.remove(tmp)
             else:
                 base = re.sub(r"[^\w .()&-]+", "_", os.path.splitext(name)[0]).strip() or "song"
@@ -1275,7 +1363,8 @@ def status():
         "mode": cfg["mode"],
         "cfg": {k: v for k, v in cfg.items() if k.startswith("cd_")},
         "themes": THEMES,
-        "cd_bg": os.path.exists(BG_LAYER),
+        "cd_bg": os.path.exists(BG_ORIG),
+        "cd_cover": os.path.exists(COVER_ORIG),
         "music": [os.path.basename(m) for m in list_music()],
         "now_playing": os.path.basename(audio_feeder.current) if audio_feeder.current else "",
         "disk_free_gb": round(shutil.disk_usage(BASE).free / 1e9, 1),
@@ -1301,6 +1390,12 @@ def main():
             except OSError:
                 pass
     make_empty_layer()
+    if os.path.exists(BG_LAYER) and not os.path.exists(BG_ORIG):
+        shutil.copy(BG_LAYER, BG_ORIG)       # Hintergrund aus älterer Version übernehmen
+    try:
+        rebuild_layers()
+    except Exception as e:  # noqa
+        print("Ebenen-Fehler:", e, flush=True)
     ticker.tick()
     for t in (ticker, image_feeder, audio_feeder):
         t.start()
