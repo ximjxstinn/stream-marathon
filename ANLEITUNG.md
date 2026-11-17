@@ -36,7 +36,7 @@ Steuern kannst du alles übers Handy-Panel: Videos hochladen, Starten und Stoppe
 ## ⏱ Countdown-Modus (z. B. GTA 6 Live-Timer)
 Hier streamt der Server einen live mitlaufenden Timer statt Videos. Videos brauchst du dafür keine.
 1. Im Panel unter **Modus** auf **⏱ Countdown** tippen. Das ist schon voreingestellt.
-2. Überschrift, Zieldatum (deutsche Zeit) und den Text für „Zeit abgelaufen“ eintragen. Voreingestellt sind *GTA 6 COUNTDOWN*, *19.11.2026 00:00* und *GTA 6 IST DA!*.
+2. Design wählen (🎮 Konsole oder Standard), Überschrift, Zieldatum (deutsche Zeit) und den Text für „Zeit abgelaufen“ eintragen. Voreingestellt sind *GTA 6 COUNTDOWN*, *19.11.2026 00:00* und *GTA 6 IST DA!*.
 3. Mit **👁 Vorschau** siehst du direkt auf dem Handy, wie das Bild auf Twitch aussieht.
 4. Optional ein **Hintergrundbild** hochladen. Es wird automatisch abgedunkelt, damit der Timer gut lesbar bleibt. Dazu kannst du **Hintergrundmusik** hochladen, die in Dauerschleife läuft. Nimm dafür nur lizenzfreie Musik!
 5. **▶ Starten** drücken.

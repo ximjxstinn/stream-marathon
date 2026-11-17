@@ -12,7 +12,7 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 
 echo "==> Pakete installieren (ffmpeg, python3, Schrift) ..."
 apt-get update -qq
-apt-get install -y -qq ffmpeg python3 fonts-dejavu-core >/dev/null
+apt-get install -y -qq ffmpeg python3 fonts-dejavu-core fonts-dejavu-extra >/dev/null
 
 echo "==> Dateien kopieren nach $DIR ..."
 id stream24 >/dev/null 2>&1 || useradd --system --home "$DIR" --shell /usr/sbin/nologin stream24

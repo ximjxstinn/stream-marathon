@@ -72,10 +72,12 @@ DEFAULT_CFG = {
     "shuffle": True,
     # Modus: "videos" (Playlist) oder "countdown" (Live-Timer)
     "mode": "countdown",
-    "cd_title": "GTA 6 COUNTDOWN",
+    "cd_title": "Grand Theft Auto VI",
     "cd_target": "2026-11-19T00:00",   # Ortszeit (Europe/Berlin)
     "cd_done": "GTA 6 IST DA!",
     "cd_color": "#ff3cac",
+    "cd_theme": "konsole",   # "standard" oder "konsole"
+    "cd_tile": "GTA VI",
 }
 TZ_NAME = "Europe/Berlin"
 CD_DIR = os.path.join(BASE, "countdown")
@@ -85,6 +87,7 @@ FONT_CANDIDATES = [
     "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
 ]
+FF_ENV = dict(os.environ, TZ=TZ_NAME)
 WEEKDAYS = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
 
 
@@ -299,6 +302,10 @@ def build_countdown_cmd(cfg, start_epoch, output, preview=False):
     f.append(f"drawtext={base}:textfile={q(tf('done', cfg['cd_done']))}:expansion=none:"
              f"fontsize=h*0.13:fontcolor={color}:shadowcolor=black@0.6:shadowx=5:shadowy=5:"
              f"x=(w-text_w)/2:y=h*0.40:{off}")
+
+    theme = cfg.get("cd_theme", "standard")
+    if theme == "konsole":
+        f = console_filters(cfg, T, w, h, fps, bg, tf, q, release)
     script = os.path.join(run, "filter.txt")
     with open(script, "w", encoding="utf-8") as fh:
         fh.write(",\n".join(f) + "[v]\n")
@@ -307,6 +314,10 @@ def build_countdown_cmd(cfg, start_epoch, output, preview=False):
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y"]
     if bg:
         cmd += re_ + ["-loop", "1", "-framerate", str(fps), "-i", bg]
+    elif theme == "konsole":
+        cmd += re_ + ["-f", "lavfi", "-i",
+                      f"gradients=s={w // 4}x{h // 4}:r={fps}:c0=0x020b2e:c1=0x0b3fb8:c2=0x041a5c:"
+                      f"c3=0x1d6cf0:nb_colors=4:speed=0.0035:type=linear:seed=7"]
     else:
         cmd += re_ + ["-f", "lavfi", "-i", f"color=c=0x0e0e10:s={w}x{h}:r={fps}"]
     music = find_asset("music")
@@ -324,6 +335,73 @@ def build_countdown_cmd(cfg, start_epoch, output, preview=False):
             "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
             "-f", "flv", "-flvflags", "no_duration_filesize", output]
     return cmd
+
+
+def console_filters(cfg, T, w, h, fps, bg, tf, q, release):
+    """Design im Stil eines Konsolen-Startbildschirms (blau, Kacheln, Download-Balken)."""
+    bold = next((p for p in FONT_CANDIDATES if os.path.exists(p)), "")
+    reg = bold.replace("-Bold", "")
+    reg = reg if os.path.exists(reg) else bold
+    light = bold.replace("-Bold", "-ExtraLight")
+    light = light if os.path.exists(light) else reg
+    B, R, L = f"fontfile={q(bold)}", f"fontfile={q(reg)}", f"fontfile={q(light)}"
+    on, off = f"enable='lt(t,{T})'", f"enable='gte(t,{T})'"
+    P = max(14 * 86400, 1)  # Balken zeigt die letzten 14 Tage
+    Rm = f"({T}-t)"
+    f = [f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1,fps={fps},format=yuv420p"]
+    if bg:
+        f.append("drawbox=x=0:y=0:w=iw:h=ih:color=0x020b2e@0.55:t=fill")
+    f.append("vignette=PI/5")
+    # Kopfzeile
+    f.append(f"drawtext={B}:textfile={q(tf('k_games', 'Spiele'))}:expansion=none:fontsize=h*0.034:"
+             f"fontcolor=white:x=w*0.05:y=h*0.06")
+    f.append(f"drawtext={R}:textfile={q(tf('k_media', 'Medien'))}:expansion=none:fontsize=h*0.034:"
+             f"fontcolor=white@0.55:x=w*0.05+h*0.17:y=h*0.06")
+    f.append(f"drawtext={B}:textfile={q(tf('k_clock', '%{localtime:%R}'))}:fontsize=h*0.034:"
+             f"fontcolor=white:x=w*0.95-text_w:y=h*0.06")
+    f.append(f"drawtext={R}:textfile={q(tf('k_user', 'xImJxstinn'))}:expansion=none:fontsize=h*0.03:"
+             f"fontcolor=white@0.75:x=w*0.95-text_w-h*0.17:y=h*0.065")
+    # Kachelreihe: große, ausgewählte Kachel + kleine Kacheln
+    big = "h*0.22"
+    bigd = "ih*0.22"
+    f.append(f"drawbox=x=iw*0.05-4:y=ih*0.15-4:w={bigd}+8:h={bigd}+8:color=white:t=4")
+    f.append(f"drawbox=x=iw*0.05:y=ih*0.15:w={bigd}:h={bigd}:color=0x0a2a7a@0.85:t=fill")
+    f.append(f"drawtext={B}:textfile={q(tf('k_tile', cfg.get('cd_tile', 'GTA VI')))}:expansion=none:"
+             f"fontsize=h*0.05:fontcolor=white:x=w*0.05+({big}-text_w)/2:y=h*0.15+({big}-text_h)/2")
+    for i in range(6):
+        x = f"iw*0.05+ih*0.25+{i}*ih*0.165"
+        f.append(f"drawbox=x={x}:y=ih*0.185:w=ih*0.145:h=ih*0.145:color=white@0.10:t=fill")
+    # Titel + Status
+    f.append(f"drawtext={B}:textfile={q(tf('k_title', cfg['cd_title']))}:expansion=none:"
+             f"fontsize=h*0.07:fontcolor=white:x=w*0.05:y=h*0.43")
+    f.append(f"drawtext={R}:textfile={q(tf('k_sub', 'Vorgeladen · Spielbar in'))}:expansion=none:"
+             f"fontsize=h*0.032:fontcolor=white@0.75:x=w*0.05:y=h*0.525:{on}")
+    # Countdown
+    parts = [("TAGE", f"floor({Rm}/86400)"), ("STD", f"mod(floor({Rm}/3600),24)"),
+             ("MIN", f"mod(floor({Rm}/60),60)"), ("SEK", f"mod(floor({Rm}),60)")]
+    for i, (lab, ex) in enumerate(parts):
+        x = f"w*0.05+{i}*h*0.24"
+        f.append(f"drawtext={L}:textfile={q(tf('k_n%d' % i, '%{eif:max(0,' + ex + '):d:2}'))}:"
+                 f"fontsize=h*0.13:fontcolor=white:x={x}:y=h*0.585:{on}")
+        f.append(f"drawtext={B}:textfile={q(tf('k_l%d' % i, lab))}:expansion=none:"
+                 f"fontsize=h*0.026:fontcolor=white@0.7:x={x}+4:y=h*0.72:{on}")
+    f.append(f"drawtext={L}:textfile={q(tf('k_done', cfg['cd_done']))}:expansion=none:"
+             f"fontsize=h*0.11:fontcolor=white:x=w*0.05:y=h*0.56:{off}")
+    # Button
+    f.append(f"drawbox=x=iw*0.95-ih*0.30:y=ih*0.43:w=ih*0.30:h=ih*0.075:color=white:t=fill")
+    f.append(f"drawtext={B}:textfile={q(tf('k_btn', 'Vorbestellt'))}:expansion=none:fontsize=h*0.03:"
+             f"fontcolor=0x111111:x=w*0.95-h*0.15-text_w/2:y=h*0.43+(h*0.075-text_h)/2:{on}")
+    f.append(f"drawtext={B}:textfile={q(tf('k_btn2', 'Spielen'))}:expansion=none:fontsize=h*0.03:"
+             f"fontcolor=0x111111:x=w*0.95-h*0.15-text_w/2:y=h*0.43+(h*0.075-text_h)/2:{off}")
+    # Download-Balken
+    f.append(f"drawtext={R}:textfile={q(tf('k_rel', release))}:expansion=none:fontsize=h*0.03:"
+             f"fontcolor=white@0.8:x=w*0.05:y=h*0.83")
+    f.append(f"drawtext={B}:textfile={q(tf('k_pct', '%{eif:clip(100-' + Rm + '/' + str(P) + '*100,0,100):d} \\%'))}:"
+             f"fontsize=h*0.03:fontcolor=white:x=w*0.95-text_w:y=h*0.83")
+    f.append("drawbox=x=iw*0.05:y=ih*0.885:w=iw*0.9:h=ih*0.008:color=white@0.22:t=fill")
+    f.append(f"drawbox=x=iw*0.05:y=ih*0.885:w='max(2,iw*0.9*clip(1-{Rm}/{P},0,1))':"
+             f"h=ih*0.008:color=white:t=fill")
+    return f
 
 
 # -------------------------------------------------------------- Streamer ----
@@ -426,7 +504,7 @@ class Streamer:
                                         f"({info})\n"))
                 log.flush()
                 self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
-                                             stdout=subprocess.DEVNULL, stderr=log)
+                                             stdout=subprocess.DEVNULL, stderr=log, env=FF_ENV)
                 self.started_at = time.time()
                 self.status_msg = "Live"
                 self.proc.wait()
@@ -511,7 +589,9 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <label>Überschrift</label><input type="text" id="cdTitle" maxlength="80">
   <label>Countdown bis (deutsche Zeit)</label><input type="datetime-local" id="cdTarget">
   <label>Text, wenn die Zeit abgelaufen ist</label><input type="text" id="cdDone" maxlength="80">
-  <label>Farbe</label><input type="color" id="cdColor" style="width:64px;height:40px;border:0;background:none">
+  <label>Design</label><select id="cdTheme"><option value="konsole">🎮 Konsole (blau, Kacheln, Download-Balken)</option><option value="standard">Standard (dunkel, große Zahlen)</option></select>
+  <label>Text auf der Spielkachel (Konsolen-Design)</label><input type="text" id="cdTile" maxlength="20">
+  <label>Farbe (Standard-Design)</label><input type="color" id="cdColor" style="width:64px;height:40px;border:0;background:none">
   <div class="btns"><button class="go" id="bCdSave">Speichern</button><button id="bPrev">👁 Vorschau</button></div>
   <label>Hintergrundbild <span id="bgInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">Bild wählen<input type="file" id="bgFile" accept="image/png,image/jpeg,image/webp"></label><button id="bgDel">Entfernen</button></div>
@@ -556,7 +636,7 @@ async function refresh(){
  const cd=s.mode=='countdown';$('mCd').className=cd?'go':'';$('mVid').className=cd?'':'go';
  $('cdBox').style.display=cd?'':'none';$('vidCard').style.opacity=cd?'.45':'1';
  $('bgInfo').textContent=s.cd_bg?'✅':'(Standard: dunkel)';$('muInfo').textContent=s.cd_music?'✅':'(Standard: still)';
- if(!cfgLoaded){$('cdTitle').value=s.cd_title;$('cdTarget').value=s.cd_target;$('cdDone').value=s.cd_done;$('cdColor').value=s.cd_color}
+ if(!cfgLoaded){$('cdTitle').value=s.cd_title;$('cdTarget').value=s.cd_target;$('cdDone').value=s.cd_done;$('cdColor').value=s.cd_color;$('cdTheme').value=s.cd_theme;$('cdTile').value=s.cd_tile}
  if(!cfgLoaded){cfgLoaded=true;$('server').value=s.server;$('shuffle').checked=s.shuffle;
   $('quality').innerHTML=s.qualities.map(q=>`<option ${q==s.quality?'selected':''}>${q}</option>`).join('')}
  $('quality').disabled=s.quality_locked;$('qhint').textContent=s.quality_locked?'Qualität kann nur geändert werden, wenn keine Videos vorhanden sind (alle Videos müssen das gleiche Format haben).':'';
@@ -578,7 +658,7 @@ function upload(f){const id='u'+Math.random().toString(36).slice(2);const el=doc
  x.onerror=()=>{el.querySelector('small').textContent='Upload fehlgeschlagen'};x.send(f)}
 $('mCd').onclick=async()=>{await api('/api/config',{mode:'countdown'});refresh()};
 $('mVid').onclick=async()=>{await api('/api/config',{mode:'videos'});refresh()};
-$('bCdSave').onclick=async()=>{const j=await api('/api/config',{cd_title:$('cdTitle').value,cd_target:$('cdTarget').value,cd_done:$('cdDone').value,cd_color:$('cdColor').value});if(j.ok)showPrev()};
+$('bCdSave').onclick=async()=>{const j=await api('/api/config',{cd_title:$('cdTitle').value,cd_target:$('cdTarget').value,cd_done:$('cdDone').value,cd_color:$('cdColor').value,cd_theme:$('cdTheme').value,cd_tile:$('cdTile').value});if(j.ok)showPrev()};
 function showPrev(){$('prev').style.display='block';$('prev').src='/api/preview.png?'+Date.now()}
 $('bPrev').onclick=showPrev;
 function asset(kind,f){const x=new XMLHttpRequest();x.open('PUT',`/api/asset?kind=${kind}&name=${encodeURIComponent(f.name)}`);
@@ -648,7 +728,7 @@ class Handler(BaseHTTPRequestHandler):
             out = os.path.join(CD_DIR, "preview.png")
             try:
                 cmd = build_countdown_cmd(get_cfg(), time.time(), out, preview=True)
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=FF_ENV)
                 if r.returncode != 0:
                     raise RuntimeError(r.stderr.strip()[-300:])
                 with open(out, "rb") as fh:
@@ -697,6 +777,10 @@ class Handler(BaseHTTPRequestHandler):
                 upd["shuffle"] = bool(data["shuffle"])
             if data.get("mode") in ("videos", "countdown"):
                 upd["mode"] = data["mode"]
+            if data.get("cd_theme") in ("standard", "konsole"):
+                upd["cd_theme"] = data["cd_theme"]
+            if "cd_tile" in data:
+                upd["cd_tile"] = str(data["cd_tile"])[:20]
             for k in ("cd_title", "cd_done"):
                 if k in data:
                     upd[k] = str(data[k])[:80]
@@ -827,6 +911,8 @@ def status():
         "cd_target": cfg["cd_target"],
         "cd_done": cfg["cd_done"],
         "cd_color": cfg["cd_color"],
+        "cd_theme": cfg["cd_theme"],
+        "cd_tile": cfg["cd_tile"],
         "cd_bg": bool(find_asset("bg")),
         "cd_music": bool(find_asset("music")),
         "disk_free_gb": round(shutil.disk_usage(BASE).free / 1e9, 1),
