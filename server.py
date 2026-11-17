@@ -290,7 +290,8 @@ for _f in (AUDIO_FIFO, IMAGE_FIFO):
 
 THEMES = {"ps5": "PS5-Startseite (Bild + Countdown-Leiste)", "release": "PS5-Release (Schlagzeile)",
           "konsole": "Konsole (blau, Kacheln)", "standard": "Standard"}
-MUSIC_EXT = (".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac", ".opus")
+MUSIC_EXT = (".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac", ".opus", ".mka")
+MUSIC_UPLOAD_EXT = MUSIC_EXT + (".mp4", ".webm", ".mkv", ".mov", ".m4v", ".wma", ".aiff", ".aif")  # Videos: nur der Ton wird genutzt
 # Einstellungen, bei denen der Stream wirklich neu starten muss
 RESTART_KEYS = {"mode", "cd_theme", "cd_color", "quality"}   # Bild-Quelle neu
 RELAY_KEYS = {"twitch": {"stream_key", "server", "tw_enabled"}, "youtube": {"yt_key", "yt_server", "yt_enabled"}}
@@ -1021,7 +1022,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <div data-th="ps5 release"><label>Cover (quadratisch) <span id="cvInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">Cover wählen<input type="file" id="cvFile" accept="image/png,image/jpeg,image/webp"></label><button id="cvDel">Entfernen</button></div></div>
   <label>Musik-Playlist <span id="muInfo"></span></label>
-  <div class="btns" style="margin-top:0"><label class="filebtn">＋ Songs hinzufügen<input type="file" id="muFile" accept="audio/*" multiple></label><button id="muSkip">⏭ Nächster Song</button></div>
+  <div class="btns" style="margin-top:0"><label class="filebtn">＋ Songs hinzufügen<input type="file" id="muFile" accept="audio/*,video/*,.mp3,.m4a,.mp4,.webm,.mkv" multiple></label><button id="muSkip">⏭ Nächster Song</button></div>
   <div id="muList" style="margin-top:8px"></div>
   <label>Lautstärke: <span id="volV"></span> %</label><input type="range" id="cd_volume" min="0" max="100" style="width:100%">
   <label class="chk"><input type="checkbox" id="cd_shuffle_music"> Songs zufällig mischen</label>
@@ -1109,9 +1110,22 @@ function showPrev(){$('prev').style.display='block';$('prev').src='/api/preview.
 $('bPrev').onclick=showPrev;
 let volT;$('cd_volume').oninput=e=>{$('volV').textContent=e.target.value;clearTimeout(volT);volT=setTimeout(()=>api('/api/config',{cd_volume:+e.target.value}),400)};
 $('cd_shuffle_music').onchange=e=>api('/api/config',{cd_shuffle_music:e.target.checked});
-function asset(kind,f){return new Promise(res=>{const x=new XMLHttpRequest();x.open('PUT',`/api/asset?kind=${kind}&name=${encodeURIComponent(f.name)}`);
- if(kind=='music'){x.upload.onprogress=e=>{$('muInfo').textContent=`(lädt hoch: ${esc(f.name)} ${Math.round(e.loaded/e.total*100)} % · ${mb(e.loaded)} / ${mb(e.total)})`}}
- x.onload=()=>{if(x.status!=200)alert('Upload fehlgeschlagen: '+x.responseText);refresh();if(kind!='music')showPrev();res()};x.send(f)})}
+async function asset(kind,f){
+ const CH=16*1024*1024,total=Math.max(1,Math.ceil(f.size/CH)),id=Math.random().toString(36).slice(2)+Date.now().toString(36);
+ for(let i=0;i<total;i++){
+  let ok=false,err='';
+  for(let tryNo=1;tryNo<=6&&!ok;tryNo++){
+   try{
+    const r=await fetch(`/api/asset_chunk?kind=${kind}&name=${encodeURIComponent(f.name)}&id=${id}&index=${i}&total=${total}&offset=${i*CH}&size=${f.size}`,{method:'PUT',body:f.slice(i*CH,(i+1)*CH)});
+    if(r.status==401)return location.reload();
+    const j=await r.json();if(j.error){err=j.error;if(r.status==400&&!/unvollständig/.test(j.error))break}else ok=true;
+   }catch(e){err='Verbindung unterbrochen';await new Promise(z=>setTimeout(z,2000*tryNo))}
+  }
+  if(!ok){alert('Upload fehlgeschlagen: '+err);refresh();return}
+  if(kind=='music')$('muInfo').textContent=`(lädt hoch: ${esc(f.name)} ${Math.round((i+1)/total*100)} % · ${mb(Math.min(f.size,(i+1)*CH))} / ${mb(f.size)}${i==total-1?' – wird verarbeitet …':''})`;
+ }
+ refresh();if(kind!='music')showPrev();
+}
 $('bgFile').onchange=e=>{if(e.target.files[0])asset('bg',e.target.files[0]);e.target.value=''};
 $('muFile').onchange=async e=>{const fs=[...e.target.files];e.target.value='';$('muInfo').textContent='(lädt hoch …)';for(const f of fs)await asset('music',f)};
 $('bgDel').onclick=async()=>{await api('/api/asset_delete',{kind:'bg'});refresh();showPrev()};
@@ -1324,6 +1338,8 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if not self._authed():
             return self._send(401, {"error": "Nicht eingeloggt"})
+        if u.path == "/api/asset_chunk":
+            return self._chunk_upload(u)
         if u.path == "/api/asset":
             return self._asset_upload(u)
         if u.path != "/api/upload":
@@ -1398,6 +1414,80 @@ class Handler(BaseHTTPRequestHandler):
                 os.remove(tmp)
             return self._send(400, {"error": str(e)})
         self._send(200, {"ok": True})
+
+    def _chunk_upload(self, u):
+        """Große Dateien in Stücken (z. B. 16 MB) – bricht die Verbindung kurz ab, wird nur das Stück wiederholt."""
+        qs = {k: v[0] for k, v in parse_qs(u.query).items()}
+        kind = qs.get("kind", "")
+        name = os.path.basename(unquote(qs.get("name", "")))
+        ext = os.path.splitext(name)[1].lower()
+        uid = re.sub(r"[^a-zA-Z0-9]", "", qs.get("id", ""))[:32]
+        try:
+            index, total, offset = int(qs["index"]), int(qs["total"]), int(qs["offset"])
+            fullsize = int(qs["size"])
+        except (KeyError, ValueError):
+            return self._send(400, {"error": "Ungültige Anfrage"})
+        allowed = {"bg": (".png", ".jpg", ".jpeg", ".webp"), "cover": (".png", ".jpg", ".jpeg", ".webp"),
+                   "music": MUSIC_UPLOAD_EXT}
+        if kind not in allowed or ext not in allowed[kind] or not uid:
+            return self._send(400, {"error": f"Dateityp {ext or '?'} nicht erlaubt"})
+        tmp = os.path.join(RUN_DIR, f"chunk_{uid}{ext}")
+        if index == 0:
+            free = shutil.disk_usage(BASE).free
+            if fullsize + 500_000_000 > free:
+                return self._send(400, {"error": f"Nicht genug Speicher frei ({free // 1_000_000} MB frei, "
+                                                 f"Datei {fullsize // 1_000_000} MB)"})
+            open(tmp, "wb").close()
+        if not os.path.exists(tmp):
+            return self._send(400, {"error": "Upload abgelaufen – bitte neu starten"})
+        size = int(self.headers.get("Content-Length") or 0)
+        data = b""
+        while len(data) < size:
+            chunk = self.rfile.read(min(1 << 20, size - len(data)))
+            if not chunk:
+                return self._send(400, {"error": "Stück unvollständig"})
+            data += chunk
+        with open(tmp, "r+b") as fh:                 # an die richtige Stelle schreiben (Wiederholung = überschreiben)
+            fh.seek(offset)
+            fh.write(data)
+        if index < total - 1:
+            return self._send(200, {"ok": True, "next": index + 1})
+        if os.path.getsize(tmp) != fullsize:
+            return self._send(400, {"error": "Datei unvollständig angekommen – bitte nochmal"})
+        try:
+            self._finish_asset(kind, name, ext, tmp)
+        except Exception as e:  # noqa
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            return self._send(400, {"error": str(e)})
+        self._send(200, {"ok": True, "done": True})
+
+    def _finish_asset(self, kind, name, ext, tmp):
+        if kind in ("bg", "cover"):
+            save_upload_image(tmp, kind)
+            rebuild_layers()                         # wird live ausgetauscht
+            os.remove(tmp)
+            return
+        base = re.sub(r"[^\w .()&-]+", "_", os.path.splitext(name)[0]).strip() or "song"
+        _, has_video, has_audio = probe(tmp)
+        if not has_audio:
+            raise RuntimeError("In der Datei ist keine Tonspur")
+        if has_video or ext not in MUSIC_EXT:
+            # Video (z. B. 10-Stunden-Mix als .mp4): nur den Ton herausziehen, ohne Qualitätsverlust
+            out = os.path.join(RUN_DIR, f"extract_{secrets.token_hex(4)}.mka")
+            r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", tmp, "-vn", "-map", "0:a:0", "-c:a", "copy", out],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", tmp, "-vn", "-map", "0:a:0",
+                                    "-c:a", "libopus", "-b:a", "128k", out], capture_output=True, text=True)
+            if r.returncode != 0:
+                raise RuntimeError("Ton konnte nicht aus der Datei gelesen werden")
+            os.remove(tmp)
+            tmp, ext = out, ".mka"
+        dst, i = os.path.join(MUSIC_DIR, base + ext), 2
+        while os.path.exists(dst):
+            dst, i = os.path.join(MUSIC_DIR, f"{base} ({i}){ext}"), i + 1
+        os.replace(tmp, dst)                         # kommt automatisch in die Playlist
 
     def _update(self):
         """Lädt die neueste Version von GitHub. Das Panel startet neu – der Sender hält den Stream
