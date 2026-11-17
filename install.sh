@@ -17,7 +17,12 @@ apt-get install -y -qq ffmpeg python3 fonts-dejavu-core >/dev/null
 echo "==> Dateien kopieren nach $DIR ..."
 id stream24 >/dev/null 2>&1 || useradd --system --home "$DIR" --shell /usr/sbin/nologin stream24
 mkdir -p "$DIR"
-cp "$SRC/server.py" "$DIR/server.py"
+if [ -f "$SRC/server.py" ]; then
+  cp "$SRC/server.py" "$DIR/server.py"
+else
+  echo "==> server.py von GitHub laden ..."
+  curl -fsSL "https://raw.githubusercontent.com/ximjxstinn/stream-marathon/stream24/server.py" -o "$DIR/server.py"
+fi
 
 read -r -p "Port fürs Panel [8090]: " PORT
 PORT=${PORT:-8090}
