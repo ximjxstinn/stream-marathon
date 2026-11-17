@@ -17,12 +17,14 @@ apt-get install -y -qq ffmpeg python3 fonts-dejavu-core fonts-dejavu-extra >/dev
 echo "==> Dateien kopieren nach $DIR ..."
 id stream24 >/dev/null 2>&1 || useradd --system --home "$DIR" --shell /usr/sbin/nologin stream24
 mkdir -p "$DIR"
-if [ -f "$SRC/server.py" ]; then
-  cp "$SRC/server.py" "$DIR/server.py"
-else
-  echo "==> server.py von GitHub laden ..."
-  curl -fsSL "https://raw.githubusercontent.com/ximjxstinn/stream-marathon/stream24/server.py" -o "$DIR/server.py"
-fi
+for F in server.py sender.py; do
+  if [ -f "$SRC/$F" ]; then
+    cp "$SRC/$F" "$DIR/$F"
+  else
+    echo "==> $F von GitHub laden ..."
+    curl -fsSL "https://raw.githubusercontent.com/ximjxstinn/stream-marathon/stream24/$F" -o "$DIR/$F"
+  fi
+done
 
 if [ -f /etc/systemd/system/stream24.service ] && grep -q password_hash "$DIR/config.json" 2>/dev/null; then
   # Update: Port und Passwort bleiben wie sie sind
@@ -52,15 +54,33 @@ Environment=STREAM24_DIR=$DIR
 Environment=STREAM24_PORT=$PORT
 ExecStart=/usr/bin/python3 $DIR/server.py
 Restart=always
-RestartSec=5
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Eigener Dienst für die Verbindung zu Twitch/YouTube – bleibt bei Panel-Updates online
+cat > /etc/systemd/system/stream24-sender.service <<EOF
+[Unit]
+Description=xImJxstinn 24/7 Stream - Sender (Verbindung zu Twitch/YouTube)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=stream24
+Environment=STREAM24_DIR=$DIR
+ExecStart=/usr/bin/python3 $DIR/sender.py
+Restart=always
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now stream24
-systemctl restart stream24
+systemctl enable --now stream24-sender stream24
+systemctl restart stream24-sender stream24
 
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
   ufw allow "$PORT"/tcp >/dev/null && echo "==> Port $PORT in ufw freigegeben"
@@ -70,4 +90,4 @@ IP=$(hostname -I | awk '{print $1}')
 echo
 echo "✅ Fertig! Panel öffnen:  http://$IP:$PORT"
 echo "   (Falls eine Hetzner-Firewall aktiv ist: dort TCP-Port $PORT freigeben.)"
-echo "   Status/Logs:  systemctl status stream24   |   journalctl -u stream24 -f"
+echo "   Status/Logs:  systemctl status stream24 stream24-sender   |   journalctl -u stream24 -f"

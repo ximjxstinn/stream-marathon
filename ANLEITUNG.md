@@ -50,6 +50,13 @@ Der Server erzeugt das Bild einmal und schickt es an alle eingeschalteten Plattf
 - Den Schlüssel findest du in YouTube Studio → Erstellen → Livestream starten → Stream. Nimm am besten einen dauerhaften Schlüssel.
 - Jede Plattform hat einen eigenen Wächter: Fällt YouTube aus, läuft Twitch weiter, und andersherum genauso.
 
+## Updates ohne Stream-Abbruch
+Der Stream besteht aus zwei Diensten:
+- **stream24-sender** hält die Verbindung zu Twitch und YouTube. Er wird bei Updates nicht neu gestartet.
+- **stream24** ist das Panel und erzeugt den Countdown. Updates über den Knopf „⬆ Neueste Version installieren“ betreffen nur diesen Dienst. Solange er neu startet, zeigt der Sender „Neu verbinden …“, und der Stream bleibt online.
+
+Hat auch der Sender ein Update, fragt das Panel, ob er jetzt neu starten soll. Dabei ist der Stream ca. 10 Sekunden offline, deshalb kannst du das auch später machen.
+
 ## Ausfälle & Auto-Reconnect
 - **Internet weg / Twitch hängt:** Ein Wächter prüft jede Sekunde, ob wirklich Bilder rausgehen. Kommt 15 Sekunden lang nichts an, verbindet er neu: zuerst nach 2 Sekunden, bei Dauer-Störung mit wachsenden Abständen bis höchstens 30 Sekunden.
 - **Server-Neustart:** Der Dienst startet automatisch mit und macht weiter, wenn der Stream vorher an war.

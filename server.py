@@ -42,7 +42,8 @@ QUALITIES = {
 VIDEO_EXT = (".mp4", ".mkv", ".mov", ".webm", ".flv", ".avi", ".ts", ".m4v")
 PLAYLIST_HOURS = 50
 WATCHDOG_SECONDS = 15  # so lange darf der Stream "hängen", bevor neu verbunden wird
-UPDATE_URL = "https://raw.githubusercontent.com/ximjxstinn/stream-marathon/stream24/server.py"  # Twitch trennt nach 48 h sowieso, danach startet der Stream neu
+UPDATE_URL = "https://raw.githubusercontent.com/ximjxstinn/stream-marathon/stream24/server.py"
+SENDER_URL = "https://raw.githubusercontent.com/ximjxstinn/stream-marathon/stream24/sender.py"  # Twitch trennt nach 48 h sowieso, danach startet der Stream neu
 
 for d in (BASE, UPLOAD_DIR, TMP_DIR, VIDEO_DIR):
     os.makedirs(d, exist_ok=True)
@@ -732,39 +733,6 @@ def build_countdown_cmd(cfg, output, preview=False, fmt="flv"):
     return cmd
 
 
-def build_slate_cmd(cfg, output):
-    """'Neu verbinden …'-Bild, das gesendet wird, während der Countdown neu startet."""
-    w, h, fps, vb = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
-    bg = os.path.join(RUN_DIR, f"slate_bg_{w}x{h}.png")
-    if not os.path.exists(bg):
-        g = f"exp(-((X-W/2)^2+(Y-H*0.45)^2)/(2*(H*0.32)^2))"
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c=black:s={w}x{h}", "-vf",
-                        f"geq=r='clip(14+40*{g},0,255)':g='clip(10+12*{g},0,255)':b='clip(26+70*{g},0,255)'",
-                        "-frames:v", "1", "-update", "1", bg], check=False)
-    for name, text in (("slate_icon", "↻"), ("slate_title", "Neu verbinden …"), ("slate_sub", "Gleich geht's weiter")):
-        atomic_write(os.path.join(RUN_DIR, name + ".txt"), text)
-    q = lambda p: "'" + p.replace("'", "") + "'"   # noqa
-    R, B = q(font("regular")), q(font("bold"))
-    tf = lambda n: q(os.path.join(RUN_DIR, n + ".txt"))   # noqa
-    vf = (f"scale={w}:{h},fps={fps},format=yuv420p,"
-          f"drawtext=fontfile={R}:textfile={tf('slate_icon')}:expansion=none:fontsize=h*0.34:fontcolor=0x9b5cf6:"
-          f"alpha='0.7+0.3*sin(t*3)':x=(w-text_w)/2:y=h*0.27,"
-          f"drawtext=fontfile={B}:textfile={tf('slate_title')}:expansion=none:fontsize=h*0.075:fontcolor=white:"
-          f"x=(w-text_w)/2:y=h*0.62,"
-          f"drawtext=fontfile={R}:textfile={tf('slate_sub')}:expansion=none:fontsize=h*0.035:fontcolor=white@0.6:"
-          f"x=(w-text_w)/2:y=h*0.73")
-    kbit = int(vb[:-1])
-    return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-re", "-loop", "1", "-framerate", str(fps), "-i", bg,
-            "-re", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-            "-vf", vf, "-map", "0:v", "-map", "1:a",
-            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-            "-b:v", vb, "-maxrate", vb, "-bufsize", vb,
-            "-x264-params", "nal-hrd=cbr:force-cfr=1:repeat-headers=1",
-            "-g", str(fps * 2), "-keyint_min", str(fps * 2), "-sc_threshold", "0",
-            "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
-            "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", output]
-
-
 ticker = Ticker()
 image_feeder = ImageFeeder()
 audio_feeder = AudioFeeder()
@@ -788,152 +756,26 @@ DESTINATIONS = {
 }
 
 
-class Relay:
-    """Schickt den fertigen Stream (MPEG-TS) per -c copy an EIN Ziel (Twitch oder YouTube).
-    Fällt ein Ziel aus, verbindet nur dieses neu – die anderen laufen weiter."""
+INPUT_FIFO = os.path.join(RUN_DIR, "output.ts")      # Übergabe an den Sender-Dienst
+SENDER_STATUS = os.path.join(BASE, "sender_status.json")
+SENDER_RESTART_FLAG = os.path.join(RUN_DIR, "restart_sender")
+if not os.path.exists(INPUT_FIFO):
+    os.mkfifo(INPUT_FIFO)
 
-    def __init__(self, dest_id):
-        self.id = dest_id
-        self.d = DESTINATIONS[dest_id]
-        self.q = queue.Queue(maxsize=400)       # ca. 25 s Puffer
-        self.proc = None
-        self.started_at = 0
-        self.last_progress = 0
-        self.restarts = 0
-        self.fails = 0
-        self.status_msg = "Aus"
-        self.thread = None
-        self.kick = False
 
-    def enabled(self, cfg=None):
-        cfg = cfg or get_cfg()
-        return bool(cfg.get(self.d["enabled"]) and cfg.get(self.d["key"]))
-
-    def url(self, cfg):
-        return cfg[self.d["server"]].rstrip("/") + "/" + cfg[self.d["key"]]
-
-    def live(self):
-        return bool(self.proc and self.proc.poll() is None and self.last_progress > self.started_at
-                    and time.time() - self.last_progress < 5)
-
-    def push(self, chunk):
-        if self.proc and self.proc.poll() is None:
-            try:
-                self.q.put_nowait(chunk)
-            except queue.Full:
-                pass                              # Ziel hängt -> Wächter greift gleich ein
-
-    def ensure_running(self):
-        if not self.thread or not self.thread.is_alive():
-            self.thread = threading.Thread(target=self._loop, daemon=True)
-            self.thread.start()
-
-    def restart(self):
-        self.kick = True
-        self._kill()
-
-    def _kill(self):
-        p = self.proc
-        if p and p.poll() is None:
-            p.terminate()
-            try:
-                p.wait(5)
-            except subprocess.TimeoutExpired:
-                p.kill()
-
-    def _writer(self, proc):
-        try:
-            while proc.poll() is None:
-                try:
-                    chunk = self.q.get(timeout=1)
-                except queue.Empty:
-                    continue
-                proc.stdin.write(chunk)
-        except (BrokenPipeError, OSError, ValueError):
-            pass
-
-    def _progress(self, proc):
-        last = None
-        try:
-            for line in proc.stdout:
-                if line.startswith("out_time_us="):
-                    val = line.strip().split("=", 1)[1]
-                    if val != last and val not in ("N/A", "0"):
-                        last = val
-                        self.last_progress = time.time()
-                        self.status_msg = "Live"
-        except Exception:  # noqa
-            pass
-
-    def _loop(self):
-        name = self.d["name"]
-        while streamer.want:
-            cfg = get_cfg()
-            if not self.enabled(cfg):
-                self.status_msg = "Aus" if not cfg.get(self.d["enabled"]) else "Kein Stream-Key"
-                time.sleep(2)
-                continue
-            if not streamer.source_running():
-                self.status_msg = "Wartet auf Bild …"
-                time.sleep(1)
-                continue
-            while not self.q.empty():
-                try:
-                    self.q.get_nowait()
-                except queue.Empty:
-                    break
-            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
-                   "-fflags", "+genpts+discardcorrupt", "-analyzeduration", "3000000",
-                   "-f", "mpegts", "-i", "pipe:0", "-map", "0", "-c", "copy",
-                   "-rw_timeout", str(WATCHDOG_SECONDS * 1_000_000),
-                   "-progress", "pipe:1", "-stats_period", "1",
-                   "-f", "flv", "-flvflags", "no_duration_filesize", self.url(cfg)]
-            log_line(f"{name}: verbinde …")
-            ran = 0
-            try:
-                log = open(LOG_PATH, "a", encoding="utf-8")
-                self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                             stderr=log, text=False, bufsize=0)
-                self.proc.stdout = io.TextIOWrapper(io.BufferedReader(self.proc.stdout), encoding="utf-8", errors="replace")
-                self.started_at = time.time()
-                self.last_progress = 0
-                self.status_msg = "Verbindet …"
-                threading.Thread(target=self._writer, args=(self.proc,), daemon=True).start()
-                threading.Thread(target=self._progress, args=(self.proc,), daemon=True).start()
-                reason = None
-                while self.proc.poll() is None:
-                    time.sleep(1)
-                    stalled = time.time() - max(self.last_progress, self.started_at)
-                    if stalled > 5:
-                        self.status_msg = f"Keine Verbindung seit {int(stalled)} s …"
-                    limit = WATCHDOG_SECONDS if self.last_progress else WATCHDOG_SECONDS * 2
-                    if stalled > limit:
-                        reason = f"{name}: seit {int(stalled)} s kein Fortschritt – verbinde neu"
-                        self._kill()
-                        break
-                ran = time.time() - self.started_at
-                log_line(reason or f"{name}: Verbindung beendet (Code {self.proc.returncode})")
-                log.close()
-            except Exception as e:  # noqa
-                self.status_msg = f"Fehler: {e}"
-            if not streamer.want:
-                break
-            if self.kick:                      # bewusst neu gestartet (z. B. neuer Key)
-                self.kick = False
-                continue
-            self.restarts += 1
-            self.fails = 0 if ran > 60 else self.fails + 1
-            delay = min(30, 2 * 2 ** max(0, self.fails - 1))
-            for left in range(delay, 0, -1):
-                if not streamer.want:
-                    break
-                self.status_msg = f"Verbindet neu in {left} s … (Versuch {self.fails or 1})"
-                time.sleep(1)
-        self.status_msg = "Aus"
+def sender_status():
+    st = load_json(SENDER_STATUS, {})
+    ok = time.time() - st.get("updated", 0) < 5
+    if not ok:
+        st = {"dest": {k: {"name": d["name"], "live": False, "restarts": 0, "uptime": 0,
+                           "msg": "Sender-Dienst läuft nicht"} for k, d in DESTINATIONS.items()}}
+    st["ok"] = ok
+    return st
 
 
 class Streamer:
-    """Erzeugt das Bild EINMAL (Quelle) und verteilt es an alle aktiven Ziele."""
+    """Erzeugt das Bild (Countdown oder Videos) und gibt es an den Sender-Dienst weiter.
+    Der Sender hält die Verbindung zu Twitch/YouTube – auch während dieses Programm neu startet."""
 
     def __init__(self):
         self.want = False
@@ -945,84 +787,35 @@ class Streamer:
         self._dirty = False
         self.fails = 0
         self.last_data = 0
-        self.relays = {k: Relay(k) for k in DESTINATIONS}
-        self.active = None          # Prozess, dessen Bild gerade gesendet wird
-        self.active_info = None     # (Zeitversatz, Startzeit) des aktiven Prozesses
-        self.slate = None           # "Neu verbinden …"-Prozess
-        self.t0 = time.time()
+        self.outq = queue.Queue(maxsize=200)
+        threading.Thread(target=self._fifo_writer, daemon=True).start()
         st = load_json(STATE_PATH, {})
         if st.get("want"):
-            self.start()  # nach Server-Neustart automatisch weitermachen
+            self.start()  # nach Neustart/Update automatisch weitermachen
 
     def _save_state(self):
         save_json(STATE_PATH, {"want": self.want})
 
     def start(self):
         with lock:
-            if not self.want:
-                self.t0 = time.time()
-                self.active = self.active_info = None
             self.want = True
             self._save_state()
             if not self.thread or not self.thread.is_alive():
                 self.thread = threading.Thread(target=self._loop, daemon=True)
                 self.thread.start()
-            for r in self.relays.values():
-                r.ensure_running()
 
     def stop(self):
         with lock:
             self.want = False
             self._save_state()
             self._kill()
-            self._kill_slate()
-            for r in self.relays.values():
-                r._kill()
             self.status_msg = "Gestoppt"
 
     def restart(self):
-        self._kill()  # Quelle startet automatisch neu
+        self._kill()  # Quelle startet automatisch neu, der Sender zeigt kurz "Neu verbinden …"
 
     def playlist_changed(self):
         self._dirty = True
-
-    def source_running(self):
-        return any(p and p.poll() is None for p in (self.proc, self.slate))
-
-    def _kill_slate(self):
-        p = self.slate
-        if p and p.poll() is None:
-            p.kill()
-            p.wait()
-
-    def _next_offset(self):
-        """Zeitstempel laufen über Prozesswechsel hinweg weiter -> Twitch/YouTube merken keinen Neustart."""
-        now = time.time()
-        if not self.active_info:
-            return round(now - self.t0, 3)
-        off, launch = self.active_info
-        return round(off + (now - launch) + 2.0, 3)
-
-    def _spawn(self, cmd, log):
-        off = self._next_offset()
-        cmd = cmd[:-1] + ["-output_ts_offset", str(off), cmd[-1]]
-        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=log, env=FF_ENV, bufsize=0)
-        proc.ts_info = (off, time.time())
-        threading.Thread(target=self._pump, args=(proc,), daemon=True).start()
-        return proc
-
-    def _start_slate(self):
-        if self.slate and self.slate.poll() is None:
-            return
-        if not any(r.proc and r.proc.poll() is None for r in self.relays.values()):
-            return                                    # niemand verbunden -> kein Bild nötig
-        try:
-            log = open(LOG_PATH, "a", encoding="utf-8")
-            self.slate = self._spawn(build_slate_cmd(get_cfg(), "pipe:1"), log)
-            log_line("Zeige 'Neu verbinden …' bis der Countdown wieder läuft")
-        except Exception as e:  # noqa
-            log_line(f"Neu-verbinden-Bild konnte nicht starten: {e}")
 
     def _kill(self):
         p = self.proc
@@ -1034,11 +827,7 @@ class Streamer:
                 p.kill()
 
     def live(self):
-        return any(r.live() for r in self.relays.values())
-
-    @property
-    def last_progress(self):
-        return max((r.last_progress for r in self.relays.values()), default=0)
+        return any(d.get("live") for d in sender_status()["dest"].values())
 
     def _write_playlist(self, vids, shuffle):
         total = sum(v["duration"] for v in vids) or 1
@@ -1054,31 +843,34 @@ class Streamer:
         with open(PLAYLIST_PATH, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
 
+    def _fifo_writer(self):
+        """Schreibt das fertige Bild in die Pipe zum Sender."""
+        while True:
+            try:
+                with open(INPUT_FIFO, "wb", buffering=0) as fd:   # wartet, bis der Sender liest
+                    while True:
+                        fd.write(self.outq.get())
+            except (BrokenPipeError, OSError):
+                time.sleep(0.5)
+
     def _pump(self, proc):
-        """Liest den fertigen Stream und verteilt ihn an alle Ziele.
-        Sobald ein neuer Prozess Bild liefert, übernimmt er – der alte wird nicht mehr gesendet."""
         try:
             while True:
-                chunk = proc.stdout.read(188 * 348)   # ca. 64 KB, ganze TS-Pakete
+                chunk = proc.stdout.read(188 * 348)
                 if not chunk:
                     break
-                if self.active is not proc:
-                    if proc is self.slate and self.proc and self.proc.poll() is None and self.active is self.proc:
-                        continue                      # Countdown läuft wieder -> Bild verwerfen
-                    self.active, self.active_info = proc, proc.ts_info
-                    if proc is self.proc:
-                        threading.Timer(0.5, self._kill_slate).start()
-                if proc is self.proc:
-                    self.last_data = time.time()
-                for r in self.relays.values():
-                    r.push(chunk)
+                self.last_data = time.time()
+                try:
+                    self.outq.put_nowait(chunk)
+                except queue.Full:
+                    pass                               # Sender nicht da -> verwerfen
         except (OSError, ValueError):
             pass
 
     def _loop(self):
         while self.want:
             cfg = get_cfg()
-            if not any(r.enabled(cfg) for r in self.relays.values()):
+            if not any(cfg.get(d["enabled"]) and cfg.get(d["key"]) for d in DESTINATIONS.values()):
                 self.status_msg = "Kein Ziel aktiv – Stream-Key bei Twitch oder YouTube eintragen"
                 time.sleep(3)
                 continue
@@ -1107,11 +899,11 @@ class Streamer:
             try:
                 log_line(f"Bild-Quelle startet ({info})")
                 log = open(LOG_PATH, "a", encoding="utf-8")
-                self.proc = self._spawn(cmd, log)
+                self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                             stderr=log, env=FF_ENV, bufsize=0)
+                threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
                 self.started_at = self.last_data = time.time()
                 self.status_msg = "Läuft"
-                for r in self.relays.values():
-                    r.ensure_running()
                 reason = None
                 while self.proc.poll() is None:
                     time.sleep(1)
@@ -1122,14 +914,12 @@ class Streamer:
                 ran = time.time() - self.started_at
                 log_line(reason or f"Bild-Quelle beendet (Code {self.proc.returncode})")
                 log.close()
-                if self.want:
-                    self._start_slate()           # Zuschauer sehen "Neu verbinden …" statt offline
             except Exception as e:  # noqa
                 self.status_msg = f"Fehler: {e}"
             if self.want:
                 self.restarts += 1
                 self.fails = 0 if ran > 60 else self.fails + 1
-                delay = min(30, 2 * 2 ** max(0, self.fails - 1))
+                delay = 1 if ran > 60 else min(30, 2 * 2 ** max(0, self.fails - 1))
                 for left in range(delay, 0, -1):
                     if not self.want:
                         break
@@ -1261,7 +1051,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div class="btns"><button class="go" id="bSave">Speichern</button></div>
  <label>Update</label>
  <div class="btns" style="margin-top:0"><button id="bUpd">⬆ Neueste Version installieren</button></div>
- <div class="hint">Lädt die neueste Version von GitHub. Der Stream startet dabei einmal kurz neu.</div>
+ <div class="hint">Lädt die neueste Version von GitHub. Der Stream bleibt online – Zuschauer sehen ein paar Sekunden „Neu verbinden …“.</div>
 </section>
 <section class="card"><h2>Log</h2><pre id="log"></pre></section>
 </main>
@@ -1275,7 +1065,7 @@ async function api(p,body){const r=await fetch(p,{method:'POST',headers:{'Conten
 async function refresh(){
  const r=await fetch('/api/status');if(r.status==401)return location.reload();const s=await r.json();
  $('dot').className='dot'+(s.live?' live':'');$('st').textContent=s.live?'LIVE':(s.running?s.message:'Gestoppt');
- $('sub').textContent=`Speicher frei: ${s.disk_free_gb} GB`+(s.mode=='videos'?` · ${s.videos.length} Videos (${fmt(s.total_duration)})`:'');
+ $('sub').textContent=(s.sender_ok?(s.running?`Zuschauer sehen: ${s.showing} · `:''):'⚠ Sender-Dienst läuft nicht · ')+`Speicher frei: ${s.disk_free_gb} GB`+(s.mode=='videos'?` · ${s.videos.length} Videos (${fmt(s.total_duration)})`:'');
  $('bStart').disabled=s.running;$('bStop').disabled=!s.running;$('bRe').disabled=!s.running;
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
  $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${j.state=='konvertiert'?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
@@ -1329,8 +1119,12 @@ $('cvFile').onchange=e=>{if(e.target.files[0])asset('cover',e.target.files[0]);e
 $('cvDel').onclick=async()=>{await api('/api/asset_delete',{kind:'cover'});refresh();showPrev()};
 async function delSong(n){if(confirm('Song löschen?')){await api('/api/asset_delete',{kind:'music',name:n});refresh()}}
 $('muSkip').onclick=async()=>{await api('/api/music_skip');setTimeout(refresh,800)};
-$('bUpd').onclick=async()=>{if(!confirm('Neueste Version installieren? Der Stream startet einmal kurz neu.'))return;
- const j=await api('/api/update');if(j.ok){alert('Update installiert – Panel lädt in ein paar Sekunden neu.');setTimeout(()=>location.reload(),5000)}};
+$('bUpd').onclick=async()=>{if(!confirm('Neueste Version installieren? Der Stream bleibt dabei online.'))return;
+ const j=await api('/api/update');if(!j.ok)return;
+ if(j.sender_changed&&confirm('Update installiert ✅ Der Stream bleibt online.\n\nAuch der Sender (Verbindung zu Twitch/YouTube) hat ein Update. Jetzt neu starten? Dann ist der Stream ca. 10 Sekunden offline. Du kannst das auch später machen.'))
+  await api('/api/restart_sender');
+ else if(!j.sender_changed)alert('Update installiert ✅ Der Stream bleibt online – Zuschauer sehen kurz „Neu verbinden …“.');
+ setTimeout(()=>location.reload(),5000)};
 refresh();setInterval(refresh,3000);
 </script></body></html>"""
 
@@ -1489,11 +1283,7 @@ class Handler(BaseHTTPRequestHandler):
             restart = bool(changed & RESTART_KEYS)
             if streamer.want and restart:
                 streamer.restart()
-            if streamer.want:
-                for rid, keys in RELAY_KEYS.items():
-                    if changed & keys:
-                        streamer.relays[rid].restart()   # nur dieses Ziel neu verbinden
-                        streamer.relays[rid].ensure_running()
+            # neue Stream-Keys erkennt der Sender selbst und verbindet nur das betroffene Ziel neu
             return self._send(200, {"ok": True, "restarted": restart and streamer.want})
         elif path == "/api/asset_delete":
             if data.get("kind") in ("bg", "cover"):
@@ -1508,6 +1298,8 @@ class Handler(BaseHTTPRequestHandler):
                     if audio_feeder.current == p:
                         audio_feeder.skip = True
                     os.remove(p)
+        elif path == "/api/restart_sender":
+            open(SENDER_RESTART_FLAG, "w").close()           # Sender beendet sich, systemd startet ihn neu
         elif path == "/api/music_skip":
             audio_feeder.skip = True
         elif path == "/api/update":
@@ -1608,24 +1400,29 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, {"ok": True})
 
     def _update(self):
-        """Lädt die neueste server.py von GitHub und startet das Panel neu."""
+        """Lädt die neueste Version von GitHub. Das Panel startet neu – der Sender hält den Stream
+        so lange mit "Neu verbinden …" online. Der Sender selbst wird nur auf Wunsch neu gestartet."""
         import urllib.request
         try:
-            with urllib.request.urlopen(UPDATE_URL, timeout=30) as r:
-                code = r.read()
+            code = urllib.request.urlopen(UPDATE_URL, timeout=30).read()
             compile(code, "server.py", "exec")
+            scode = urllib.request.urlopen(SENDER_URL, timeout=30).read()
+            compile(scode, "sender.py", "exec")
         except Exception as e:  # noqa
             return self._send(200, {"error": f"Update fehlgeschlagen: {e}"})
-        me = os.path.abspath(__file__)
-        with open(me + ".new", "wb") as fh:
-            fh.write(code)
-        os.replace(me + ".new", me)
-        self._send(200, {"ok": True})
+        here = os.path.dirname(os.path.abspath(__file__))
+        sp = os.path.join(here, "sender.py")
+        old = open(sp, "rb").read() if os.path.exists(sp) else b""
+        sender_changed = old != scode
+        for path, data in ((os.path.join(here, "server.py"), code), (sp, scode)):
+            with open(path + ".new", "wb") as fh:
+                fh.write(data)
+            os.replace(path + ".new", path)
+        self._send(200, {"ok": True, "sender_changed": sender_changed})
+
         def _restart():
             streamer._kill()
-            for r in streamer.relays.values():
-                r._kill()
-            os._exit(0)                                      # systemd startet neu
+            os._exit(0)                                      # systemd startet das Panel neu
         threading.Timer(1.0, _restart).start()
 
 def status():
@@ -1635,17 +1432,17 @@ def status():
         "running": streamer.want,
         "live": streamer.live(),
         "message": streamer.status_msg,
-        "uptime": max((time.time() - r.started_at for r in streamer.relays.values() if r.live()), default=0),
-        "restarts": streamer.restarts + sum(r.restarts for r in streamer.relays.values()),
+        "uptime": max((d.get("uptime", 0) for d in sender_status()["dest"].values()), default=0),
+        "restarts": streamer.restarts,
         "videos": [{k: v[k] for k in ("name", "title", "duration", "size", "quality")} for v in vids],
         "total_duration": sum(v["duration"] for v in vids),
         "jobs": converter.jobs,
         "key_set": bool(cfg["stream_key"]),
         "yt_key_set": bool(cfg["yt_key"]),
         "tw_enabled": cfg["tw_enabled"], "yt_enabled": cfg["yt_enabled"], "yt_server": cfg["yt_server"],
-        "dest": {k: {"name": r.d["name"], "live": r.live(), "msg": r.status_msg, "restarts": r.restarts,
-                     "uptime": time.time() - r.started_at if r.live() else 0}
-                 for k, r in streamer.relays.items()},
+        "dest": sender_status()["dest"],
+        "sender_ok": sender_status()["ok"],
+        "showing": sender_status().get("showing", ""),
         "server": cfg["server"],
         "quality": cfg["quality"],
         "qualities": list(QUALITIES),
@@ -1705,8 +1502,6 @@ def main():
 
     def _shutdown(*_):
         streamer._kill()                                     # ffmpeg nicht verwaist zurücklassen
-        for r in streamer.relays.values():
-            r._kill()
         os._exit(0)
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
