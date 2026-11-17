@@ -458,6 +458,7 @@ class AudioFeeder(threading.Thread):
         self.skip = False      # aktuellen Song abbrechen (z. B. gelöscht)
         self.reload = False    # Lautstärke geändert -> gleicher Song, neue Lautstärke
         self.current = None
+        self.bad = {}           # Song -> Zeitpunkt, bis wann er übersprungen wird (kaputte Datei)
 
     def _decoder(self, song, pos=0.0):
         vol = max(0, min(100, int(get_cfg().get("cd_volume", 60)))) / 100
@@ -488,7 +489,8 @@ class AudioFeeder(threading.Thread):
                         dec = None
                     self.skip = self.reload = False
                 if dec is None:
-                    songs = list_music()
+                    now = time.time()
+                    songs = [m for m in list_music() if self.bad.get(m, 0) < now]
                     if songs:
                         order = [s for s in order if s in songs]
                         if not order:
@@ -505,6 +507,9 @@ class AudioFeeder(threading.Thread):
                     data += b"\0" * (-len(data) % 4)
                     dec.wait()
                     dec = None
+                    if pos + len(data) < self.RATE * 2 and self.current:   # < 2 s Ton = kaputt
+                        self.bad[self.current] = time.time() + 300
+                        log_line(f"Musik: '{os.path.basename(self.current)}' lässt sich nicht abspielen – übersprungen")
                     if not data:
                         continue
                 pos += len(data)
@@ -719,12 +724,45 @@ def build_countdown_cmd(cfg, output, preview=False, fmt="flv"):
     cmd += ["-thread_queue_size", "4096", "-f", "s16le", "-ar", "44100", "-ac", "2", "-i", AUDIO_FIFO]
     cmd += ["-filter_complex_script", script, "-map", "[v]", "-map", "2:a:0",
             "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-            "-b:v", vb, "-maxrate", vb, "-bufsize", vb, "-x264-params", "nal-hrd=cbr:force-cfr=1",
+            "-b:v", vb, "-maxrate", vb, "-bufsize", vb, "-x264-params", "nal-hrd=cbr:force-cfr=1:repeat-headers=1",
             "-g", str(fps * 2), "-keyint_min", str(fps * 2), "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
             *(["-f", "flv", "-flvflags", "no_duration_filesize"] if fmt == "flv" else
               ["-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0"]), output]
     return cmd
+
+
+def build_slate_cmd(cfg, output):
+    """'Neu verbinden …'-Bild, das gesendet wird, während der Countdown neu startet."""
+    w, h, fps, vb = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
+    bg = os.path.join(RUN_DIR, f"slate_bg_{w}x{h}.png")
+    if not os.path.exists(bg):
+        g = f"exp(-((X-W/2)^2+(Y-H*0.45)^2)/(2*(H*0.32)^2))"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c=black:s={w}x{h}", "-vf",
+                        f"geq=r='clip(14+40*{g},0,255)':g='clip(10+12*{g},0,255)':b='clip(26+70*{g},0,255)'",
+                        "-frames:v", "1", "-update", "1", bg], check=False)
+    for name, text in (("slate_icon", "↻"), ("slate_title", "Neu verbinden …"), ("slate_sub", "Gleich geht's weiter")):
+        atomic_write(os.path.join(RUN_DIR, name + ".txt"), text)
+    q = lambda p: "'" + p.replace("'", "") + "'"   # noqa
+    R, B = q(font("regular")), q(font("bold"))
+    tf = lambda n: q(os.path.join(RUN_DIR, n + ".txt"))   # noqa
+    vf = (f"scale={w}:{h},fps={fps},format=yuv420p,"
+          f"drawtext=fontfile={R}:textfile={tf('slate_icon')}:expansion=none:fontsize=h*0.34:fontcolor=0x9b5cf6:"
+          f"alpha='0.7+0.3*sin(t*3)':x=(w-text_w)/2:y=h*0.27,"
+          f"drawtext=fontfile={B}:textfile={tf('slate_title')}:expansion=none:fontsize=h*0.075:fontcolor=white:"
+          f"x=(w-text_w)/2:y=h*0.62,"
+          f"drawtext=fontfile={R}:textfile={tf('slate_sub')}:expansion=none:fontsize=h*0.035:fontcolor=white@0.6:"
+          f"x=(w-text_w)/2:y=h*0.73")
+    kbit = int(vb[:-1])
+    return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-re", "-loop", "1", "-framerate", str(fps), "-i", bg,
+            "-re", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+            "-vf", vf, "-map", "0:v", "-map", "1:a",
+            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+            "-b:v", vb, "-maxrate", vb, "-bufsize", vb,
+            "-x264-params", "nal-hrd=cbr:force-cfr=1:repeat-headers=1",
+            "-g", str(fps * 2), "-keyint_min", str(fps * 2), "-sc_threshold", "0",
+            "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
+            "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", output]
 
 
 ticker = Ticker()
@@ -908,6 +946,10 @@ class Streamer:
         self.fails = 0
         self.last_data = 0
         self.relays = {k: Relay(k) for k in DESTINATIONS}
+        self.active = None          # Prozess, dessen Bild gerade gesendet wird
+        self.active_info = None     # (Zeitversatz, Startzeit) des aktiven Prozesses
+        self.slate = None           # "Neu verbinden …"-Prozess
+        self.t0 = time.time()
         st = load_json(STATE_PATH, {})
         if st.get("want"):
             self.start()  # nach Server-Neustart automatisch weitermachen
@@ -917,6 +959,9 @@ class Streamer:
 
     def start(self):
         with lock:
+            if not self.want:
+                self.t0 = time.time()
+                self.active = self.active_info = None
             self.want = True
             self._save_state()
             if not self.thread or not self.thread.is_alive():
@@ -930,6 +975,7 @@ class Streamer:
             self.want = False
             self._save_state()
             self._kill()
+            self._kill_slate()
             for r in self.relays.values():
                 r._kill()
             self.status_msg = "Gestoppt"
@@ -941,7 +987,42 @@ class Streamer:
         self._dirty = True
 
     def source_running(self):
-        return bool(self.proc and self.proc.poll() is None)
+        return any(p and p.poll() is None for p in (self.proc, self.slate))
+
+    def _kill_slate(self):
+        p = self.slate
+        if p and p.poll() is None:
+            p.kill()
+            p.wait()
+
+    def _next_offset(self):
+        """Zeitstempel laufen über Prozesswechsel hinweg weiter -> Twitch/YouTube merken keinen Neustart."""
+        now = time.time()
+        if not self.active_info:
+            return round(now - self.t0, 3)
+        off, launch = self.active_info
+        return round(off + (now - launch) + 2.0, 3)
+
+    def _spawn(self, cmd, log):
+        off = self._next_offset()
+        cmd = cmd[:-1] + ["-output_ts_offset", str(off), cmd[-1]]
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=log, env=FF_ENV, bufsize=0)
+        proc.ts_info = (off, time.time())
+        threading.Thread(target=self._pump, args=(proc,), daemon=True).start()
+        return proc
+
+    def _start_slate(self):
+        if self.slate and self.slate.poll() is None:
+            return
+        if not any(r.proc and r.proc.poll() is None for r in self.relays.values()):
+            return                                    # niemand verbunden -> kein Bild nötig
+        try:
+            log = open(LOG_PATH, "a", encoding="utf-8")
+            self.slate = self._spawn(build_slate_cmd(get_cfg(), "pipe:1"), log)
+            log_line("Zeige 'Neu verbinden …' bis der Countdown wieder läuft")
+        except Exception as e:  # noqa
+            log_line(f"Neu-verbinden-Bild konnte nicht starten: {e}")
 
     def _kill(self):
         p = self.proc
@@ -974,13 +1055,21 @@ class Streamer:
             f.write("\n".join(lines) + "\n")
 
     def _pump(self, proc):
-        """Liest den fertigen Stream und verteilt ihn an alle Ziele."""
+        """Liest den fertigen Stream und verteilt ihn an alle Ziele.
+        Sobald ein neuer Prozess Bild liefert, übernimmt er – der alte wird nicht mehr gesendet."""
         try:
             while True:
                 chunk = proc.stdout.read(188 * 348)   # ca. 64 KB, ganze TS-Pakete
                 if not chunk:
                     break
-                self.last_data = time.time()
+                if self.active is not proc:
+                    if proc is self.slate and self.proc and self.proc.poll() is None and self.active is self.proc:
+                        continue                      # Countdown läuft wieder -> Bild verwerfen
+                    self.active, self.active_info = proc, proc.ts_info
+                    if proc is self.proc:
+                        threading.Timer(0.5, self._kill_slate).start()
+                if proc is self.proc:
+                    self.last_data = time.time()
                 for r in self.relays.values():
                     r.push(chunk)
         except (OSError, ValueError):
@@ -1018,11 +1107,9 @@ class Streamer:
             try:
                 log_line(f"Bild-Quelle startet ({info})")
                 log = open(LOG_PATH, "a", encoding="utf-8")
-                self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                             stderr=log, env=FF_ENV, bufsize=0)
+                self.proc = self._spawn(cmd, log)
                 self.started_at = self.last_data = time.time()
                 self.status_msg = "Läuft"
-                threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
                 for r in self.relays.values():
                     r.ensure_running()
                 reason = None
@@ -1035,8 +1122,8 @@ class Streamer:
                 ran = time.time() - self.started_at
                 log_line(reason or f"Bild-Quelle beendet (Code {self.proc.returncode})")
                 log.close()
-                for r in self.relays.values():   # neue Quelle = Zeitstempel beginnen neu
-                    r.restart()
+                if self.want:
+                    self._start_slate()           # Zuschauer sehen "Neu verbinden …" statt offline
             except Exception as e:  # noqa
                 self.status_msg = f"Fehler: {e}"
             if self.want:
@@ -1120,7 +1207,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div class="btns" style="margin-top:0"><button id="mCd">⏱ Countdown</button><button id="mVid">🎞 Videos</button></div>
  <div id="cdBox">
   <label>Design</label><select id="cd_theme"></select>
-  <div class="hint">Design und Farbe wechseln = Stream startet einmal kurz neu. Alles andere wird live übernommen.</div>
+  <div class="hint">Design oder Farbe wechseln = ein paar Sekunden „Neu verbinden …“ (Stream bleibt online). Alles andere wird live übernommen.</div>
   <label>Countdown bis (deutsche Zeit)</label><input type="datetime-local" id="cd_target">
   <label>Akzentfarbe</label><input type="color" id="cd_color" style="width:64px;height:40px;border:0;background:none">
   <div data-th="release">
@@ -1227,12 +1314,13 @@ const CDF=['cd_theme','cd_target','cd_color','cd_badge','cd_head1','cd_hl','cd_h
 function showTh(){const t=$('cd_theme').value;document.querySelectorAll('[data-th]').forEach(e=>e.style.display=e.dataset.th.split(' ').includes(t)?'':'none')}
 $('cd_theme').onchange=showTh;
 $('bCdSave').onclick=async()=>{const b={};for(const k of CDF)b[k]=$(k).value;b.cd_shuffle_music=$('cd_shuffle_music').checked;
- const j=await api('/api/config',b);if(j.ok){setTimeout(showPrev,400);if(j.restarted)alert('Design geändert – Stream startet kurz neu.')}};
+ const j=await api('/api/config',b);if(j.ok){setTimeout(showPrev,400);if(j.restarted)alert('Design geändert – Zuschauer sehen ein paar Sekunden „Neu verbinden …“, die Verbindung bleibt bestehen.')}};
 function showPrev(){$('prev').style.display='block';$('prev').src='/api/preview.png?'+Date.now()}
 $('bPrev').onclick=showPrev;
 let volT;$('cd_volume').oninput=e=>{$('volV').textContent=e.target.value;clearTimeout(volT);volT=setTimeout(()=>api('/api/config',{cd_volume:+e.target.value}),400)};
 $('cd_shuffle_music').onchange=e=>api('/api/config',{cd_shuffle_music:e.target.checked});
 function asset(kind,f){return new Promise(res=>{const x=new XMLHttpRequest();x.open('PUT',`/api/asset?kind=${kind}&name=${encodeURIComponent(f.name)}`);
+ if(kind=='music'){x.upload.onprogress=e=>{$('muInfo').textContent=`(lädt hoch: ${esc(f.name)} ${Math.round(e.loaded/e.total*100)} % · ${mb(e.loaded)} / ${mb(e.total)})`}}
  x.onload=()=>{if(x.status!=200)alert('Upload fehlgeschlagen: '+x.responseText);refresh();if(kind!='music')showPrev();res()};x.send(f)})}
 $('bgFile').onchange=e=>{if(e.target.files[0])asset('bg',e.target.files[0]);e.target.value=''};
 $('muFile').onchange=async e=>{const fs=[...e.target.files];e.target.value='';$('muInfo').textContent='(lädt hoch …)';for(const f of fs)await asset('music',f)};
@@ -1487,8 +1575,11 @@ class Handler(BaseHTTPRequestHandler):
         if kind not in allowed or ext not in allowed[kind]:
             return self._send(400, {"error": "Dateityp nicht erlaubt"})
         size = int(self.headers.get("Content-Length") or 0)
-        if not 0 < size < 300_000_000:
-            return self._send(400, {"error": "Datei zu groß oder leer"})
+        if size <= 0:
+            return self._send(400, {"error": "Leere Datei"})
+        free = shutil.disk_usage(BASE).free
+        if size + 500_000_000 > free:
+            return self._send(400, {"error": f"Nicht genug Speicher frei ({free // 1_000_000} MB frei, Datei {size // 1_000_000} MB)"})
         tmp = os.path.join(RUN_DIR, "upload_" + secrets.token_hex(6) + ext)
         remaining = size
         with open(tmp, "wb") as fh:

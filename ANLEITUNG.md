@@ -53,7 +53,8 @@ Der Server erzeugt das Bild einmal und schickt es an alle eingeschalteten Plattf
 ## Ausfälle & Auto-Reconnect
 - **Internet weg / Twitch hängt:** Ein Wächter prüft jede Sekunde, ob wirklich Bilder rausgehen. Kommt 15 Sekunden lang nichts an, verbindet er neu: zuerst nach 2 Sekunden, bei Dauer-Störung mit wachsenden Abständen bis höchstens 30 Sekunden.
 - **Server-Neustart:** Der Dienst startet automatisch mit und macht weiter, wenn der Stream vorher an war.
-- **Live-Änderungen:** Texte, Datum, Hintergrundbild, Songs und Lautstärke werden übernommen, ohne dass der Stream neu startet. Neu starten muss er nur bei Design, Farbe, Stream-Key, Qualität oder Modus.
+- **„Neu verbinden …“:** Muss der Countdown neu starten (Design, Farbe, Qualität), sehen die Zuschauer ein paar Sekunden ein „Neu verbinden …“-Bild. Die Verbindung zu Twitch und YouTube bleibt dabei bestehen.
+- **Live-Änderungen:** Texte, Datum, Hintergrundbild, Songs und Lautstärke werden übernommen, ohne dass der Stream neu startet. Ein neuer Stream-Key verbindet nur die betroffene Plattform neu. Musik darf beliebig lang sein, auch 10-Stunden-Mixe gehen.
 
 ## Gut zu wissen
 - **Kennzeichnung:** Markiere den Stream als Wiederholung, z. B. mit „🔁 24/7 Rerun“ im Titel. So denkt niemand, du sitzt gerade live da.
