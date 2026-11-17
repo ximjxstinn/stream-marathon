@@ -5,6 +5,7 @@ Läuft auf einem Linux-Server (z. B. Hetzner Cloud). Steuerung per Web-Panel
 (handyfreundlich). Keine externen Python-Pakete nötig, nur ffmpeg.
 """
 import hashlib
+import io
 import hmac
 import json
 import os
@@ -70,6 +71,10 @@ DEFAULT_CFG = {
     "password_hash": "",
     "stream_key": "",
     "server": "rtmp://ingest.global-contribute.live-video.net/app",
+    "tw_enabled": True,
+    "yt_enabled": False,
+    "yt_key": "",
+    "yt_server": "rtmp://a.rtmp.youtube.com/live2",
     "quality": "720p30",
     "shuffle": True,
     # Modus: "videos" (Playlist) oder "countdown" (Live-Timer)
@@ -286,7 +291,8 @@ THEMES = {"ps5": "PS5-Startseite (Bild + Countdown-Leiste)", "release": "PS5-Rel
           "konsole": "Konsole (blau, Kacheln)", "standard": "Standard"}
 MUSIC_EXT = (".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac", ".opus")
 # Einstellungen, bei denen der Stream wirklich neu starten muss
-RESTART_KEYS = {"stream_key", "server", "mode", "cd_theme", "cd_color", "quality"}
+RESTART_KEYS = {"mode", "cd_theme", "cd_color", "quality"}   # Bild-Quelle neu
+RELAY_KEYS = {"twitch": {"stream_key", "server", "tw_enabled"}, "youtube": {"yt_key", "yt_server", "yt_enabled"}}
 SPINNER = "◐◓◑◒"
 
 
@@ -678,7 +684,7 @@ def theme_filters(cfg, w, h):
     return f
 
 
-def build_countdown_cmd(cfg, output, preview=False):
+def build_countdown_cmd(cfg, output, preview=False, fmt="flv"):
     """Baut den ffmpeg-Befehl, der den Countdown live rendert."""
     w, h, fps, vb = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
     make_empty_layer()
@@ -716,7 +722,8 @@ def build_countdown_cmd(cfg, output, preview=False):
             "-b:v", vb, "-maxrate", vb, "-bufsize", vb, "-x264-params", "nal-hrd=cbr:force-cfr=1",
             "-g", str(fps * 2), "-keyint_min", str(fps * 2), "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
-            "-f", "flv", "-flvflags", "no_duration_filesize", output]
+            *(["-f", "flv", "-flvflags", "no_duration_filesize"] if fmt == "flv" else
+              ["-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0"]), output]
     return cmd
 
 
@@ -726,7 +733,170 @@ audio_feeder = AudioFeeder()
 
 
 # -------------------------------------------------------------- Streamer ----
+def log_line(text):
+    try:
+        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > 5_000_000:
+            os.remove(LOG_PATH)
+        with open(LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(time.strftime("[%Y-%m-%d %H:%M:%S] ") + text + "\n")
+    except OSError:
+        pass
+
+
+# Ziele: jedes bekommt einen eigenen Sender ("Relay") mit eigenem Wächter.
+DESTINATIONS = {
+    "twitch": {"name": "Twitch", "enabled": "tw_enabled", "key": "stream_key", "server": "server"},
+    "youtube": {"name": "YouTube", "enabled": "yt_enabled", "key": "yt_key", "server": "yt_server"},
+}
+
+
+class Relay:
+    """Schickt den fertigen Stream (MPEG-TS) per -c copy an EIN Ziel (Twitch oder YouTube).
+    Fällt ein Ziel aus, verbindet nur dieses neu – die anderen laufen weiter."""
+
+    def __init__(self, dest_id):
+        self.id = dest_id
+        self.d = DESTINATIONS[dest_id]
+        self.q = queue.Queue(maxsize=400)       # ca. 25 s Puffer
+        self.proc = None
+        self.started_at = 0
+        self.last_progress = 0
+        self.restarts = 0
+        self.fails = 0
+        self.status_msg = "Aus"
+        self.thread = None
+        self.kick = False
+
+    def enabled(self, cfg=None):
+        cfg = cfg or get_cfg()
+        return bool(cfg.get(self.d["enabled"]) and cfg.get(self.d["key"]))
+
+    def url(self, cfg):
+        return cfg[self.d["server"]].rstrip("/") + "/" + cfg[self.d["key"]]
+
+    def live(self):
+        return bool(self.proc and self.proc.poll() is None and self.last_progress > self.started_at
+                    and time.time() - self.last_progress < 5)
+
+    def push(self, chunk):
+        if self.proc and self.proc.poll() is None:
+            try:
+                self.q.put_nowait(chunk)
+            except queue.Full:
+                pass                              # Ziel hängt -> Wächter greift gleich ein
+
+    def ensure_running(self):
+        if not self.thread or not self.thread.is_alive():
+            self.thread = threading.Thread(target=self._loop, daemon=True)
+            self.thread.start()
+
+    def restart(self):
+        self.kick = True
+        self._kill()
+
+    def _kill(self):
+        p = self.proc
+        if p and p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+
+    def _writer(self, proc):
+        try:
+            while proc.poll() is None:
+                try:
+                    chunk = self.q.get(timeout=1)
+                except queue.Empty:
+                    continue
+                proc.stdin.write(chunk)
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+
+    def _progress(self, proc):
+        last = None
+        try:
+            for line in proc.stdout:
+                if line.startswith("out_time_us="):
+                    val = line.strip().split("=", 1)[1]
+                    if val != last and val not in ("N/A", "0"):
+                        last = val
+                        self.last_progress = time.time()
+                        self.status_msg = "Live"
+        except Exception:  # noqa
+            pass
+
+    def _loop(self):
+        name = self.d["name"]
+        while streamer.want:
+            cfg = get_cfg()
+            if not self.enabled(cfg):
+                self.status_msg = "Aus" if not cfg.get(self.d["enabled"]) else "Kein Stream-Key"
+                time.sleep(2)
+                continue
+            if not streamer.source_running():
+                self.status_msg = "Wartet auf Bild …"
+                time.sleep(1)
+                continue
+            while not self.q.empty():
+                try:
+                    self.q.get_nowait()
+                except queue.Empty:
+                    break
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                   "-fflags", "+genpts+discardcorrupt", "-analyzeduration", "3000000",
+                   "-f", "mpegts", "-i", "pipe:0", "-map", "0", "-c", "copy",
+                   "-rw_timeout", str(WATCHDOG_SECONDS * 1_000_000),
+                   "-progress", "pipe:1", "-stats_period", "1",
+                   "-f", "flv", "-flvflags", "no_duration_filesize", self.url(cfg)]
+            log_line(f"{name}: verbinde …")
+            ran = 0
+            try:
+                log = open(LOG_PATH, "a", encoding="utf-8")
+                self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                             stderr=log, text=False, bufsize=0)
+                self.proc.stdout = io.TextIOWrapper(io.BufferedReader(self.proc.stdout), encoding="utf-8", errors="replace")
+                self.started_at = time.time()
+                self.last_progress = 0
+                self.status_msg = "Verbindet …"
+                threading.Thread(target=self._writer, args=(self.proc,), daemon=True).start()
+                threading.Thread(target=self._progress, args=(self.proc,), daemon=True).start()
+                reason = None
+                while self.proc.poll() is None:
+                    time.sleep(1)
+                    stalled = time.time() - max(self.last_progress, self.started_at)
+                    if stalled > 5:
+                        self.status_msg = f"Keine Verbindung seit {int(stalled)} s …"
+                    limit = WATCHDOG_SECONDS if self.last_progress else WATCHDOG_SECONDS * 2
+                    if stalled > limit:
+                        reason = f"{name}: seit {int(stalled)} s kein Fortschritt – verbinde neu"
+                        self._kill()
+                        break
+                ran = time.time() - self.started_at
+                log_line(reason or f"{name}: Verbindung beendet (Code {self.proc.returncode})")
+                log.close()
+            except Exception as e:  # noqa
+                self.status_msg = f"Fehler: {e}"
+            if not streamer.want:
+                break
+            if self.kick:                      # bewusst neu gestartet (z. B. neuer Key)
+                self.kick = False
+                continue
+            self.restarts += 1
+            self.fails = 0 if ran > 60 else self.fails + 1
+            delay = min(30, 2 * 2 ** max(0, self.fails - 1))
+            for left in range(delay, 0, -1):
+                if not streamer.want:
+                    break
+                self.status_msg = f"Verbindet neu in {left} s … (Versuch {self.fails or 1})"
+                time.sleep(1)
+        self.status_msg = "Aus"
+
+
 class Streamer:
+    """Erzeugt das Bild EINMAL (Quelle) und verteilt es an alle aktiven Ziele."""
+
     def __init__(self):
         self.want = False
         self.proc = None
@@ -736,7 +906,8 @@ class Streamer:
         self.thread = None
         self._dirty = False
         self.fails = 0
-        self.last_progress = 0
+        self.last_data = 0
+        self.relays = {k: Relay(k) for k in DESTINATIONS}
         st = load_json(STATE_PATH, {})
         if st.get("want"):
             self.start()  # nach Server-Neustart automatisch weitermachen
@@ -751,19 +922,26 @@ class Streamer:
             if not self.thread or not self.thread.is_alive():
                 self.thread = threading.Thread(target=self._loop, daemon=True)
                 self.thread.start()
+            for r in self.relays.values():
+                r.ensure_running()
 
     def stop(self):
         with lock:
             self.want = False
             self._save_state()
             self._kill()
+            for r in self.relays.values():
+                r._kill()
             self.status_msg = "Gestoppt"
 
     def restart(self):
-        self._kill()  # Loop startet automatisch neu
+        self._kill()  # Quelle startet automatisch neu
 
     def playlist_changed(self):
         self._dirty = True
+
+    def source_running(self):
+        return bool(self.proc and self.proc.poll() is None)
 
     def _kill(self):
         p = self.proc
@@ -775,9 +953,11 @@ class Streamer:
                 p.kill()
 
     def live(self):
-        # LIVE nur, wenn ffmpeg läuft UND gerade wirklich Bilder rausgehen
-        return bool(self.proc and self.proc.poll() is None and self.last_progress > self.started_at
-                    and time.time() - self.last_progress < 5)
+        return any(r.live() for r in self.relays.values())
+
+    @property
+    def last_progress(self):
+        return max((r.last_progress for r in self.relays.values()), default=0)
 
     def _write_playlist(self, vids, shuffle):
         total = sum(v["duration"] for v in vids) or 1
@@ -793,17 +973,30 @@ class Streamer:
         with open(PLAYLIST_PATH, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
 
+    def _pump(self, proc):
+        """Liest den fertigen Stream und verteilt ihn an alle Ziele."""
+        try:
+            while True:
+                chunk = proc.stdout.read(188 * 348)   # ca. 64 KB, ganze TS-Pakete
+                if not chunk:
+                    break
+                self.last_data = time.time()
+                for r in self.relays.values():
+                    r.push(chunk)
+        except (OSError, ValueError):
+            pass
+
     def _loop(self):
         while self.want:
             cfg = get_cfg()
-            if not cfg["stream_key"]:
-                self.status_msg = "Kein Stream-Key eingetragen"
+            if not any(r.enabled(cfg) for r in self.relays.values()):
+                self.status_msg = "Kein Ziel aktiv – Stream-Key bei Twitch oder YouTube eintragen"
                 time.sleep(3)
                 continue
-            url = cfg["server"].rstrip("/") + "/" + cfg["stream_key"]
+            out = "pipe:1"
             if cfg["mode"] == "countdown":
                 try:
-                    cmd = build_countdown_cmd(cfg, url)
+                    cmd = build_countdown_cmd(cfg, out, fmt="mpegts")
                 except Exception as e:  # noqa
                     self.status_msg = f"Fehler: {e}"
                     time.sleep(5)
@@ -817,68 +1010,45 @@ class Streamer:
                     continue
                 self._write_playlist(vids, cfg["shuffle"])
                 self._dirty = False
-                cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-re",
+                cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-re",
                        "-f", "concat", "-safe", "0", "-i", PLAYLIST_PATH,
-                       "-c", "copy", "-f", "flv", "-flvflags", "no_duration_filesize", url]
+                       "-c", "copy", "-f", "mpegts", out]
                 info = f"{len(vids)} Videos"
-            # Wächter-Optionen: Fortschritt melden + Netz-Timeout (Internet weg -> Abbruch statt Hängen)
-            cmd = cmd[:-1] + ["-rw_timeout", str(WATCHDOG_SECONDS * 1_000_000),
-                              "-progress", "pipe:1", "-stats_period", "1", cmd[-1]]
             ran = 0
             try:
-                if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > 5_000_000:
-                    os.remove(LOG_PATH)
+                log_line(f"Bild-Quelle startet ({info})")
                 log = open(LOG_PATH, "a", encoding="utf-8")
-                log.write(time.strftime("\n[%Y-%m-%d %H:%M:%S] Stream startet "
-                                        f"({info})\n"))
-                log.flush()
                 self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                             stderr=log, env=FF_ENV, text=True)
-                self.started_at = time.time()
-                self.last_progress = 0
-                self.status_msg = "Verbindet mit Twitch …"
-                threading.Thread(target=self._read_progress, args=(self.proc,), daemon=True).start()
+                                             stderr=log, env=FF_ENV, bufsize=0)
+                self.started_at = self.last_data = time.time()
+                self.status_msg = "Läuft"
+                threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
+                for r in self.relays.values():
+                    r.ensure_running()
                 reason = None
                 while self.proc.poll() is None:
                     time.sleep(1)
-                    stalled = time.time() - max(self.last_progress, self.started_at)
-                    if stalled > 5:
-                        self.status_msg = f"Keine Verbindung seit {int(stalled)} s …"
-                    limit = WATCHDOG_SECONDS if self.last_progress else WATCHDOG_SECONDS * 2  # Start darf länger dauern
-                    if stalled > limit:
-                        reason = f"seit {int(stalled)} s kein Fortschritt – Internet weg? Verbinde neu"
+                    if time.time() - self.last_data > WATCHDOG_SECONDS:
+                        reason = "Bild-Quelle hängt – starte neu"
                         self._kill()
                         break
                 ran = time.time() - self.started_at
-                log.write(time.strftime("[%Y-%m-%d %H:%M:%S] ") +
-                          (reason or f"ffmpeg beendet (Code {self.proc.returncode})") + "\n")
+                log_line(reason or f"Bild-Quelle beendet (Code {self.proc.returncode})")
                 log.close()
+                for r in self.relays.values():   # neue Quelle = Zeitstempel beginnen neu
+                    r.restart()
             except Exception as e:  # noqa
                 self.status_msg = f"Fehler: {e}"
             if self.want:
                 self.restarts += 1
-                # schnell neu verbinden; bei Dauer-Störung (z. B. Internet weg) langsam steigern bis 30 s
                 self.fails = 0 if ran > 60 else self.fails + 1
                 delay = min(30, 2 * 2 ** max(0, self.fails - 1))
                 for left in range(delay, 0, -1):
                     if not self.want:
                         break
-                    self.status_msg = f"Verbindet neu in {left} s … (Versuch {self.fails or 1})"
+                    self.status_msg = f"Startet neu in {left} s …"
                     time.sleep(1)
 
-    def _read_progress(self, proc):
-        """Liest ffmpegs Fortschritt; bleibt die Zeit stehen, greift der Wächter ein."""
-        last = None
-        try:
-            for line in proc.stdout:
-                if line.startswith("out_time_us="):
-                    val = line.strip().split("=", 1)[1]
-                    if val != last and val not in ("N/A", "0"):
-                        last = val
-                        self.last_progress = time.time()
-                        self.status_msg = "Live"
-        except Exception:  # noqa
-            pass
 
 def log_tail(n=25):
     try:
@@ -943,6 +1113,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
 <section class="card"><h2>Status</h2>
  <div class="status"><span class="dot" id="dot"></span><span id="st">…</span></div>
  <div class="sub" id="sub"></div>
+ <div id="dests" style="margin-top:12px"></div>
  <div class="btns"><button class="go" id="bStart">▶ Starten</button><button class="stop" id="bStop">■ Stoppen</button><button id="bRe">↻ Neu starten</button></div>
 </section>
 <section class="card"><h2>Modus</h2>
@@ -986,9 +1157,17 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div id="uploads"></div><div id="jobs"></div><div id="vids" style="margin-top:10px"></div>
 </section>
 <section class="card"><h2>Einstellungen</h2>
+ <h3 style="margin:4px 0 0;font-size:16px">🟣 Twitch</h3>
+ <label class="chk"><input type="checkbox" id="tw_enabled"> An Twitch senden</label>
  <label>Twitch Stream-Key <span id="keyinfo"></span></label>
  <input type="password" id="key" placeholder="live_xxxxxxxx (leer lassen = nicht ändern)">
- <label>Ingest-Server</label><input type="text" id="server">
+ <label>Twitch Ingest-Server</label><input type="text" id="server">
+ <h3 style="margin:22px 0 0;font-size:16px">🔴 YouTube</h3>
+ <label class="chk"><input type="checkbox" id="yt_enabled"> An YouTube senden</label>
+ <label>YouTube Stream-Schlüssel <span id="ytkeyinfo"></span></label>
+ <input type="password" id="yt_key" placeholder="xxxx-xxxx-xxxx-xxxx (leer lassen = nicht ändern)">
+ <label>YouTube Server</label><input type="text" id="yt_server">
+ <div class="hint">YouTube Studio → Erstellen → Livestream starten → Stream. Den Stream-Schlüssel dort kopieren. Am besten einen dauerhaften Schlüssel nehmen. Neuen Key speichern = nur diese Plattform verbindet kurz neu.</div>
  <label>Qualität</label><select id="quality"></select>
  <div class="hint" id="qhint"></div>
  <label class="chk"><input type="checkbox" id="shuffle"> Videos zufällig mischen</label>
@@ -1009,19 +1188,20 @@ async function api(p,body){const r=await fetch(p,{method:'POST',headers:{'Conten
 async function refresh(){
  const r=await fetch('/api/status');if(r.status==401)return location.reload();const s=await r.json();
  $('dot').className='dot'+(s.live?' live':'');$('st').textContent=s.live?'LIVE':(s.running?s.message:'Gestoppt');
- $('sub').textContent=(s.live?`Läuft seit ${fmt(s.uptime)} · `:'')+`${s.videos.length} Videos (${fmt(s.total_duration)}) · Reconnects: ${s.restarts} · Speicher frei: ${s.disk_free_gb} GB`;
+ $('sub').textContent=`Speicher frei: ${s.disk_free_gb} GB`+(s.mode=='videos'?` · ${s.videos.length} Videos (${fmt(s.total_duration)})`:'');
  $('bStart').disabled=s.running;$('bStop').disabled=!s.running;$('bRe').disabled=!s.running;
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
  $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${j.state=='konvertiert'?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('log').textContent=s.log||'(noch leer)';
- $('keyinfo').textContent=s.key_set?'✅ gesetzt':'❌ fehlt';
+ $('keyinfo').textContent=s.key_set?'✅ gesetzt':'❌ fehlt';$('ytkeyinfo').textContent=s.yt_key_set?'✅ gesetzt':'❌ fehlt';
+ $('dests').innerHTML=Object.values(s.dest).map(d=>`<div style="display:flex;align-items:center;gap:8px;margin:4px 0"><span class="dot${d.live?' live':''}" style="width:10px;height:10px"></span><b>${d.name}</b><span style="color:var(--mut);font-size:14px">${d.live?'LIVE seit '+fmt(d.uptime):esc(d.msg)}${d.restarts?' · Reconnects: '+d.restarts:''}</span></div>`).join('');
  const cd=s.mode=='countdown';$('mCd').className=cd?'go':'';$('mVid').className=cd?'':'go';
  $('cdBox').style.display=cd?'':'none';$('vidCard').style.opacity=cd?'.45':'1';
  $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('cvInfo').textContent=s.cd_cover?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
  $('muList').innerHTML=s.music.map(m=>`<div class="vid"><div class="t">${m==s.now_playing?'🔊 ':''}${esc(m)}</div><button onclick="delSong(this.dataset.n)" data-n="${esc(m)}">Löschen</button></div>`).join('');
  if(!cfgLoaded){$('cd_theme').innerHTML=Object.entries(s.themes).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
   for(const k of CDF)$(k).value=s.cfg[k];$('cd_game_ps5').value=s.cfg.cd_game;$('cd_boxlabel_ps5').value=s.cfg.cd_boxlabel;$('cd_shuffle_music').checked=s.cfg.cd_shuffle_music;$('cd_volume').value=s.cfg.cd_volume;$('volV').textContent=s.cfg.cd_volume;showTh()}
- if(!cfgLoaded){cfgLoaded=true;$('server').value=s.server;$('shuffle').checked=s.shuffle;
+ if(!cfgLoaded){cfgLoaded=true;$('server').value=s.server;$('yt_server').value=s.yt_server;$('tw_enabled').checked=s.tw_enabled;$('yt_enabled').checked=s.yt_enabled;$('shuffle').checked=s.shuffle;
   $('quality').innerHTML=s.qualities.map(q=>`<option ${q==s.quality?'selected':''}>${q}</option>`).join('')}
  $('quality').disabled=s.quality_locked;$('qhint').textContent=s.quality_locked?'Qualität kann nur geändert werden, wenn keine Videos vorhanden sind (alle Videos müssen das gleiche Format haben).':'';
 }
@@ -1031,8 +1211,9 @@ async function dismiss(n){await api('/api/dismiss',{name:n});refresh()}
 $('bStart').onclick=async()=>{await api('/api/start');refresh()};
 $('bStop').onclick=async()=>{if(confirm('Stream wirklich stoppen?')){await api('/api/stop');refresh()}};
 $('bRe').onclick=async()=>{await api('/api/restart');refresh()};
-$('bSave').onclick=async()=>{const b={server:$('server').value,shuffle:$('shuffle').checked,quality:$('quality').value};
- if($('key').value.trim())b.stream_key=$('key').value.trim();const j=await api('/api/config',b);if(j.ok){$('key').value='';alert('Gespeichert ✅')}refresh()};
+$('bSave').onclick=async()=>{const b={server:$('server').value,shuffle:$('shuffle').checked,quality:$('quality').value,
+ yt_server:$('yt_server').value,tw_enabled:$('tw_enabled').checked,yt_enabled:$('yt_enabled').checked};
+ if($('key').value.trim())b.stream_key=$('key').value.trim();if($('yt_key').value.trim())b.yt_key=$('yt_key').value.trim();const j=await api('/api/config',b);if(j.ok){$('key').value='';$('yt_key').value='';alert('Gespeichert ✅')}refresh()};
 $('file').onchange=()=>{for(const f of $('file').files)upload(f);$('file').value=''};
 function upload(f){const id='u'+Math.random().toString(36).slice(2);const el=document.createElement('div');el.className='vid';el.id=id;
  el.innerHTML=`<div class="t" style="flex:1">${esc(f.name)}<br><small>Upload 0%</small><div class="bar"><i style="width:0"></i></div></div>`;$('uploads').appendChild(el);
@@ -1169,6 +1350,13 @@ class Handler(BaseHTTPRequestHandler):
                 upd["stream_key"] = str(data["stream_key"]).strip()
             if "server" in data and str(data["server"]).startswith(("rtmp://", "rtmps://")):
                 upd["server"] = str(data["server"]).strip()
+            if "yt_key" in data:
+                upd["yt_key"] = str(data["yt_key"]).strip()
+            if "yt_server" in data and str(data["yt_server"]).startswith(("rtmp://", "rtmps://")):
+                upd["yt_server"] = str(data["yt_server"]).strip()
+            for k in ("tw_enabled", "yt_enabled"):
+                if k in data:
+                    upd[k] = bool(data[k])
             if "shuffle" in data:
                 upd["shuffle"] = bool(data["shuffle"])
             if data.get("mode") in ("videos", "countdown"):
@@ -1213,6 +1401,11 @@ class Handler(BaseHTTPRequestHandler):
             restart = bool(changed & RESTART_KEYS)
             if streamer.want and restart:
                 streamer.restart()
+            if streamer.want:
+                for rid, keys in RELAY_KEYS.items():
+                    if changed & keys:
+                        streamer.relays[rid].restart()   # nur dieses Ziel neu verbinden
+                        streamer.relays[rid].ensure_running()
             return self._send(200, {"ok": True, "restarted": restart and streamer.want})
         elif path == "/api/asset_delete":
             if data.get("kind") in ("bg", "cover"):
@@ -1339,6 +1532,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, {"ok": True})
         def _restart():
             streamer._kill()
+            for r in streamer.relays.values():
+                r._kill()
             os._exit(0)                                      # systemd startet neu
         threading.Timer(1.0, _restart).start()
 
@@ -1349,12 +1544,17 @@ def status():
         "running": streamer.want,
         "live": streamer.live(),
         "message": streamer.status_msg,
-        "uptime": time.time() - streamer.started_at if streamer.live() else 0,
-        "restarts": streamer.restarts,
+        "uptime": max((time.time() - r.started_at for r in streamer.relays.values() if r.live()), default=0),
+        "restarts": streamer.restarts + sum(r.restarts for r in streamer.relays.values()),
         "videos": [{k: v[k] for k in ("name", "title", "duration", "size", "quality")} for v in vids],
         "total_duration": sum(v["duration"] for v in vids),
         "jobs": converter.jobs,
         "key_set": bool(cfg["stream_key"]),
+        "yt_key_set": bool(cfg["yt_key"]),
+        "tw_enabled": cfg["tw_enabled"], "yt_enabled": cfg["yt_enabled"], "yt_server": cfg["yt_server"],
+        "dest": {k: {"name": r.d["name"], "live": r.live(), "msg": r.status_msg, "restarts": r.restarts,
+                     "uptime": time.time() - r.started_at if r.live() else 0}
+                 for k, r in streamer.relays.items()},
         "server": cfg["server"],
         "quality": cfg["quality"],
         "qualities": list(QUALITIES),
@@ -1414,6 +1614,8 @@ def main():
 
     def _shutdown(*_):
         streamer._kill()                                     # ffmpeg nicht verwaist zurücklassen
+        for r in streamer.relays.values():
+            r._kill()
         os._exit(0)
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)

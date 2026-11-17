@@ -44,6 +44,12 @@ Hier streamt der Server einen live mitlaufenden Timer statt Videos. Videos brauc
 Nach Ablauf zeigt der Stream den Abschlusstext an und läuft weiter, bis du ihn stoppst.
 Im Countdown-Modus rechnet der Server live. Bei 720p30 schafft das ein kleiner Hetzner-Server (z. B. CX22) ohne Probleme.
 
+## Twitch + YouTube gleichzeitig
+Der Server erzeugt das Bild einmal und schickt es an alle eingeschalteten Plattformen. Das kostet kaum zusätzliche Leistung.
+- Im Panel unter **Einstellungen → 🔴 YouTube** „An YouTube senden“ anhaken, den Stream-Schlüssel eintragen und speichern.
+- Den Schlüssel findest du in YouTube Studio → Erstellen → Livestream starten → Stream. Nimm am besten einen dauerhaften Schlüssel.
+- Jede Plattform hat einen eigenen Wächter: Fällt YouTube aus, läuft Twitch weiter, und andersherum genauso.
+
 ## Ausfälle & Auto-Reconnect
 - **Internet weg / Twitch hängt:** Ein Wächter prüft jede Sekunde, ob wirklich Bilder rausgehen. Kommt 15 Sekunden lang nichts an, verbindet er neu: zuerst nach 2 Sekunden, bei Dauer-Störung mit wachsenden Abständen bis höchstens 30 Sekunden.
 - **Server-Neustart:** Der Dienst startet automatisch mit und macht weiter, wenn der Stream vorher an war.
