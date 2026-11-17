@@ -76,6 +76,8 @@ DEFAULT_CFG = {
     "yt_enabled": False,
     "yt_key": "",
     "yt_server": "rtmp://a.rtmp.youtube.com/live2",
+    "tw_max_hours": 47.5,             # Twitch beendet Streams nach 48 h
+    "yt_max_hours": 23.5,             # YouTube beendet Streams nach ca. 24 h
     "quality": "720p30",
     "shuffle": True,
     # Modus: "videos" (Playlist) oder "countdown" (Live-Timer)
@@ -1040,11 +1042,13 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <label>Twitch Stream-Key <span id="keyinfo"></span></label>
  <input type="password" id="key" placeholder="live_xxxxxxxx (leer lassen = nicht ändern)">
  <label>Twitch Ingest-Server</label><input type="text" id="server">
+ <label>Geplant neu verbinden nach (Stunden) – Twitch-Limit 48 h</label><input type="text" id="tw_max_hours" inputmode="decimal">
  <h3 style="margin:22px 0 0;font-size:16px">🔴 YouTube</h3>
  <label class="chk"><input type="checkbox" id="yt_enabled"> An YouTube senden</label>
  <label>YouTube Stream-Schlüssel <span id="ytkeyinfo"></span></label>
  <input type="password" id="yt_key" placeholder="xxxx-xxxx-xxxx-xxxx (leer lassen = nicht ändern)">
  <label>YouTube Server</label><input type="text" id="yt_server">
+ <label>Geplant neu verbinden nach (Stunden) – YouTube-Limit ca. 24 h</label><input type="text" id="yt_max_hours" inputmode="decimal">
  <div class="hint">YouTube Studio → Erstellen → Livestream starten → Stream. Den Stream-Schlüssel dort kopieren. Am besten einen dauerhaften Schlüssel nehmen. Neuen Key speichern = nur diese Plattform verbindet kurz neu.</div>
  <label>Qualität</label><select id="quality"></select>
  <div class="hint" id="qhint"></div>
@@ -1072,14 +1076,14 @@ async function refresh(){
  $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${j.state=='konvertiert'?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('log').textContent=s.log||'(noch leer)';
  $('keyinfo').textContent=s.key_set?'✅ gesetzt':'❌ fehlt';$('ytkeyinfo').textContent=s.yt_key_set?'✅ gesetzt':'❌ fehlt';
- $('dests').innerHTML=Object.values(s.dest).map(d=>`<div style="display:flex;align-items:center;gap:8px;margin:4px 0"><span class="dot${d.live?' live':''}" style="width:10px;height:10px"></span><b>${d.name}</b><span style="color:var(--mut);font-size:14px">${d.live?'LIVE seit '+fmt(d.uptime):esc(d.msg)}${d.restarts?' · Reconnects: '+d.restarts:''}</span></div>`).join('');
+ $('dests').innerHTML=Object.values(s.dest).map(d=>`<div style="display:flex;align-items:center;gap:8px;margin:4px 0"><span class="dot${d.live?' live':''}" style="width:10px;height:10px"></span><b>${d.name}</b><span style="color:var(--mut);font-size:14px">${d.live?'LIVE seit '+fmt(d.uptime):esc(d.msg)}${d.next_planned?' · geplanter Neustart in '+fmt(d.next_planned):''}${d.restarts?' · Reconnects: '+d.restarts:''}</span></div>`).join('');
  const cd=s.mode=='countdown';$('mCd').className=cd?'go':'';$('mVid').className=cd?'':'go';
  $('cdBox').style.display=cd?'':'none';$('vidCard').style.opacity=cd?'.45':'1';
  $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('cvInfo').textContent=s.cd_cover?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
  $('muList').innerHTML=s.music.map(m=>`<div class="vid"><div class="t">${m==s.now_playing?'🔊 ':''}${esc(m)}</div><button onclick="delSong(this.dataset.n)" data-n="${esc(m)}">Löschen</button></div>`).join('');
  if(!cfgLoaded){$('cd_theme').innerHTML=Object.entries(s.themes).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
   for(const k of CDF)$(k).value=s.cfg[k];$('cd_game_ps5').value=s.cfg.cd_game;$('cd_boxlabel_ps5').value=s.cfg.cd_boxlabel;$('cd_shuffle_music').checked=s.cfg.cd_shuffle_music;$('cd_volume').value=s.cfg.cd_volume;$('volV').textContent=s.cfg.cd_volume;showTh()}
- if(!cfgLoaded){cfgLoaded=true;$('server').value=s.server;$('yt_server').value=s.yt_server;$('tw_enabled').checked=s.tw_enabled;$('yt_enabled').checked=s.yt_enabled;$('shuffle').checked=s.shuffle;
+ if(!cfgLoaded){cfgLoaded=true;$('server').value=s.server;$('yt_server').value=s.yt_server;$('tw_enabled').checked=s.tw_enabled;$('yt_enabled').checked=s.yt_enabled;$('tw_max_hours').value=s.tw_max_hours;$('yt_max_hours').value=s.yt_max_hours;$('shuffle').checked=s.shuffle;
   $('quality').innerHTML=s.qualities.map(q=>`<option ${q==s.quality?'selected':''}>${q}</option>`).join('')}
  $('quality').disabled=s.quality_locked;$('qhint').textContent=s.quality_locked?'Qualität kann nur geändert werden, wenn keine Videos vorhanden sind (alle Videos müssen das gleiche Format haben).':'';
 }
@@ -1090,7 +1094,8 @@ $('bStart').onclick=async()=>{await api('/api/start');refresh()};
 $('bStop').onclick=async()=>{if(confirm('Stream wirklich stoppen?')){await api('/api/stop');refresh()}};
 $('bRe').onclick=async()=>{await api('/api/restart');refresh()};
 $('bSave').onclick=async()=>{const b={server:$('server').value,shuffle:$('shuffle').checked,quality:$('quality').value,
- yt_server:$('yt_server').value,tw_enabled:$('tw_enabled').checked,yt_enabled:$('yt_enabled').checked};
+ yt_server:$('yt_server').value,tw_enabled:$('tw_enabled').checked,yt_enabled:$('yt_enabled').checked,
+ tw_max_hours:parseFloat($('tw_max_hours').value.replace(',','.'))||0,yt_max_hours:parseFloat($('yt_max_hours').value.replace(',','.'))||0};
  if($('key').value.trim())b.stream_key=$('key').value.trim();if($('yt_key').value.trim())b.yt_key=$('yt_key').value.trim();const j=await api('/api/config',b);if(j.ok){$('key').value='';$('yt_key').value='';alert('Gespeichert ✅')}refresh()};
 $('file').onchange=()=>{for(const f of $('file').files)upload(f);$('file').value=''};
 function upload(f){const id='u'+Math.random().toString(36).slice(2);const el=document.createElement('div');el.className='vid';el.id=id;
@@ -1253,6 +1258,12 @@ class Handler(BaseHTTPRequestHandler):
             for k in ("tw_enabled", "yt_enabled"):
                 if k in data:
                     upd[k] = bool(data[k])
+            for k, lim in (("tw_max_hours", 47.9), ("yt_max_hours", 23.9)):
+                if k in data:
+                    try:
+                        upd[k] = round(max(0.0, min(lim, float(data[k]))), 2)
+                    except (TypeError, ValueError):
+                        pass
             if "shuffle" in data:
                 upd["shuffle"] = bool(data["shuffle"])
             if data.get("mode") in ("videos", "countdown"):
@@ -1530,6 +1541,8 @@ def status():
         "key_set": bool(cfg["stream_key"]),
         "yt_key_set": bool(cfg["yt_key"]),
         "tw_enabled": cfg["tw_enabled"], "yt_enabled": cfg["yt_enabled"], "yt_server": cfg["yt_server"],
+        "tw_max_hours": cfg["tw_max_hours"], "yt_max_hours": cfg["yt_max_hours"],
+        "sender_version": sender_status().get("version", 0),
         "dest": sender_status()["dest"],
         "sender_ok": sender_status()["ok"],
         "showing": sender_status().get("showing", ""),

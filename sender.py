@@ -26,17 +26,19 @@ STATUS_PATH = os.path.join(BASE, "sender_status.json")
 RUN_DIR = os.path.join(BASE, "countdown", "run")
 INPUT_FIFO = os.path.join(RUN_DIR, "output.ts")
 RESTART_FLAG = os.path.join(RUN_DIR, "restart_sender")
-SENDER_VERSION = 1
+SENDER_VERSION = 2
 
 QUALITIES = {"720p30": (1280, 720, 30, "3000k"), "720p60": (1280, 720, 60, "4500k"),
              "1080p30": (1920, 1080, 30, "4500k"), "1080p60": (1920, 1080, 60, "6000k")}
 WATCHDOG_SECONDS = 15
 SLATE_AFTER = 1.5          # so lange ohne Bild vom Panel -> "Neu verbinden …"
 DESTINATIONS = {
-    "twitch": {"name": "Twitch", "enabled": "tw_enabled", "key": "stream_key", "server": "server"},
-    "youtube": {"name": "YouTube", "enabled": "yt_enabled", "key": "yt_key", "server": "yt_server"},
+    "twitch": {"name": "Twitch", "enabled": "tw_enabled", "key": "stream_key", "server": "server",
+               "max_hours": "tw_max_hours"},
+    "youtube": {"name": "YouTube", "enabled": "yt_enabled", "key": "yt_key", "server": "yt_server",
+                "max_hours": "yt_max_hours"},
 }
-DEFAULTS = {"tw_enabled": True, "yt_enabled": False, "stream_key": "", "yt_key": "",
+DEFAULTS = {"tw_max_hours": 47.5, "yt_max_hours": 23.5, "tw_enabled": True, "yt_enabled": False, "stream_key": "", "yt_key": "",
             "server": "rtmp://ingest.global-contribute.live-video.net/app",
             "yt_server": "rtmp://a.rtmp.youtube.com/live2", "quality": "720p30"}
 FONTS = ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf",
@@ -169,7 +171,14 @@ class Relay:
         self.fails = 0
         self.status_msg = "Aus"
         self.kick = False
+        self.planned = 0
         threading.Thread(target=self._loop, daemon=True).start()
+
+    def max_hours(self):
+        try:
+            return max(0.0, float(get_cfg().get(self.d["max_hours"]) or 0))
+        except (TypeError, ValueError):
+            return 0.0
 
     def sig(self, cfg):
         return (cfg.get(self.d["enabled"]), cfg.get(self.d["key"]), cfg.get(self.d["server"]))
@@ -248,7 +257,7 @@ class Relay:
                     break
             url = cfg[self.d["server"]].rstrip("/") + "/" + cfg[self.d["key"]]
             cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
-                   "-fflags", "+genpts+discardcorrupt", "-analyzeduration", "3000000",
+                   "-fflags", "+genpts+discardcorrupt", "-analyzeduration", "2500000",
                    "-f", "mpegts", "-i", "pipe:0", "-map", "0", "-c", "copy",
                    "-rw_timeout", str(WATCHDOG_SECONDS * 1_000_000),
                    "-progress", "pipe:1", "-stats_period", "1",
@@ -269,6 +278,14 @@ class Relay:
                 reason = None
                 while self.proc.poll() is None:
                     time.sleep(1)
+                    max_h = self.max_hours()
+                    if max_h and time.time() - self.started_at > max_h * 3600:
+                        reason = f"{name}: geplanter Neustart nach {max_h:g} h (Plattform-Limit) – verbinde sofort neu"
+                        self.status_msg = "Geplanter Neustart …"
+                        self.kick = True
+                        self.planned += 1
+                        self.kill()
+                        break
                     stalled = time.time() - max(self.last_progress, self.started_at)
                     if stalled > 5:
                         self.status_msg = f"Keine Verbindung seit {int(stalled)} s …"
@@ -435,7 +452,9 @@ class Sender:
                 "showing": "Countdown" if self.source == "input" and time.time() - self.last_input < 2
                 else ("Neu verbinden …" if self.slate else "–"),
                 "dest": {k: {"name": r.d["name"], "live": r.live(), "msg": r.status_msg, "restarts": r.restarts,
-                             "uptime": time.time() - r.started_at if r.live() else 0}
+                             "uptime": time.time() - r.started_at if r.live() else 0, "planned": r.planned,
+                             "next_planned": (r.max_hours() * 3600 - (time.time() - r.started_at))
+                             if r.live() and r.max_hours() else None}
                          for k, r in self.relays.items()}}
         tmp = STATUS_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:

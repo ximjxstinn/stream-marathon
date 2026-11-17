@@ -57,6 +57,10 @@ Der Stream besteht aus zwei Diensten:
 
 Hat auch der Sender ein Update, fragt das Panel, ob er jetzt neu starten soll. Dabei ist der Stream ca. 10 Sekunden offline, deshalb kannst du das auch später machen.
 
+## Stream-Limits (YouTube ca. 24 h, Twitch 48 h)
+Twitch und YouTube beenden einen Stream nach einer bestimmten Zeit. Der Sender verbindet deshalb kurz vorher geplant neu: standardmäßig Twitch nach 47,5 h und YouTube nach 23,5 h. Der Stream ist dann nur ca. 2 Sekunden weg. Einstellen kannst du das im Panel unter Einstellungen → „Geplant neu verbinden nach (Stunden)“. Mit 0 schaltest du es aus.
+Tipp für YouTube: In YouTube Studio bei den Stream-Einstellungen „Automatisch starten“ einschalten, damit eine neue Verbindung direkt wieder live geht.
+
 ## Ausfälle & Auto-Reconnect
 - **Internet weg / Twitch hängt:** Ein Wächter prüft jede Sekunde, ob wirklich Bilder rausgehen. Kommt 15 Sekunden lang nichts an, verbindet er neu: zuerst nach 2 Sekunden, bei Dauer-Störung mit wachsenden Abständen bis höchstens 30 Sekunden.
 - **Server-Neustart:** Der Dienst startet automatisch mit und macht weiter, wenn der Stream vorher an war.
