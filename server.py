@@ -40,6 +40,7 @@ QUALITIES = {
 }
 VIDEO_EXT = (".mp4", ".mkv", ".mov", ".webm", ".flv", ".avi", ".ts", ".m4v")
 PLAYLIST_HOURS = 50
+WATCHDOG_SECONDS = 15  # so lange darf der Stream "hängen", bevor neu verbunden wird
 UPDATE_URL = "https://raw.githubusercontent.com/ximjxstinn/stream-marathon/stream24/server.py"  # Twitch trennt nach 48 h sowieso, danach startet der Stream neu
 
 for d in (BASE, UPLOAD_DIR, TMP_DIR, VIDEO_DIR):
@@ -265,6 +266,7 @@ class Converter:
 RUN_DIR = os.path.join(CD_DIR, "run")
 MUSIC_DIR = os.path.join(CD_DIR, "music")
 BG_LAYER = os.path.join(CD_DIR, "bg_layer.png")
+BG_RAW = os.path.join(CD_DIR, "bg_layer.rgba")
 EMPTY_LAYER = os.path.join(RUN_DIR, "empty.png")
 AUDIO_FIFO = os.path.join(RUN_DIR, "audio.pcm")
 IMAGE_FIFO = os.path.join(RUN_DIR, "image.pipe")
@@ -394,21 +396,28 @@ class Ticker(threading.Thread):
 
 
 class ImageFeeder(threading.Thread):
-    """Schiebt 1x pro Sekunde das aktuelle Hintergrundbild (oder ein leeres) in ffmpeg."""
+    """Schiebt 1x pro Sekunde das aktuelle Hintergrundbild als Rohbild (RGBA) in ffmpeg.
+    Rohbilder haben eine feste Größe -> ffmpeg muss nichts analysieren und startet sofort."""
 
     def __init__(self):
         super().__init__(daemon=True)
         self._cache = (None, None, b"")
 
     def _image(self):
-        path = BG_LAYER if os.path.exists(BG_LAYER) else EMPTY_LAYER
+        w, h, _, _ = QUALITIES.get(get_cfg()["quality"], QUALITIES["720p30"])
+        size = w * h * 4
         try:
-            mt = os.path.getmtime(path)
+            mt = os.path.getmtime(BG_RAW)
         except OSError:
-            return self._cache[2]
-        if self._cache[:2] != (path, mt):
-            with open(path, "rb") as fh:
-                self._cache = (path, mt, fh.read())
+            mt = None
+        if self._cache[:2] != (size, mt):
+            data = b""
+            if mt is not None:
+                with open(BG_RAW, "rb") as fh:
+                    data = fh.read()
+            if len(data) != size:            # kein Bild (oder andere Qualität) -> durchsichtig
+                data = bytes(size)
+            self._cache = (size, mt, data)
         return self._cache[2]
 
     def run(self):
@@ -512,7 +521,11 @@ def convert_bg(src, cfg):
                         "-frames:v", "1", "-update", "1", tmp], capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError("Bild konnte nicht gelesen werden")
+    tmp_raw = os.path.join(RUN_DIR, "bg_new.rgba")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", tmp, "-f", "rawvideo", "-pix_fmt", "rgba",
+                    "-frames:v", "1", tmp_raw], check=True)
     os.replace(tmp, BG_LAYER)
+    os.replace(tmp_raw, BG_RAW)
 
 
 def theme_filters(cfg, w, h):
@@ -611,7 +624,8 @@ def build_countdown_cmd(cfg, output, preview=False):
     if preview:
         cmd += ["-loop", "1", "-framerate", "1", "-i", BG_LAYER if os.path.exists(BG_LAYER) else EMPTY_LAYER]
     else:
-        cmd += ["-thread_queue_size", "64", "-f", "image2pipe", "-framerate", "1", "-c:v", "png", "-i", IMAGE_FIFO]
+        cmd += ["-thread_queue_size", "8", "-f", "rawvideo", "-pix_fmt", "rgba", "-video_size", f"{w}x{h}",
+                "-framerate", "1", "-i", IMAGE_FIFO]
     graph = (f"[0:v]scale={w}:{h},setsar=1,fps={fps},format=yuv420p[base];"
              f"[1:v]scale={w}:{h},format=rgba[img];"
              f"[base][img]overlay=0:0:eof_action=repeat:format=auto,format=yuv420p,"
@@ -647,6 +661,8 @@ class Streamer:
         self.status_msg = "Gestoppt"
         self.thread = None
         self._dirty = False
+        self.fails = 0
+        self.last_progress = 0
         st = load_json(STATE_PATH, {})
         if st.get("want"):
             self.start()  # nach Server-Neustart automatisch weitermachen
@@ -685,7 +701,9 @@ class Streamer:
                 p.kill()
 
     def live(self):
-        return bool(self.proc and self.proc.poll() is None and time.time() - self.started_at > 8)
+        # LIVE nur, wenn ffmpeg läuft UND gerade wirklich Bilder rausgehen
+        return bool(self.proc and self.proc.poll() is None and self.last_progress > self.started_at
+                    and time.time() - self.last_progress < 5)
 
     def _write_playlist(self, vids, shuffle):
         total = sum(v["duration"] for v in vids) or 1
@@ -729,6 +747,10 @@ class Streamer:
                        "-f", "concat", "-safe", "0", "-i", PLAYLIST_PATH,
                        "-c", "copy", "-f", "flv", "-flvflags", "no_duration_filesize", url]
                 info = f"{len(vids)} Videos"
+            # Wächter-Optionen: Fortschritt melden + Netz-Timeout (Internet weg -> Abbruch statt Hängen)
+            cmd = cmd[:-1] + ["-rw_timeout", str(WATCHDOG_SECONDS * 1_000_000),
+                              "-progress", "pipe:1", "-stats_period", "1", cmd[-1]]
+            ran = 0
             try:
                 if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > 5_000_000:
                     os.remove(LOG_PATH)
@@ -736,21 +758,53 @@ class Streamer:
                 log.write(time.strftime("\n[%Y-%m-%d %H:%M:%S] Stream startet "
                                         f"({info})\n"))
                 log.flush()
-                self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
-                                             stdout=subprocess.DEVNULL, stderr=log, env=FF_ENV)
+                self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                             stderr=log, env=FF_ENV, text=True)
                 self.started_at = time.time()
-                self.status_msg = "Live"
-                self.proc.wait()
-                log.write(time.strftime("[%Y-%m-%d %H:%M:%S] ffmpeg beendet "
-                                        f"(Code {self.proc.returncode})\n"))
+                self.last_progress = 0
+                self.status_msg = "Verbindet mit Twitch …"
+                threading.Thread(target=self._read_progress, args=(self.proc,), daemon=True).start()
+                reason = None
+                while self.proc.poll() is None:
+                    time.sleep(1)
+                    stalled = time.time() - max(self.last_progress, self.started_at)
+                    if stalled > 5:
+                        self.status_msg = f"Keine Verbindung seit {int(stalled)} s …"
+                    limit = WATCHDOG_SECONDS if self.last_progress else WATCHDOG_SECONDS * 2  # Start darf länger dauern
+                    if stalled > limit:
+                        reason = f"seit {int(stalled)} s kein Fortschritt – Internet weg? Verbinde neu"
+                        self._kill()
+                        break
+                ran = time.time() - self.started_at
+                log.write(time.strftime("[%Y-%m-%d %H:%M:%S] ") +
+                          (reason or f"ffmpeg beendet (Code {self.proc.returncode})") + "\n")
                 log.close()
             except Exception as e:  # noqa
                 self.status_msg = f"Fehler: {e}"
             if self.want:
                 self.restarts += 1
-                self.status_msg = "Verbindet neu …"
-                time.sleep(2)
+                # schnell neu verbinden; bei Dauer-Störung (z. B. Internet weg) langsam steigern bis 30 s
+                self.fails = 0 if ran > 60 else self.fails + 1
+                delay = min(30, 2 * 2 ** max(0, self.fails - 1))
+                for left in range(delay, 0, -1):
+                    if not self.want:
+                        break
+                    self.status_msg = f"Verbindet neu in {left} s … (Versuch {self.fails or 1})"
+                    time.sleep(1)
 
+    def _read_progress(self, proc):
+        """Liest ffmpegs Fortschritt; bleibt die Zeit stehen, greift der Wächter ein."""
+        last = None
+        try:
+            for line in proc.stdout:
+                if line.startswith("out_time_us="):
+                    val = line.strip().split("=", 1)[1]
+                    if val != last and val not in ("N/A", "0"):
+                        last = val
+                        self.last_progress = time.time()
+                        self.status_msg = "Live"
+        except Exception:  # noqa
+            pass
 
 def log_tail(n=25):
     try:
@@ -1077,8 +1131,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "restarted": restart and streamer.want})
         elif path == "/api/asset_delete":
             if data.get("kind") == "bg":
-                if os.path.exists(BG_LAYER):
-                    os.remove(BG_LAYER)              # wird live entfernt
+                for fp in (BG_RAW, BG_LAYER):        # wird live entfernt
+                    if os.path.exists(fp):
+                        os.remove(fp)
             else:
                 name = os.path.basename(str(data.get("name", "")))
                 p = os.path.join(MUSIC_DIR, name)
@@ -1194,7 +1249,10 @@ class Handler(BaseHTTPRequestHandler):
             fh.write(code)
         os.replace(me + ".new", me)
         self._send(200, {"ok": True})
-        threading.Timer(1.0, lambda: os._exit(0)).start()   # systemd startet neu
+        def _restart():
+            streamer._kill()
+            os._exit(0)                                      # systemd startet neu
+        threading.Timer(1.0, _restart).start()
 
 def status():
     cfg = get_cfg()
@@ -1257,6 +1315,13 @@ def main():
             except Exception:  # noqa
                 pass
     streamer = Streamer()
+    import signal
+
+    def _shutdown(*_):
+        streamer._kill()                                     # ffmpeg nicht verwaist zurücklassen
+        os._exit(0)
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"24/7 Stream Panel läuft auf Port {PORT}")
     srv.serve_forever()

@@ -44,6 +44,11 @@ Hier streamt der Server einen live mitlaufenden Timer statt Videos. Videos brauc
 Nach Ablauf zeigt der Stream den Abschlusstext an und läuft weiter, bis du ihn stoppst.
 Im Countdown-Modus rechnet der Server live. Bei 720p30 schafft das ein kleiner Hetzner-Server (z. B. CX22) ohne Probleme.
 
+## Ausfälle & Auto-Reconnect
+- **Internet weg / Twitch hängt:** Ein Wächter prüft jede Sekunde, ob wirklich Bilder rausgehen. Kommt 15 Sekunden lang nichts an, verbindet er neu: zuerst nach 2 Sekunden, bei Dauer-Störung mit wachsenden Abständen bis höchstens 30 Sekunden.
+- **Server-Neustart:** Der Dienst startet automatisch mit und macht weiter, wenn der Stream vorher an war.
+- **Live-Änderungen:** Texte, Datum, Hintergrundbild, Songs und Lautstärke werden übernommen, ohne dass der Stream neu startet. Neu starten muss er nur bei Design, Farbe, Stream-Key, Qualität oder Modus.
+
 ## Gut zu wissen
 - **Kennzeichnung:** Markiere den Stream als Wiederholung, z. B. mit „🔁 24/7 Rerun“ im Titel. So denkt niemand, du sitzt gerade live da.
 - **Traffic:** Bei 3000 kbit/s rund um die Uhr kommst du auf ungefähr 1 TB im Monat. Bei Hetzner sind 20 TB inklusive.
