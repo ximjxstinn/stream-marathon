@@ -39,7 +39,8 @@ QUALITIES = {
     "1080p60": (1920, 1080, 60, "6000k"),
 }
 VIDEO_EXT = (".mp4", ".mkv", ".mov", ".webm", ".flv", ".avi", ".ts", ".m4v")
-PLAYLIST_HOURS = 50  # Twitch trennt nach 48 h sowieso, danach startet der Stream neu
+PLAYLIST_HOURS = 50
+UPDATE_URL = "https://raw.githubusercontent.com/ximjxstinn/stream-marathon/stream24/server.py"  # Twitch trennt nach 48 h sowieso, danach startet der Stream neu
 
 for d in (BASE, UPLOAD_DIR, TMP_DIR, VIDEO_DIR):
     os.makedirs(d, exist_ok=True)
@@ -67,17 +68,27 @@ DEFAULT_CFG = {
     "password_salt": "",
     "password_hash": "",
     "stream_key": "",
-    "server": "rtmp://live.twitch.tv/app",
+    "server": "rtmp://ingest.global-contribute.live-video.net/app",
     "quality": "720p30",
     "shuffle": True,
     # Modus: "videos" (Playlist) oder "countdown" (Live-Timer)
     "mode": "countdown",
+    "cd_theme": "release",            # "release", "konsole" oder "standard"
     "cd_title": "Grand Theft Auto VI",
-    "cd_target": "2026-11-19T00:00",   # Ortszeit (Europe/Berlin)
+    "cd_target": "2026-11-19T00:00",  # Ortszeit (Europe/Berlin)
     "cd_done": "GTA 6 IST DA!",
-    "cd_color": "#ff3cac",
-    "cd_theme": "konsole",   # "standard" oder "konsole"
+    "cd_color": "#ffc400",
     "cd_tile": "GTA VI",
+    "cd_badge": "RELEASE-UHRZEIT · PS5-COUNTDOWN",
+    "cd_head1": "GTA 6 ab ",
+    "cd_hl": "0 Uhr",
+    "cd_head2": "spielbar",
+    "cd_sub": "Freischaltung am 19. November: Uhrzeit für Deutschland\\nund weltweit",
+    "cd_game": "Grand Theft Auto VI",
+    "cd_boxlabel": "Kann gespielt werden in:",
+    "cd_volume": 60,
+    "cd_shuffle_music": True,
+    "cfg_version": 2,
 }
 TZ_NAME = "Europe/Berlin"
 CD_DIR = os.path.join(BASE, "countdown")
@@ -93,7 +104,16 @@ WEEKDAYS = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"
 
 def get_cfg():
     cfg = dict(DEFAULT_CFG)
-    cfg.update(load_json(CFG_PATH, {}))
+    stored = load_json(CFG_PATH, {})
+    if stored and stored.get("cfg_version", 1) < 2:
+        # Update auf Version 2: neues Release-Design + globaler Twitch-Ingest
+        for k in ("cd_theme", "cd_color", "cd_title"):
+            stored.pop(k, None)
+        if stored.get("server") == "rtmp://live.twitch.tv/app":
+            stored.pop("server")
+        stored["cfg_version"] = 2
+        save_json(CFG_PATH, {**cfg, **stored})
+    cfg.update(stored)
     return cfg
 
 
@@ -237,11 +257,52 @@ class Converter:
 
 
 # ------------------------------------------------------------- Countdown ----
+# Alles, was sich im Countdown ändern kann (Texte, Zahlen, Hintergrundbild, Musik),
+# wird LIVE ausgetauscht, ohne ffmpeg neu zu starten:
+#   * Texte  -> Dateien, die ffmpeg jede Frame neu liest (drawtext reload=1)
+#   * Bild   -> wird 1x pro Sekunde über eine Pipe nachgeschoben
+#   * Musik  -> wird als Rohton über eine Pipe eingespeist (Songwechsel ohne Neustart)
+RUN_DIR = os.path.join(CD_DIR, "run")
+MUSIC_DIR = os.path.join(CD_DIR, "music")
+BG_LAYER = os.path.join(CD_DIR, "bg_layer.png")
+EMPTY_LAYER = os.path.join(RUN_DIR, "empty.png")
+AUDIO_FIFO = os.path.join(RUN_DIR, "audio.pcm")
+IMAGE_FIFO = os.path.join(RUN_DIR, "image.pipe")
+for _d in (RUN_DIR, MUSIC_DIR):
+    os.makedirs(_d, exist_ok=True)
+for _f in (AUDIO_FIFO, IMAGE_FIFO):
+    if not os.path.exists(_f):
+        os.mkfifo(_f)
+
+THEMES = {"release": "PS5-Release", "konsole": "Konsole", "standard": "Standard"}
+MUSIC_EXT = (".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac", ".opus")
+# Einstellungen, bei denen der Stream wirklich neu starten muss
+RESTART_KEYS = {"stream_key", "server", "mode", "cd_theme", "cd_color", "quality"}
+SPINNER = "◐◓◑◒"
+
+
+def font(kind="bold"):
+    bold = next((f for f in FONT_CANDIDATES if os.path.exists(f)), None)
+    if not bold:
+        raise RuntimeError("Schrift fehlt – bitte 'apt install fonts-dejavu-core' ausführen")
+    alt = {"bold": bold, "regular": bold.replace("-Bold", ""),
+           "light": bold.replace("-Bold", "-ExtraLight"),
+           "mono": bold.replace("Sans-Bold", "SansMono")}[kind]
+    if os.path.exists(alt):
+        return alt
+    reg = bold.replace("-Bold", "")
+    return reg if os.path.exists(reg) else bold
+
+
 def find_asset(kind):
-    for fn in os.listdir(CD_DIR):
-        if fn.startswith(kind + "."):
-            return os.path.join(CD_DIR, fn)
-    return None
+    if kind == "bg":
+        return BG_LAYER if os.path.exists(BG_LAYER) else None
+    return list_music()[0] if list_music() else None
+
+
+def list_music():
+    return sorted(os.path.join(MUSIC_DIR, f) for f in os.listdir(MUSIC_DIR)
+                  if f.lower().endswith(MUSIC_EXT))
 
 
 def target_epoch(cfg):
@@ -251,157 +312,329 @@ def target_epoch(cfg):
     return dt.timestamp(), dt
 
 
-def build_countdown_cmd(cfg, start_epoch, output, preview=False):
+_write_lock = threading.Lock()
+
+
+def atomic_write(path, text, _cache={}):
+    text = text if text.strip() else " "   # leere Datei mag drawtext nicht
+    with _write_lock:
+        if _cache.get(path) == text and os.path.exists(path):
+            return
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+        _cache[path] = text
+
+
+def color_hex(cfg):
+    return "0x" + (re.sub(r"[^0-9a-fA-F]", "", cfg.get("cd_color", "")) + "ffc400")[:6]
+
+
+class Ticker(threading.Thread):
+    """Schreibt jede Viertelsekunde alle Texte des Countdowns in Dateien."""
+    BAR_LEN = 60
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.n = 0
+
+    def run(self):
+        while True:
+            try:
+                self.tick()
+            except Exception as e:  # noqa
+                print("Ticker-Fehler:", e, flush=True)
+            time.sleep(0.25)
+
+    def tick(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        cfg = get_cfg()
+        try:
+            tgt, dt = target_epoch(cfg)
+        except Exception:  # noqa
+            tgt, dt = time.time(), datetime.now(ZoneInfo(TZ_NAME))
+        now = time.time()
+        rem = max(0, int(tgt - now))
+        done = tgt - now <= 0
+        d, h, m, s = rem // 86400, rem // 3600 % 24, rem // 60 % 60, rem % 60
+        P = 14 * 86400
+        frac = 1.0 if done else min(1.0, max(0.0, 1 - (tgt - now) / P))
+        release = f"{WEEKDAYS[dt.weekday()]}, {dt.strftime('%d.%m.%Y')} · {dt.strftime('%H:%M')} Uhr"
+        hide = lambda txt: " " if done else txt   # noqa
+        show = lambda txt: txt if done else " "   # noqa
+        files = {
+            # Zahlen + Beschriftungen
+            "nd": hide(f"{d:02d}"), "nh": hide(f"{h:02d}"), "nm": hide(f"{m:02d}"), "ns": hide(f"{s:02d}"),
+            "colon": hide(":"),
+            "l_tage": hide("TAGE"), "l_std": hide("STD"), "l_min": hide("MIN"), "l_sek": hide("SEK"),
+            "l_stunden": hide("STUNDEN"), "l_minuten": hide("MINUTEN"), "l_sekunden": hide("SEKUNDEN"),
+            "r_tage": hide("Tage"), "r_std": hide("Stunden"), "r_min": hide("Minuten"), "r_sek": hide("Sekunden"),
+            "spin": hide(SPINNER[int(now) % 4]),
+            # Texte aus dem Panel
+            "title": cfg["cd_title"], "done": show(cfg["cd_done"]), "tile": cfg["cd_tile"],
+            "release": "Release: " + release, "release_short": release,
+            "badge": "●  " + cfg["cd_badge"], "badge_dot": "●",
+            "head_full": cfg["cd_head1"] + cfg["cd_hl"], "head1": cfg["cd_head1"] or " ",
+            "head2": cfg["cd_head2"], "sub": cfg["cd_sub"].replace("\\n", "\n"),
+            "game": cfg["cd_game"], "boxlabel": hide(cfg["cd_boxlabel"]),
+            # Konsolen-Design
+            "k_games": "Spiele", "k_media": "Medien", "k_user": "xImJxstinn",
+            "clock": datetime.now(ZoneInfo(TZ_NAME)).strftime("%H:%M"),
+            "k_sub": hide("Vorgeladen · Spielbar in"),
+            "k_btn": "Spielen" if done else "Vorbestellt",
+            "pct": f"{int(frac * 100)} %",
+            "bar_bg": "━" * self.BAR_LEN,
+            "bar": "━" * max(1, int(round(frac * self.BAR_LEN))),
+        }
+        for name, text in files.items():
+            atomic_write(os.path.join(RUN_DIR, name + ".txt"), text)
+        self.n += 1
+
+
+class ImageFeeder(threading.Thread):
+    """Schiebt 1x pro Sekunde das aktuelle Hintergrundbild (oder ein leeres) in ffmpeg."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self._cache = (None, None, b"")
+
+    def _image(self):
+        path = BG_LAYER if os.path.exists(BG_LAYER) else EMPTY_LAYER
+        try:
+            mt = os.path.getmtime(path)
+        except OSError:
+            return self._cache[2]
+        if self._cache[:2] != (path, mt):
+            with open(path, "rb") as fh:
+                self._cache = (path, mt, fh.read())
+        return self._cache[2]
+
+    def run(self):
+        while True:
+            try:
+                with open(IMAGE_FIFO, "wb", buffering=0) as fd:   # wartet, bis ffmpeg liest
+                    start, i = time.monotonic(), 0
+                    while True:
+                        ahead = start + i - time.monotonic()
+                        if ahead > 1.5:
+                            time.sleep(ahead - 1.5)
+                        fd.write(self._image())
+                        i += 1
+            except (BrokenPipeError, OSError):
+                time.sleep(0.2)
+
+
+class AudioFeeder(threading.Thread):
+    """Spielt die Musik-Playlist als Rohton in ffmpeg. Songwechsel/Upload/Lautstärke ohne Neustart."""
+    RATE = 44100 * 2 * 2   # Bytes pro Sekunde (s16le, Stereo)
+    CHUNK = 17640          # 0,1 s
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.skip = False      # aktuellen Song abbrechen (z. B. gelöscht)
+        self.reload = False    # Lautstärke geändert -> gleicher Song, neue Lautstärke
+        self.current = None
+
+    def _decoder(self, song, pos=0.0):
+        vol = max(0, min(100, int(get_cfg().get("cd_volume", 60)))) / 100
+        return subprocess.Popen(
+            ["ffmpeg", "-v", "error", "-ss", f"{pos:.2f}", "-i", song, "-vn",
+             "-af", f"volume={vol}", "-f", "s16le", "-ar", "44100", "-ac", "2", "pipe:1"],
+            stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def run(self):
+        while True:
+            try:
+                with open(AUDIO_FIFO, "wb", buffering=0) as fd:
+                    self._feed(fd)
+            except (BrokenPipeError, OSError):
+                time.sleep(0.2)
+
+    def _feed(self, fd):
+        start, sent = time.monotonic(), 0
+        dec, order, pos = None, [], 0
+        try:
+            while True:
+                if dec and (self.skip or self.reload):
+                    dec.kill()
+                    dec.wait()
+                    if self.reload and self.current and os.path.exists(self.current):
+                        dec = self._decoder(self.current, pos / self.RATE)
+                    else:
+                        dec = None
+                    self.skip = self.reload = False
+                if dec is None:
+                    songs = list_music()
+                    if songs:
+                        order = [s for s in order if s in songs]
+                        if not order:
+                            order = songs[:]
+                            if get_cfg().get("cd_shuffle_music", True):
+                                random.shuffle(order)
+                        self.current = order.pop(0)
+                        pos = 0
+                        dec = self._decoder(self.current)
+                    else:
+                        self.current = None
+                data = dec.stdout.read(self.CHUNK) if dec else b"\0" * self.CHUNK
+                if dec and len(data) < self.CHUNK:          # Song zu Ende
+                    data += b"\0" * (-len(data) % 4)
+                    dec.wait()
+                    dec = None
+                    if not data:
+                        continue
+                pos += len(data)
+                ahead = start + sent / self.RATE - time.monotonic()
+                if ahead > 0.5:
+                    time.sleep(ahead - 0.5)
+                fd.write(data)
+                sent += len(data)
+        finally:
+            if dec:
+                dec.kill()
+
+
+def make_empty_layer():
+    if not os.path.exists(EMPTY_LAYER):
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=black@0.0:s=16x16,format=rgba",
+                        "-frames:v", "1", "-update", "1", EMPTY_LAYER], check=False)
+
+
+def convert_bg(src, cfg):
+    """Bereitet ein hochgeladenes Bild auf (Größe + abdunkeln) und tauscht es live aus."""
+    w, h, _, _ = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
+    tmp = os.path.join(RUN_DIR, "bg_new.png")
+    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-vf",
+                        f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},"
+                        f"drawbox=x=0:y=0:w=iw:h=ih:color=0x05060b@0.55:t=fill,format=rgb24",
+                        "-frames:v", "1", "-update", "1", tmp], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("Bild konnte nicht gelesen werden")
+    os.replace(tmp, BG_LAYER)
+
+
+def theme_filters(cfg, w, h):
+    q = lambda p: "'" + p.replace("'", "") + "'"   # noqa
+    B, R, L, M = (q(font(k)) for k in ("bold", "regular", "light", "mono"))
+    col = color_hex(cfg)
+
+    def T(name, fnt, size, color, x, y, extra=""):
+        return (f"drawtext=fontfile={fnt}:textfile={q(os.path.join(RUN_DIR, name + '.txt'))}:reload=1:"
+                f"expansion=none:fontsize={size}:fontcolor={color}:x={x}:y={y}{extra}")
+
+    theme = cfg.get("cd_theme", "release")
+    f = []
+    if theme == "standard":
+        f.append(f"drawbox=x=0:y=ih*0.30:w=iw:h=ih*0.40:color={col}@0.08:t=fill")
+        f.append(T("title", B, "h*0.085", "white", "(w-text_w)/2", "h*0.13"))
+        for k, lab, cx in (("nd", "l_tage", 0.2), ("nh", "l_stunden", 0.4), ("nm", "l_minuten", 0.6), ("ns", "l_sekunden", 0.8)):
+            f.append(T(k, B, "h*0.17", col, f"w*{cx}-text_w/2", "h*0.36", ":shadowcolor=black@0.6:shadowx=4:shadowy=4"))
+            f.append(T(lab, B, "h*0.032", "white@0.8", f"w*{cx}-text_w/2", "h*0.56"))
+        f.append(T("release", B, "h*0.04", "white@0.85", "(w-text_w)/2", "h*0.76"))
+        f.append(T("done", B, "h*0.13", col, "(w-text_w)/2", "h*0.40", ":shadowcolor=black@0.6:shadowx=5:shadowy=5"))
+
+    elif theme == "konsole":
+        f.append("vignette=PI/5")
+        f.append(T("k_games", B, "h*0.034", "white", "w*0.05", "h*0.06"))
+        f.append(T("k_media", R, "h*0.034", "white@0.55", "w*0.05+h*0.17", "h*0.06"))
+        f.append(T("clock", B, "h*0.034", "white", "w*0.95-text_w", "h*0.06"))
+        f.append(T("k_user", R, "h*0.03", "white@0.75", "w*0.95-text_w-h*0.17", "h*0.065"))
+        f.append("drawbox=x=iw*0.05-4:y=ih*0.15-4:w=ih*0.22+8:h=ih*0.22+8:color=white:t=4")
+        f.append("drawbox=x=iw*0.05:y=ih*0.15:w=ih*0.22:h=ih*0.22:color=0x0a2a7a@0.85:t=fill")
+        f.append(T("tile", B, "h*0.05", "white", "w*0.05+(h*0.22-text_w)/2", "h*0.15+(h*0.22-text_h)/2"))
+        for i in range(6):
+            f.append(f"drawbox=x=iw*0.05+ih*0.25+{i}*ih*0.165:y=ih*0.185:w=ih*0.145:h=ih*0.145:color=white@0.10:t=fill")
+        f.append(T("title", B, "h*0.07", "white", "w*0.05", "h*0.43"))
+        f.append(T("k_sub", R, "h*0.032", "white@0.75", "w*0.05", "h*0.525"))
+        for i, (k, lab) in enumerate((("nd", "l_tage"), ("nh", "l_std"), ("nm", "l_min"), ("ns", "l_sek"))):
+            f.append(T(k, L, "h*0.13", "white", f"w*0.05+{i}*h*0.24", "h*0.585"))
+            f.append(T(lab, B, "h*0.026", "white@0.7", f"w*0.05+{i}*h*0.24+4", "h*0.72"))
+        f.append(T("done", L, "h*0.11", "white", "w*0.05", "h*0.56"))
+        f.append("drawbox=x=iw*0.95-ih*0.30:y=ih*0.43:w=ih*0.30:h=ih*0.075:color=white:t=fill")
+        f.append(T("k_btn", B, "h*0.03", "0x111111", "w*0.95-h*0.15-text_w/2", "h*0.43+(h*0.075-text_h)/2"))
+        f.append(T("release_short", R, "h*0.03", "white@0.8", "w*0.05", "h*0.83"))
+        f.append(T("pct", B, "h*0.03", "white", "w*0.95-text_w", "h*0.83"))
+        bar = f"w*0.9/{Ticker.BAR_LEN}/0.602"
+        f.append(T("bar_bg", M, bar, "white@0.22", "w*0.05", "h*0.865"))
+        f.append(T("bar", M, bar, "white", "w*0.05", "h*0.865"))
+
+    else:  # release (PS5-Release-Stil)
+        # Badge (Pille mit Punkt)
+        f.append(T("badge", B, "h*0.026", "white@0.92", "w*0.058+h*0.017", "h*0.085",
+                   f":box=1:boxcolor=white@0.10:boxborderw={int(h * 0.017)}"))
+        f.append(T("badge_dot", B, "h*0.026", col, "w*0.058+h*0.017", "h*0.085"))
+        # Schlagzeile: ganze Zeile in Akzentfarbe, Anfang in Weiß darüber
+        f.append(T("head_full", B, "h*0.09", col, "w*0.056", "h*0.16"))
+        f.append(T("head1", B, "h*0.09", "white", "w*0.056", "h*0.16"))
+        f.append(T("head2", B, "h*0.09", "white", "w*0.056", "h*0.265"))
+        f.append("drawbox=x=iw*0.058:y=ih*0.395:w=ih*0.075:h=ih*0.009:color=" + col + ":t=fill")
+        f.append(T("sub", B, "h*0.033", "white@0.93", "w*0.058", "h*0.445", f":line_spacing={int(h * 0.012)}"))
+        # untere Leiste
+        f.append("drawbox=x=0:y=ih*0.655:w=iw:h=ih*0.345:color=0x05060b@0.93:t=fill")
+        f.append("drawbox=x=iw*0.045:y=ih*0.715:w=ih*0.2:h=ih*0.2:color=0x1c2244:t=fill")
+        f.append("drawbox=x=iw*0.045:y=ih*0.715:w=ih*0.2:h=ih*0.2:color=white@0.25:t=2")
+        f.append(T("tile", B, "h*0.04", "white", "w*0.045+(h*0.2-text_w)/2", "h*0.715+(h*0.2-text_h)/2"))
+        f.append(T("game", R, "h*0.034", "white@0.88", "w*0.045+h*0.25", "h*0.795"))
+        # Countdown-Box
+        f.append("drawbox=x=iw*0.52:y=ih*0.715:w=iw*0.435:h=ih*0.2:color=black@0.35:t=fill")
+        f.append(f"drawbox=x=iw*0.52:y=ih*0.715:w=iw*0.435:h=ih*0.2:color={col}:t=4")
+        f.append(T("boxlabel", R, "h*0.027", "white@0.9", "w*0.528", "h*0.728"))
+        f.append(T("spin", R, "h*0.06", "white@0.85", "w*0.548-text_w/2", "h*0.825"))
+        for k, lab, cx in (("nd", "r_tage", 0.612), ("nh", "r_std", 0.694), ("nm", "r_min", 0.806), ("ns", "r_sek", 0.908)):
+            f.append(T(lab, R, "h*0.024", "white@0.7", f"w*{cx}-text_w/2", "h*0.775"))
+            f.append(T(k, L, "h*0.075", "white", f"w*{cx}-text_w/2", "h*0.815"))
+        for cx in (0.75, 0.857):
+            f.append(T("colon", R, "h*0.06", "white@0.85", f"w*{cx}-text_w/2", "h*0.825"))
+        f.append(T("done", B, "h*0.06", col, "w*0.52+(w*0.435-text_w)/2", "h*0.715+(h*0.2-text_h)/2"))
+    return f
+
+
+def build_countdown_cmd(cfg, output, preview=False):
     """Baut den ffmpeg-Befehl, der den Countdown live rendert."""
     w, h, fps, vb = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
-    font = next((f for f in FONT_CANDIDATES if os.path.exists(f)), None)
-    if not font:
-        raise RuntimeError("Schrift fehlt – bitte 'apt install fonts-dejavu-core' ausführen")
-    tgt, dt = target_epoch(cfg)
-    T = round(tgt - start_epoch, 3)          # Sekunden bis zum Ziel, ab Stream-Start
-    color = "0x" + (re.sub(r"[^0-9a-fA-F]", "", cfg["cd_color"]) + "ff3cac")[:6]
-    run = os.path.join(CD_DIR, "run")
-    os.makedirs(run, exist_ok=True)
-
-    def tf(name, text):
-        p = os.path.join(run, name + ".txt")
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(text)
-        return p
-
-    R = f"({T}-t)"
-    parts = {
-        "d": f"%{{eif:max(0,floor({R}/86400)):d:2}}",
-        "h": f"%{{eif:max(0,mod(floor({R}/3600),24)):d:2}}",
-        "m": f"%{{eif:max(0,mod(floor({R}/60),60)):d:2}}",
-        "s": f"%{{eif:max(0,mod(floor({R}),60)):d:2}}",
-    }
-    labels = {"d": "TAGE", "h": "STUNDEN", "m": "MINUTEN", "s": "SEKUNDEN"}
-    release = f"{WEEKDAYS[dt.weekday()]}, {dt.strftime('%d.%m.%Y')} · {dt.strftime('%H:%M')} Uhr"
-    q = lambda p: "'" + p.replace("'", "") + "'"  # noqa
-    base = f"fontfile={q(font)}"
-    on, off = f"enable='lt(t,{T})'", f"enable='gte(t,{T})'"
-    f = []
-    bg = find_asset("bg")
-    f.append(f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1,fps={fps},format=yuv420p")
-    if bg:
-        f.append("drawbox=x=0:y=0:w=iw:h=ih:color=black@0.5:t=fill")
-    else:
-        f.append(f"drawbox=x=0:y=ih*0.30:w=iw:h=ih*0.40:color={color}@0.08:t=fill")
-    f.append(f"drawtext={base}:textfile={q(tf('title', cfg['cd_title']))}:expansion=none:"
-             f"fontsize=h*0.085:fontcolor=white:x=(w-text_w)/2:y=h*0.13")
-    cols = {"d": 0.2, "h": 0.4, "m": 0.6, "s": 0.8}
-    for k, cx in cols.items():
-        f.append(f"drawtext={base}:textfile={q(tf('n' + k, parts[k]))}:fontsize=h*0.17:"
-                 f"fontcolor={color}:shadowcolor=black@0.6:shadowx=4:shadowy=4:"
-                 f"x=w*{cx}-text_w/2:y=h*0.36:{on}")
-        f.append(f"drawtext={base}:textfile={q(tf('l' + k, labels[k]))}:expansion=none:"
-                 f"fontsize=h*0.032:fontcolor=white@0.8:x=w*{cx}-text_w/2:y=h*0.56:{on}")
-    f.append(f"drawtext={base}:textfile={q(tf('rel', 'Release: ' + release))}:expansion=none:"
-             f"fontsize=h*0.04:fontcolor=white@0.85:x=(w-text_w)/2:y=h*0.76")
-    f.append(f"drawtext={base}:textfile={q(tf('done', cfg['cd_done']))}:expansion=none:"
-             f"fontsize=h*0.13:fontcolor={color}:shadowcolor=black@0.6:shadowx=5:shadowy=5:"
-             f"x=(w-text_w)/2:y=h*0.40:{off}")
-
-    theme = cfg.get("cd_theme", "standard")
-    if theme == "konsole":
-        f = console_filters(cfg, T, w, h, fps, bg, tf, q, release)
-    script = os.path.join(run, "filter.txt")
-    with open(script, "w", encoding="utf-8") as fh:
-        fh.write(",\n".join(f) + "[v]\n")
-
+    make_empty_layer()
+    ticker.tick()
+    theme = cfg.get("cd_theme", "release")
     re_ = [] if preview else ["-re"]
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y"]
-    if bg:
-        cmd += re_ + ["-loop", "1", "-framerate", str(fps), "-i", bg]
-    elif theme == "konsole":
+    # Eingang 0: Grundfläche
+    if theme == "konsole":
         cmd += re_ + ["-f", "lavfi", "-i",
                       f"gradients=s={w // 4}x{h // 4}:r={fps}:c0=0x020b2e:c1=0x0b3fb8:c2=0x041a5c:"
                       f"c3=0x1d6cf0:nb_colors=4:speed=0.0035:type=linear:seed=7"]
     else:
-        cmd += re_ + ["-f", "lavfi", "-i", f"color=c=0x0e0e10:s={w}x{h}:r={fps}"]
-    music = find_asset("music")
+        base = "0x0e0e10" if theme == "standard" else "0x0b0e1a"
+        cmd += re_ + ["-f", "lavfi", "-i", f"color=c={base}:s={w}x{h}:r={fps}"]
+    # Eingang 1: Hintergrundbild (live austauschbar)
+    if preview:
+        cmd += ["-loop", "1", "-framerate", "1", "-i", BG_LAYER if os.path.exists(BG_LAYER) else EMPTY_LAYER]
+    else:
+        cmd += ["-thread_queue_size", "64", "-f", "image2pipe", "-framerate", "1", "-c:v", "png", "-i", IMAGE_FIFO]
+    graph = (f"[0:v]scale={w}:{h},setsar=1,fps={fps},format=yuv420p[base];"
+             f"[1:v]scale={w}:{h},format=rgba[img];"
+             f"[base][img]overlay=0:0:eof_action=repeat:format=auto,format=yuv420p,"
+             + ",\n".join(theme_filters(cfg, w, h)) + "[v]")
+    script = os.path.join(RUN_DIR, "filter_preview.txt" if preview else "filter.txt")
+    with open(script, "w", encoding="utf-8") as fh:
+        fh.write(graph + "\n")
     if preview:
         return cmd + ["-filter_complex_script", script, "-map", "[v]", "-frames:v", "1", "-update", "1", output]
-    if music:
-        cmd += ["-re", "-stream_loop", "-1", "-i", music]
-    else:
-        cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
-    kbit = int(vb[:-1])
-    cmd += ["-filter_complex_script", script, "-map", "[v]", "-map", "1:a:0",
+    # Eingang 2: Musik (live austauschbar)
+    cmd += ["-thread_queue_size", "4096", "-f", "s16le", "-ar", "44100", "-ac", "2", "-i", AUDIO_FIFO]
+    cmd += ["-filter_complex_script", script, "-map", "[v]", "-map", "2:a:0",
             "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-            "-b:v", vb, "-maxrate", vb, "-bufsize", f"{kbit * 2}k",
+            "-b:v", vb, "-maxrate", vb, "-bufsize", vb, "-x264-params", "nal-hrd=cbr:force-cfr=1",
             "-g", str(fps * 2), "-keyint_min", str(fps * 2), "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
             "-f", "flv", "-flvflags", "no_duration_filesize", output]
     return cmd
 
 
-def console_filters(cfg, T, w, h, fps, bg, tf, q, release):
-    """Design im Stil eines Konsolen-Startbildschirms (blau, Kacheln, Download-Balken)."""
-    bold = next((p for p in FONT_CANDIDATES if os.path.exists(p)), "")
-    reg = bold.replace("-Bold", "")
-    reg = reg if os.path.exists(reg) else bold
-    light = bold.replace("-Bold", "-ExtraLight")
-    light = light if os.path.exists(light) else reg
-    B, R, L = f"fontfile={q(bold)}", f"fontfile={q(reg)}", f"fontfile={q(light)}"
-    on, off = f"enable='lt(t,{T})'", f"enable='gte(t,{T})'"
-    P = max(14 * 86400, 1)  # Balken zeigt die letzten 14 Tage
-    Rm = f"({T}-t)"
-    f = [f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1,fps={fps},format=yuv420p"]
-    if bg:
-        f.append("drawbox=x=0:y=0:w=iw:h=ih:color=0x020b2e@0.55:t=fill")
-    f.append("vignette=PI/5")
-    # Kopfzeile
-    f.append(f"drawtext={B}:textfile={q(tf('k_games', 'Spiele'))}:expansion=none:fontsize=h*0.034:"
-             f"fontcolor=white:x=w*0.05:y=h*0.06")
-    f.append(f"drawtext={R}:textfile={q(tf('k_media', 'Medien'))}:expansion=none:fontsize=h*0.034:"
-             f"fontcolor=white@0.55:x=w*0.05+h*0.17:y=h*0.06")
-    f.append(f"drawtext={B}:textfile={q(tf('k_clock', '%{localtime:%R}'))}:fontsize=h*0.034:"
-             f"fontcolor=white:x=w*0.95-text_w:y=h*0.06")
-    f.append(f"drawtext={R}:textfile={q(tf('k_user', 'xImJxstinn'))}:expansion=none:fontsize=h*0.03:"
-             f"fontcolor=white@0.75:x=w*0.95-text_w-h*0.17:y=h*0.065")
-    # Kachelreihe: große, ausgewählte Kachel + kleine Kacheln
-    big = "h*0.22"
-    bigd = "ih*0.22"
-    f.append(f"drawbox=x=iw*0.05-4:y=ih*0.15-4:w={bigd}+8:h={bigd}+8:color=white:t=4")
-    f.append(f"drawbox=x=iw*0.05:y=ih*0.15:w={bigd}:h={bigd}:color=0x0a2a7a@0.85:t=fill")
-    f.append(f"drawtext={B}:textfile={q(tf('k_tile', cfg.get('cd_tile', 'GTA VI')))}:expansion=none:"
-             f"fontsize=h*0.05:fontcolor=white:x=w*0.05+({big}-text_w)/2:y=h*0.15+({big}-text_h)/2")
-    for i in range(6):
-        x = f"iw*0.05+ih*0.25+{i}*ih*0.165"
-        f.append(f"drawbox=x={x}:y=ih*0.185:w=ih*0.145:h=ih*0.145:color=white@0.10:t=fill")
-    # Titel + Status
-    f.append(f"drawtext={B}:textfile={q(tf('k_title', cfg['cd_title']))}:expansion=none:"
-             f"fontsize=h*0.07:fontcolor=white:x=w*0.05:y=h*0.43")
-    f.append(f"drawtext={R}:textfile={q(tf('k_sub', 'Vorgeladen · Spielbar in'))}:expansion=none:"
-             f"fontsize=h*0.032:fontcolor=white@0.75:x=w*0.05:y=h*0.525:{on}")
-    # Countdown
-    parts = [("TAGE", f"floor({Rm}/86400)"), ("STD", f"mod(floor({Rm}/3600),24)"),
-             ("MIN", f"mod(floor({Rm}/60),60)"), ("SEK", f"mod(floor({Rm}),60)")]
-    for i, (lab, ex) in enumerate(parts):
-        x = f"w*0.05+{i}*h*0.24"
-        f.append(f"drawtext={L}:textfile={q(tf('k_n%d' % i, '%{eif:max(0,' + ex + '):d:2}'))}:"
-                 f"fontsize=h*0.13:fontcolor=white:x={x}:y=h*0.585:{on}")
-        f.append(f"drawtext={B}:textfile={q(tf('k_l%d' % i, lab))}:expansion=none:"
-                 f"fontsize=h*0.026:fontcolor=white@0.7:x={x}+4:y=h*0.72:{on}")
-    f.append(f"drawtext={L}:textfile={q(tf('k_done', cfg['cd_done']))}:expansion=none:"
-             f"fontsize=h*0.11:fontcolor=white:x=w*0.05:y=h*0.56:{off}")
-    # Button
-    f.append(f"drawbox=x=iw*0.95-ih*0.30:y=ih*0.43:w=ih*0.30:h=ih*0.075:color=white:t=fill")
-    f.append(f"drawtext={B}:textfile={q(tf('k_btn', 'Vorbestellt'))}:expansion=none:fontsize=h*0.03:"
-             f"fontcolor=0x111111:x=w*0.95-h*0.15-text_w/2:y=h*0.43+(h*0.075-text_h)/2:{on}")
-    f.append(f"drawtext={B}:textfile={q(tf('k_btn2', 'Spielen'))}:expansion=none:fontsize=h*0.03:"
-             f"fontcolor=0x111111:x=w*0.95-h*0.15-text_w/2:y=h*0.43+(h*0.075-text_h)/2:{off}")
-    # Download-Balken
-    f.append(f"drawtext={R}:textfile={q(tf('k_rel', release))}:expansion=none:fontsize=h*0.03:"
-             f"fontcolor=white@0.8:x=w*0.05:y=h*0.83")
-    f.append(f"drawtext={B}:textfile={q(tf('k_pct', '%{eif:clip(100-' + Rm + '/' + str(P) + '*100,0,100):d} \\%'))}:"
-             f"fontsize=h*0.03:fontcolor=white:x=w*0.95-text_w:y=h*0.83")
-    f.append("drawbox=x=iw*0.05:y=ih*0.885:w=iw*0.9:h=ih*0.008:color=white@0.22:t=fill")
-    f.append(f"drawbox=x=iw*0.05:y=ih*0.885:w='max(2,iw*0.9*clip(1-{Rm}/{P},0,1))':"
-             f"h=ih*0.008:color=white:t=fill")
-    return f
+ticker = Ticker()
+image_feeder = ImageFeeder()
+audio_feeder = AudioFeeder()
 
 
 # -------------------------------------------------------------- Streamer ----
@@ -478,7 +711,7 @@ class Streamer:
             url = cfg["server"].rstrip("/") + "/" + cfg["stream_key"]
             if cfg["mode"] == "countdown":
                 try:
-                    cmd = build_countdown_cmd(cfg, time.time(), url)
+                    cmd = build_countdown_cmd(cfg, url)
                 except Exception as e:  # noqa
                     self.status_msg = f"Fehler: {e}"
                     time.sleep(5)
@@ -516,7 +749,7 @@ class Streamer:
             if self.want:
                 self.restarts += 1
                 self.status_msg = "Verbindet neu …"
-                time.sleep(5)
+                time.sleep(2)
 
 
 def log_tail(n=25):
@@ -535,7 +768,8 @@ streamer = None  # wird in main() erstellt
 
 
 # ------------------------------------------------------------------- Web ----
-SESSIONS = set()
+SESSIONS_PATH = os.path.join(BASE, "sessions.json")
+SESSIONS = set(load_json(SESSIONS_PATH, []))
 
 LOGIN_HTML = """<!doctype html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -586,19 +820,32 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
 <section class="card"><h2>Modus</h2>
  <div class="btns" style="margin-top:0"><button id="mCd">⏱ Countdown</button><button id="mVid">🎞 Videos</button></div>
  <div id="cdBox">
-  <label>Überschrift</label><input type="text" id="cdTitle" maxlength="80">
-  <label>Countdown bis (deutsche Zeit)</label><input type="datetime-local" id="cdTarget">
-  <label>Text, wenn die Zeit abgelaufen ist</label><input type="text" id="cdDone" maxlength="80">
-  <label>Design</label><select id="cdTheme"><option value="konsole">🎮 Konsole (blau, Kacheln, Download-Balken)</option><option value="standard">Standard (dunkel, große Zahlen)</option></select>
-  <label>Text auf der Spielkachel (Konsolen-Design)</label><input type="text" id="cdTile" maxlength="20">
-  <label>Farbe (Standard-Design)</label><input type="color" id="cdColor" style="width:64px;height:40px;border:0;background:none">
-  <div class="btns"><button class="go" id="bCdSave">Speichern</button><button id="bPrev">👁 Vorschau</button></div>
+  <label>Design</label><select id="cd_theme"></select>
+  <div class="hint">Design und Farbe wechseln = Stream startet einmal kurz neu. Alles andere wird live übernommen.</div>
+  <label>Countdown bis (deutsche Zeit)</label><input type="datetime-local" id="cd_target">
+  <label>Akzentfarbe</label><input type="color" id="cd_color" style="width:64px;height:40px;border:0;background:none">
+  <div data-th="release">
+   <label>Badge oben</label><input type="text" id="cd_badge" maxlength="60">
+   <label>Schlagzeile Zeile 1 (weiß) + farbiger Teil</label>
+   <div style="display:flex;gap:8px"><input type="text" id="cd_head1" maxlength="40"><input type="text" id="cd_hl" maxlength="30"></div>
+   <label>Schlagzeile Zeile 2</label><input type="text" id="cd_head2" maxlength="40">
+   <label>Untertitel (\n = neue Zeile)</label><input type="text" id="cd_sub" maxlength="200">
+   <label>Spielname unten</label><input type="text" id="cd_game" maxlength="60">
+   <label>Text über dem Countdown</label><input type="text" id="cd_boxlabel" maxlength="60">
+  </div>
+  <div data-th="konsole standard"><label>Titel</label><input type="text" id="cd_title" maxlength="80"></div>
+  <div data-th="release konsole"><label>Text auf der Spielkachel</label><input type="text" id="cd_tile" maxlength="20"></div>
+  <label>Text, wenn die Zeit abgelaufen ist</label><input type="text" id="cd_done" maxlength="60">
+  <div class="btns"><button class="go" id="bCdSave">Speichern (live)</button><button id="bPrev">👁 Vorschau</button></div>
+  <img id="prev" style="width:100%;border-radius:10px;margin-top:14px;display:none">
   <label>Hintergrundbild <span id="bgInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">Bild wählen<input type="file" id="bgFile" accept="image/png,image/jpeg,image/webp"></label><button id="bgDel">Entfernen</button></div>
-  <label>Hintergrundmusik <span id="muInfo"></span></label>
-  <div class="btns" style="margin-top:0"><label class="filebtn">Musik wählen<input type="file" id="muFile" accept="audio/*"></label><button id="muDel">Entfernen</button></div>
-  <div class="hint">Nur lizenzfreie Musik verwenden, sonst gibt es DMCA-Strikes auf Twitch.</div>
-  <img id="prev" style="width:100%;border-radius:10px;margin-top:14px;display:none">
+  <label>Musik-Playlist <span id="muInfo"></span></label>
+  <div class="btns" style="margin-top:0"><label class="filebtn">＋ Songs hinzufügen<input type="file" id="muFile" accept="audio/*" multiple></label><button id="muSkip">⏭ Nächster Song</button></div>
+  <div id="muList" style="margin-top:8px"></div>
+  <label>Lautstärke: <span id="volV"></span> %</label><input type="range" id="cd_volume" min="0" max="100" style="width:100%">
+  <label class="chk"><input type="checkbox" id="cd_shuffle_music"> Songs zufällig mischen</label>
+  <div class="hint">Songs, Bild und Lautstärke werden live getauscht – der Stream läuft weiter. Nur lizenzfreie Musik verwenden (z. B. StreamBeats, NCS), sonst drohen DMCA-Strikes.</div>
  </div>
 </section>
 <section class="card" id="vidCard"><h2>Videos</h2>
@@ -614,6 +861,9 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div class="hint" id="qhint"></div>
  <label class="chk"><input type="checkbox" id="shuffle"> Videos zufällig mischen</label>
  <div class="btns"><button class="go" id="bSave">Speichern</button></div>
+ <label>Update</label>
+ <div class="btns" style="margin-top:0"><button id="bUpd">⬆ Neueste Version installieren</button></div>
+ <div class="hint">Lädt die neueste Version von GitHub. Der Stream startet dabei einmal kurz neu.</div>
 </section>
 <section class="card"><h2>Log</h2><pre id="log"></pre></section>
 </main>
@@ -635,8 +885,10 @@ async function refresh(){
  $('keyinfo').textContent=s.key_set?'✅ gesetzt':'❌ fehlt';
  const cd=s.mode=='countdown';$('mCd').className=cd?'go':'';$('mVid').className=cd?'':'go';
  $('cdBox').style.display=cd?'':'none';$('vidCard').style.opacity=cd?'.45':'1';
- $('bgInfo').textContent=s.cd_bg?'✅':'(Standard: dunkel)';$('muInfo').textContent=s.cd_music?'✅':'(Standard: still)';
- if(!cfgLoaded){$('cdTitle').value=s.cd_title;$('cdTarget').value=s.cd_target;$('cdDone').value=s.cd_done;$('cdColor').value=s.cd_color;$('cdTheme').value=s.cd_theme;$('cdTile').value=s.cd_tile}
+ $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
+ $('muList').innerHTML=s.music.map(m=>`<div class="vid"><div class="t">${m==s.now_playing?'🔊 ':''}${esc(m)}</div><button onclick="delSong(this.dataset.n)" data-n="${esc(m)}">Löschen</button></div>`).join('');
+ if(!cfgLoaded){$('cd_theme').innerHTML=Object.entries(s.themes).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
+  for(const k of CDF)$(k).value=s.cfg[k];$('cd_shuffle_music').checked=s.cfg.cd_shuffle_music;$('cd_volume').value=s.cfg.cd_volume;$('volV').textContent=s.cfg.cd_volume;showTh()}
  if(!cfgLoaded){cfgLoaded=true;$('server').value=s.server;$('shuffle').checked=s.shuffle;
   $('quality').innerHTML=s.qualities.map(q=>`<option ${q==s.quality?'selected':''}>${q}</option>`).join('')}
  $('quality').disabled=s.quality_locked;$('qhint').textContent=s.quality_locked?'Qualität kann nur geändert werden, wenn keine Videos vorhanden sind (alle Videos müssen das gleiche Format haben).':'';
@@ -658,15 +910,24 @@ function upload(f){const id='u'+Math.random().toString(36).slice(2);const el=doc
  x.onerror=()=>{el.querySelector('small').textContent='Upload fehlgeschlagen'};x.send(f)}
 $('mCd').onclick=async()=>{await api('/api/config',{mode:'countdown'});refresh()};
 $('mVid').onclick=async()=>{await api('/api/config',{mode:'videos'});refresh()};
-$('bCdSave').onclick=async()=>{const j=await api('/api/config',{cd_title:$('cdTitle').value,cd_target:$('cdTarget').value,cd_done:$('cdDone').value,cd_color:$('cdColor').value,cd_theme:$('cdTheme').value,cd_tile:$('cdTile').value});if(j.ok)showPrev()};
+const CDF=['cd_theme','cd_target','cd_color','cd_badge','cd_head1','cd_hl','cd_head2','cd_sub','cd_game','cd_boxlabel','cd_title','cd_tile','cd_done'];
+function showTh(){const t=$('cd_theme').value;document.querySelectorAll('[data-th]').forEach(e=>e.style.display=e.dataset.th.split(' ').includes(t)?'':'none')}
+$('cd_theme').onchange=showTh;
+$('bCdSave').onclick=async()=>{const b={};for(const k of CDF)b[k]=$(k).value;b.cd_shuffle_music=$('cd_shuffle_music').checked;
+ const j=await api('/api/config',b);if(j.ok){setTimeout(showPrev,400);if(j.restarted)alert('Design geändert – Stream startet kurz neu.')}};
 function showPrev(){$('prev').style.display='block';$('prev').src='/api/preview.png?'+Date.now()}
 $('bPrev').onclick=showPrev;
-function asset(kind,f){const x=new XMLHttpRequest();x.open('PUT',`/api/asset?kind=${kind}&name=${encodeURIComponent(f.name)}`);
- x.onload=()=>{if(x.status!=200)alert('Upload fehlgeschlagen: '+x.responseText);refresh();if(kind=='bg')showPrev()};x.send(f)}
+let volT;$('cd_volume').oninput=e=>{$('volV').textContent=e.target.value;clearTimeout(volT);volT=setTimeout(()=>api('/api/config',{cd_volume:+e.target.value}),400)};
+$('cd_shuffle_music').onchange=e=>api('/api/config',{cd_shuffle_music:e.target.checked});
+function asset(kind,f){return new Promise(res=>{const x=new XMLHttpRequest();x.open('PUT',`/api/asset?kind=${kind}&name=${encodeURIComponent(f.name)}`);
+ x.onload=()=>{if(x.status!=200)alert('Upload fehlgeschlagen: '+x.responseText);refresh();if(kind=='bg')showPrev();res()};x.send(f)})}
 $('bgFile').onchange=e=>{if(e.target.files[0])asset('bg',e.target.files[0]);e.target.value=''};
-$('muFile').onchange=e=>{if(e.target.files[0])asset('music',e.target.files[0]);e.target.value=''};
+$('muFile').onchange=async e=>{const fs=[...e.target.files];e.target.value='';$('muInfo').textContent='(lädt hoch …)';for(const f of fs)await asset('music',f)};
 $('bgDel').onclick=async()=>{await api('/api/asset_delete',{kind:'bg'});refresh();showPrev()};
-$('muDel').onclick=async()=>{await api('/api/asset_delete',{kind:'music'});refresh()};
+async function delSong(n){if(confirm('Song löschen?')){await api('/api/asset_delete',{kind:'music',name:n});refresh()}}
+$('muSkip').onclick=async()=>{await api('/api/music_skip');setTimeout(refresh,800)};
+$('bUpd').onclick=async()=>{if(!confirm('Neueste Version installieren? Der Stream startet einmal kurz neu.'))return;
+ const j=await api('/api/update');if(j.ok){alert('Update installiert – Panel lädt in ein paar Sekunden neu.');setTimeout(()=>location.reload(),5000)}};
 refresh();setInterval(refresh,3000);
 </script></body></html>"""
 
@@ -727,7 +988,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/preview.png":
             out = os.path.join(CD_DIR, "preview.png")
             try:
-                cmd = build_countdown_cmd(get_cfg(), time.time(), out, preview=True)
+                cmd = build_countdown_cmd(get_cfg(), out, preview=True)
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=FF_ENV)
                 if r.returncode != 0:
                     raise RuntimeError(r.stderr.strip()[-300:])
@@ -752,6 +1013,7 @@ class Handler(BaseHTTPRequestHandler):
             if check_pw(pw):
                 tok = secrets.token_urlsafe(32)
                 SESSIONS.add(tok)
+                save_json(SESSIONS_PATH, list(SESSIONS)[-50:])
                 return self._redirect("/", f"s24={tok}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000")
             time.sleep(1)
             return self._send(200, LOGIN_HTML.replace("__ERR__", '<div class="err">Falsches Passwort</div>'), "text/html")
@@ -777,15 +1039,22 @@ class Handler(BaseHTTPRequestHandler):
                 upd["shuffle"] = bool(data["shuffle"])
             if data.get("mode") in ("videos", "countdown"):
                 upd["mode"] = data["mode"]
-            if data.get("cd_theme") in ("standard", "konsole"):
+            if data.get("cd_theme") in THEMES:
                 upd["cd_theme"] = data["cd_theme"]
-            if "cd_tile" in data:
-                upd["cd_tile"] = str(data["cd_tile"])[:20]
-            for k in ("cd_title", "cd_done"):
+            for k, n in (("cd_tile", 20), ("cd_title", 80), ("cd_done", 60), ("cd_badge", 60),
+                         ("cd_head1", 40), ("cd_hl", 30), ("cd_head2", 40), ("cd_sub", 200),
+                         ("cd_game", 60), ("cd_boxlabel", 60)):
                 if k in data:
-                    upd[k] = str(data[k])[:80]
+                    upd[k] = str(data[k])[:n]
             if "cd_color" in data and re.fullmatch(r"#[0-9a-fA-F]{6}", str(data["cd_color"])):
                 upd["cd_color"] = data["cd_color"]
+            if "cd_volume" in data:
+                try:
+                    upd["cd_volume"] = max(0, min(100, int(data["cd_volume"])))
+                except (TypeError, ValueError):
+                    pass
+            if "cd_shuffle_music" in data:
+                upd["cd_shuffle_music"] = bool(data["cd_shuffle_music"])
             if "cd_target" in data:
                 try:
                     target_epoch({"cd_target": str(data["cd_target"])[:16]})
@@ -799,14 +1068,28 @@ class Handler(BaseHTTPRequestHandler):
                 upd["quality"] = q
             old = get_cfg()
             set_cfg(**upd)
-            if streamer.want and any(old.get(k) != v for k, v in upd.items() if k != "shuffle"):
+            changed = {k for k, v in upd.items() if old.get(k) != v}
+            if "cd_volume" in changed:
+                audio_feeder.reload = True           # Lautstärke live ändern
+            restart = bool(changed & RESTART_KEYS)
+            if streamer.want and restart:
                 streamer.restart()
+            return self._send(200, {"ok": True, "restarted": restart and streamer.want})
         elif path == "/api/asset_delete":
-            p = find_asset("bg" if data.get("kind") == "bg" else "music")
-            if p:
-                os.remove(p)
-            if streamer.want and get_cfg()["mode"] == "countdown":
-                streamer.restart()
+            if data.get("kind") == "bg":
+                if os.path.exists(BG_LAYER):
+                    os.remove(BG_LAYER)              # wird live entfernt
+            else:
+                name = os.path.basename(str(data.get("name", "")))
+                p = os.path.join(MUSIC_DIR, name)
+                if name and os.path.exists(p):
+                    if audio_feeder.current == p:
+                        audio_feeder.skip = True
+                    os.remove(p)
+        elif path == "/api/music_skip":
+            audio_feeder.skip = True
+        elif path == "/api/update":
+            return self._update()
         elif path == "/api/delete":
             name = re.sub(r"[^A-Za-z0-9._-]", "", str(data.get("name", "")))
             for ext in (".mp4", ".json"):
@@ -863,30 +1146,55 @@ class Handler(BaseHTTPRequestHandler):
     def _asset_upload(self, u):
         qs = parse_qs(u.query)
         kind = (qs.get("kind") or [""])[0]
-        name = unquote((qs.get("name") or [""])[0]).lower()
-        ext = os.path.splitext(name)[1]
-        allowed = {"bg": (".png", ".jpg", ".jpeg", ".webp"),
-                   "music": (".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac")}
+        name = os.path.basename(unquote((qs.get("name") or [""])[0]))
+        ext = os.path.splitext(name)[1].lower()
+        allowed = {"bg": (".png", ".jpg", ".jpeg", ".webp"), "music": MUSIC_EXT}
         if kind not in allowed or ext not in allowed[kind]:
             return self._send(400, {"error": "Dateityp nicht erlaubt"})
         size = int(self.headers.get("Content-Length") or 0)
         if not 0 < size < 300_000_000:
             return self._send(400, {"error": "Datei zu groß oder leer"})
-        data = b""
-        while len(data) < size:
-            chunk = self.rfile.read(min(1 << 20, size - len(data)))
-            if not chunk:
-                return self._send(400, {"error": "Upload abgebrochen"})
-            data += chunk
-        old = find_asset(kind)
-        if old:
-            os.remove(old)
-        with open(os.path.join(CD_DIR, kind + ext), "wb") as fh:
-            fh.write(data)
-        if streamer.want and get_cfg()["mode"] == "countdown":
-            streamer.restart()
+        tmp = os.path.join(RUN_DIR, "upload_" + secrets.token_hex(6) + ext)
+        remaining = size
+        with open(tmp, "wb") as fh:
+            while remaining > 0:
+                chunk = self.rfile.read(min(1 << 20, remaining))
+                if not chunk:
+                    os.remove(tmp)
+                    return self._send(400, {"error": "Upload abgebrochen"})
+                fh.write(chunk)
+                remaining -= len(chunk)
+        try:
+            if kind == "bg":
+                convert_bg(tmp, get_cfg())           # wird live ausgetauscht
+                os.remove(tmp)
+            else:
+                base = re.sub(r"[^\w .()&-]+", "_", os.path.splitext(name)[0]).strip() or "song"
+                dst, i = os.path.join(MUSIC_DIR, base + ext), 2
+                while os.path.exists(dst):
+                    dst, i = os.path.join(MUSIC_DIR, f"{base} ({i}){ext}"), i + 1
+                os.replace(tmp, dst)                 # kommt automatisch in die Playlist
+        except Exception as e:  # noqa
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            return self._send(400, {"error": str(e)})
         self._send(200, {"ok": True})
 
+    def _update(self):
+        """Lädt die neueste server.py von GitHub und startet das Panel neu."""
+        import urllib.request
+        try:
+            with urllib.request.urlopen(UPDATE_URL, timeout=30) as r:
+                code = r.read()
+            compile(code, "server.py", "exec")
+        except Exception as e:  # noqa
+            return self._send(200, {"error": f"Update fehlgeschlagen: {e}"})
+        me = os.path.abspath(__file__)
+        with open(me + ".new", "wb") as fh:
+            fh.write(code)
+        os.replace(me + ".new", me)
+        self._send(200, {"ok": True})
+        threading.Timer(1.0, lambda: os._exit(0)).start()   # systemd startet neu
 
 def status():
     cfg = get_cfg()
@@ -907,14 +1215,11 @@ def status():
         "quality_locked": bool(vids) or converter.busy(),
         "shuffle": cfg["shuffle"],
         "mode": cfg["mode"],
-        "cd_title": cfg["cd_title"],
-        "cd_target": cfg["cd_target"],
-        "cd_done": cfg["cd_done"],
-        "cd_color": cfg["cd_color"],
-        "cd_theme": cfg["cd_theme"],
-        "cd_tile": cfg["cd_tile"],
-        "cd_bg": bool(find_asset("bg")),
-        "cd_music": bool(find_asset("music")),
+        "cfg": {k: v for k, v in cfg.items() if k.startswith("cd_")},
+        "themes": THEMES,
+        "cd_bg": os.path.exists(BG_LAYER),
+        "music": [os.path.basename(m) for m in list_music()],
+        "now_playing": os.path.basename(audio_feeder.current) if audio_feeder.current else "",
         "disk_free_gb": round(shutil.disk_usage(BASE).free / 1e9, 1),
         "log": log_tail(),
     }
@@ -936,6 +1241,20 @@ def main():
             try:
                 os.remove(os.path.join(d, fn))
             except OSError:
+                pass
+    make_empty_layer()
+    ticker.tick()
+    for t in (ticker, image_feeder, audio_feeder):
+        t.start()
+    # alte Einzel-Musikdatei (frühere Version) in die Playlist übernehmen
+    for fn in os.listdir(CD_DIR):
+        if fn.startswith("music.") and fn.lower().endswith(MUSIC_EXT):
+            os.replace(os.path.join(CD_DIR, fn), os.path.join(MUSIC_DIR, "Song" + os.path.splitext(fn)[1]))
+        if fn.startswith("bg.") and not os.path.exists(BG_LAYER):
+            try:
+                convert_bg(os.path.join(CD_DIR, fn), get_cfg())
+                os.remove(os.path.join(CD_DIR, fn))
+            except Exception:  # noqa
                 pass
     streamer = Streamer()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)

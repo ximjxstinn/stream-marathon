@@ -24,14 +24,19 @@ else
   curl -fsSL "https://raw.githubusercontent.com/ximjxstinn/stream-marathon/stream24/server.py" -o "$DIR/server.py"
 fi
 
-read -r -p "Port fürs Panel [8090]: " PORT
-PORT=${PORT:-8090}
-
-while true; do
-  read -r -s -p "Passwort fürs Panel festlegen: " PW; echo
-  [ -n "$PW" ] && break
-done
-STREAM24_DIR="$DIR" python3 "$DIR/server.py" --set-password "$PW"
+if [ -f /etc/systemd/system/stream24.service ] && grep -q password_hash "$DIR/config.json" 2>/dev/null; then
+  # Update: Port und Passwort bleiben wie sie sind
+  PORT=$(grep -oP 'STREAM24_PORT=\K[0-9]+' /etc/systemd/system/stream24.service || echo 8090)
+  echo "==> Update – Port $PORT und Passwort bleiben erhalten"
+else
+  read -r -p "Port fürs Panel [8090]: " PORT
+  PORT=${PORT:-8090}
+  while true; do
+    read -r -s -p "Passwort fürs Panel festlegen: " PW; echo
+    [ -n "$PW" ] && break
+  done
+  STREAM24_DIR="$DIR" python3 "$DIR/server.py" --set-password "$PW"
+fi
 chown -R stream24:stream24 "$DIR"
 
 echo "==> Dienst einrichten (startet automatisch, auch nach Server-Neustart) ..."
