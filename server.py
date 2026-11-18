@@ -104,6 +104,7 @@ DEFAULT_CFG = {
     "game_auto": True,                # nach dem Release automatisch zum nächsten Spiel wechseln
     "game_done_hours": 12,            # so lange "… IST DA!" zeigen, dann nächstes Spiel
     "game_current": "gta6",
+    "game_next": "",                  # leer = automatisch das nächste nach Datum
     "games_custom": [],
     "chat_enabled": True,             # Twitch-Chat mitlesen
     "chat_on_stream": True,           # Chat im Stream anzeigen
@@ -1370,8 +1371,10 @@ class GameQueue(threading.Thread):
         hold = float(cfg.get("game_done_hours", 12)) * 3600
         if time.time() < tgt + hold:
             return
-        g = next_game(time.time())
+        g = next((x for x in all_games() if x["id"] == cfg.get("game_next")
+                  and target_epoch({"cd_target": x["target"]})[0] > time.time()), None) or next_game(time.time())
         if g:
+            set_cfg(game_next="")
             switch_game(g, f"automatisch, {cfg.get('cd_title')} ist seit {cfg.get('game_done_hours', 12)} h draußen")
 
 
@@ -2146,8 +2149,15 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  </div>
 </section>
 <section class="card"><h2>🎮 Nächste Spiele</h2>
- <label class="chk" style="margin-top:0"><input type="checkbox" id="gAuto" onchange="api('/api/config',{game_auto:this.checked})"> Nach dem Release automatisch zum nächsten Spiel wechseln</label>
- <label>So lange „… IST DA!“ zeigen (Stunden), dann nächstes Spiel</label><input type="text" id="gHours" inputmode="decimal" onchange="api('/api/config',{game_done_hours:parseFloat(this.value.replace(',','.'))||0})">
+ <label style="margin-top:0">Wann soll nach dem Release gewechselt werden?</label>
+ <select id="gWhen2" onchange="gSetWhen(this.value)">
+  <option value="0">Sofort beim Release</option><option value="1">Nach 1 Stunde</option><option value="3">Nach 3 Stunden</option>
+  <option value="6">Nach 6 Stunden</option><option value="12">Nach 12 Stunden</option><option value="24">Nach 1 Tag</option>
+  <option value="72">Nach 3 Tagen</option><option value="168">Nach 1 Woche</option><option value="manual">Gar nicht automatisch – nur von Hand</option>
+  <option value="custom" hidden>Eigene Zeit</option>
+ </select>
+ <label>Zu welchem Spiel soll gewechselt werden?</label>
+ <select id="gNext" onchange="api('/api/config',{game_next:this.value})"></select>
  <div id="gList" style="margin-top:10px"></div>
  <label>Eigenes Spiel hinzufügen</label>
  <div style="display:flex;gap:8px;flex-wrap:wrap"><input type="text" id="gName" placeholder="Name, z. B. Fable" style="flex:2;min-width:140px"><input type="text" id="gShort" placeholder="Kurz, z. B. Fable" style="flex:1;min-width:90px"><input type="datetime-local" id="gWhen" style="flex:1;min-width:170px"></div>
@@ -2231,7 +2241,10 @@ async function refresh(){
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
  $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig'&&j.kind!='music').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${(j.state=='konvertiert'||j.state=='lädt von Twitch')?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('log').textContent=s.log||'(noch leer)';
- const G=s.games||{};$('gAuto').checked=G.auto;if(document.activeElement!==$('gHours'))$('gHours').value=G.done_hours;
+ const G=s.games||{};
+ if(document.activeElement!==$('gWhen2')){const v=!G.auto?'manual':String(G.done_hours);$('gWhen2').value=[...$('gWhen2').options].some(o=>o.value==v)?v:'custom'}
+ if(document.activeElement!==$('gNext')){const up=(G.list||[]).filter(g=>!g.past&&g.id!=G.current);
+  $('gNext').innerHTML='<option value="">Automatisch: das nächste nach Datum</option>'+up.map(g=>`<option value="${g.id}">${esc(g.name)} (${new Date(g.target).toLocaleDateString('de-DE')})</option>`).join('');$('gNext').value=up.some(g=>g.id==G.next)?G.next:''}
  $('gList').innerHTML=(G.list||[]).filter(g=>!g.past||g.id==G.current).map(g=>`<div class="vid"><div class="t">${g.id==G.current?'▶ ':''}<b>${esc(g.name)}</b><br><small>${new Date(g.target).toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})} Uhr${g.id==G.current?' · läuft gerade':''}${g.custom?' · eigenes':''}</small></div><div style="display:flex;gap:6px">${g.id!=G.current&&!g.past?`<button onclick="api('/api/game_switch',{id:'${g.id}'}).then(refresh)">Jetzt zeigen</button>`:''}${g.custom?`<button onclick="api('/api/game_remove',{id:'${g.id}'}).then(refresh)">✕</button>`:''}</div></div>`).join('');
  const CH=s.chat||{};$('chOn').checked=CH.on_stream&&CH.enabled;
  $('chInfo').textContent=CH.connected?`✅ Verbunden mit #${CH.channel} · ${CH.chatters} ${CH.chatters==1?'Person hat':'Leute haben'} in dieser Sitzung geschrieben`:'⏳ Verbinde mit dem Twitch-Chat …';
@@ -2321,6 +2334,7 @@ $('cvFile').onchange=e=>{if(e.target.files[0])asset('cover',e.target.files[0]);e
 $('cvDel').onclick=async()=>{await api('/api/asset_delete',{kind:'cover'});refresh();showPrev()};
 async function delSong(n){if(confirm('Song löschen?')){await api('/api/asset_delete',{kind:'music',name:n});refresh()}}
 $('ckFile').onchange=e=>{if(e.target.files[0])asset('cookies',e.target.files[0]).then(()=>alert('Cookies gespeichert ✅ – jetzt den Link nochmal einfügen.'));e.target.value=''};
+function gSetWhen(v){api('/api/config',v=='manual'?{game_auto:false}:{game_auto:true,game_done_hours:parseFloat(v)})}
 $('bGAdd').onclick=async()=>{const j=await api('/api/game_add',{name:$('gName').value,short:$('gShort').value,target:$('gWhen').value});if(j.ok){$('gName').value=$('gShort').value=$('gWhen').value='';refresh()}};
 $('chOn').onchange=e=>api('/api/config',{chat_on_stream:e.target.checked,chat_enabled:true});
 $('bChSave').onclick=async()=>{const j=await api('/api/config',{chat_channel:$('chChan').value,discord_link:$('chDc').value,tiktok_link:$('chTt').value,chat_blocklist:$('chBlock').value,chat_ignore:$('chIgn').value});if(j.ok)alert('Gespeichert ✅')};
@@ -2523,6 +2537,8 @@ class Handler(BaseHTTPRequestHandler):
                     upd["game_done_hours"] = max(0.0, min(168.0, float(data["game_done_hours"])))
                 except (TypeError, ValueError):
                     pass
+            if "game_next" in data:
+                upd["game_next"] = str(data["game_next"])[:60]
             if "auto_update" in data:
                 upd["auto_update"] = bool(data["auto_update"])
             if "show_runtime" in data:
@@ -2886,7 +2902,7 @@ def status():
         "session_started": streamer.session_started,
         "auto_update": cfg.get("auto_update", True),
         "games": {"auto": cfg.get("game_auto", True), "done_hours": cfg.get("game_done_hours", 12),
-                  "current": cfg.get("game_current"),
+                  "current": cfg.get("game_current"), "next": cfg.get("game_next", ""),
                   "list": [{**g, "custom": g["id"].startswith("c_"),
                             "past": target_epoch({"cd_target": g["target"]})[0] < time.time()} for g in all_games()]},
         "chat": {"enabled": cfg.get("chat_enabled", True), "on_stream": cfg.get("chat_on_stream", True),
