@@ -1527,7 +1527,7 @@ vod_importer = VodImporter()
 
 # ---------------------------------------------------------- Musik per Link ----
 class MusicLinkImporter:
-    """Holt den Ton von einem Link (YouTube, SoundCloud, …) direkt auf den Server – auch ganze Playlists."""
+    """Holt den Ton von einem Link (YouTube, SoundCloud, …) direkt auf den Server – auch ganze Playlists (bis 200 Songs)."""
 
     def __init__(self):
         self.q = queue.Queue()
@@ -1553,7 +1553,8 @@ class MusicLinkImporter:
             os.makedirs(tmpdir, exist_ok=True)
             try:
                 cmd = ["nice", "-n", "10"] + ytdlp(
-                    "-f", "bestaudio/best", "--newline", "--no-part", "--yes-playlist", "--playlist-end", "50",
+                    "-f", "bestaudio/best", "--newline", "--no-part", "--yes-playlist", "--playlist-end", "200",
+                    "--ignore-errors", "--sleep-requests", "1",
                     "--max-filesize", "1500M", "-o", os.path.join(tmpdir, "%(title).70B.%(ext)s"), url)
                 p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 last, item = "", ""
@@ -1760,7 +1761,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <div class="btns" style="margin-top:0"><label class="filebtn">Cover wählen<input type="file" id="cvFile" accept="image/png,image/jpeg,image/webp"></label><button onclick="api('/api/default_cover').then(j=>{refresh();if(j.ok)showPrev()})">🎨 Vice-City-Cover verwenden</button><button id="cvDel">Entfernen</button></div></div>
   <label>Musik-Playlist <span id="muInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">＋ Songs hinzufügen<input type="file" id="muFile" accept="audio/*,video/*,.mp3,.m4a,.mp4,.webm,.mkv" multiple></label><button id="muSkip">⏭ Nächster Song</button></div>
-  <div style="display:flex;gap:8px;margin-top:8px"><input type="text" id="muLink" placeholder="Link einfügen (YouTube, SoundCloud, Playlist …)" style="flex:1"><button class="go" id="bMuLink">＋ Per Link</button></div>
+  <div style="display:flex;gap:8px;margin-top:8px"><input type="text" id="muLink" placeholder="Link einfügen (YouTube, SoundCloud, Playlist bis 200 Songs)" style="flex:1"><button class="go" id="bMuLink">＋ Per Link</button></div>
   <div id="muJobs"></div>
   <div id="muList" style="margin-top:8px"></div>
   <label>Lautstärke: <span id="volV"></span> %</label><input type="range" id="cd_volume" min="0" max="100" style="width:100%">
