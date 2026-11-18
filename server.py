@@ -1437,9 +1437,37 @@ def ensure_ytdlp():
     os.replace(tmp, YTDLP)
 
 
+YT_COOKIES = os.path.join(BASE, "youtube_cookies.txt")
+
+
+def update_ytdlp():
+    """yt-dlp einmal am Tag aktualisieren – YouTube ändert oft etwas."""
+    stamp = YTDLP + ".checked"
+    try:
+        if os.path.exists(stamp) and time.time() - os.path.getmtime(stamp) < 86400:
+            return
+        subprocess.run([sys.executable, YTDLP, "-U"], capture_output=True, timeout=180)
+        open(stamp, "w").close()
+    except Exception:  # noqa
+        pass
+
+
 def ytdlp(*args, **kw):
     ensure_ytdlp()
-    return [sys.executable, YTDLP, "--no-warnings", *args]
+    extra = ["--cookies", YT_COOKIES] if os.path.exists(YT_COOKIES) else []
+    return [sys.executable, YTDLP, "--no-warnings", *extra, *args]
+
+
+def explain_ytdlp_error(msg):
+    m = msg.lower()
+    if "not a bot" in m or "sign in to confirm" in m or "429" in m:
+        return ("YouTube blockiert den Server (Bot-Schutz). Lösung: unter Musik „YouTube-Cookies“ hinterlegen "
+                "oder einen SoundCloud-Link nehmen.")
+    if "private" in m or "unavailable" in m:
+        return "Video nicht verfügbar (privat, gelöscht oder gesperrt)"
+    if "age" in m and "confirm" in m:
+        return "Altersbeschränkt – geht nur mit YouTube-Cookies"
+    return msg[:200]
 
 
 _vod_cache = {}
@@ -1552,6 +1580,7 @@ class MusicLinkImporter:
             key, url = self.q.get()
             job = converter.jobs[key]
             try:
+                update_ytdlp()
                 # 1) Liste holen (geht schnell, ohne Download)
                 job["state"] = "liest Playlist"
                 r = subprocess.run(ytdlp("--flat-playlist", "-J", "--playlist-end", "200", url),
@@ -1562,7 +1591,7 @@ class MusicLinkImporter:
                 items = [(u if str(u).startswith("http") else f"https://www.youtube.com/watch?v={u}", t)
                          for u, t in items if u] or [(url, info.get("title") or "")]
                 total = len(items)
-                done, ok, lock_ = [0], [0], threading.Lock()
+                done, ok, lock_, errors = [0], [0], threading.Lock(), {}
                 job.update(state="lädt Musik", progress=0, title=(info.get("title") or "Musik")[:50] + f" (0/{total})")
                 todo = queue.Queue()
                 for it in items:
@@ -1579,7 +1608,10 @@ class MusicLinkImporter:
                             with lock_:
                                 ok[0] += 1
                         except Exception as e:  # noqa
-                            log_line(f"Musik-Link: '{t or u}' übersprungen ({str(e)[:120]})")
+                            why = explain_ytdlp_error(str(e))
+                            with lock_:
+                                errors[why] = errors.get(why, 0) + 1
+                            log_line(f"Musik-Link: '{t or u}' übersprungen ({str(e)[:160]})")
                         with lock_:
                             done[0] += 1
                             job["progress"] = int(done[0] / total * 100)
@@ -1591,7 +1623,11 @@ class MusicLinkImporter:
                 for t in threads:
                     t.join()
                 if not ok[0]:
-                    raise RuntimeError("Kein Song ließ sich laden")
+                    top = max(errors.items(), key=lambda kv: kv[1])[0] if errors else "unbekannter Fehler"
+                    raise RuntimeError(f"Kein Song ließ sich laden – {top}")
+                if errors:
+                    top = max(errors.items(), key=lambda kv: kv[1])[0]
+                    log_line(f"Musik-Link: {total - ok[0]} Songs übersprungen, häufigster Grund: {top}")
                 job.update(state="fertig", progress=100,
                            title=f"{ok[0]} von {total} Song{'s' if total != 1 else ''} hinzugefügt")
             except Exception as e:  # noqa
@@ -1788,6 +1824,12 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <div class="btns" style="margin-top:0"><label class="filebtn">＋ Songs hinzufügen<input type="file" id="muFile" accept="audio/*,video/*,.mp3,.m4a,.mp4,.webm,.mkv" multiple></label><button id="muSkip">⏭ Nächster Song</button></div>
   <div style="display:flex;gap:8px;margin-top:8px"><input type="text" id="muLink" placeholder="Link einfügen (YouTube, SoundCloud, Playlist bis 200 Songs)" style="flex:1"><button class="go" id="bMuLink">＋ Per Link</button></div>
   <div id="muJobs"></div>
+  <details style="margin-top:8px"><summary style="cursor:pointer;color:var(--mut);font-size:14px">🍪 YouTube-Cookies <span id="ckInfo"></span> – falls YouTube den Server blockt</summary>
+   <div class="hint">YouTube blockt Downloads von Servern oft („not a bot“). Mit deinen YouTube-Cookies klappt es meistens:<br>
+   1. Im PC-Browser die Erweiterung „Get cookies.txt LOCALLY“ installieren.<br>2. youtube.com öffnen (eingeloggt, am besten mit einem Zweit-Account).<br>
+   3. In der Erweiterung „Export“ → Datei <b>cookies.txt</b> hier hochladen.<br>Die Datei bleibt nur auf deinem Server.</div>
+   <div class="btns"><label class="filebtn">cookies.txt wählen<input type="file" id="ckFile" accept=".txt,text/plain"></label><button onclick="api('/api/cookies_delete').then(refresh)">Entfernen</button></div>
+  </details>
   <div id="muList" style="margin-top:8px"></div>
   <label>Lautstärke: <span id="volV"></span> %</label><input type="range" id="cd_volume" min="0" max="100" style="width:100%">
   <label class="chk"><input type="checkbox" id="cd_shuffle_music"> Songs zufällig mischen</label>
@@ -1881,6 +1923,7 @@ async function refresh(){
  $('twList').innerHTML=s.tw_playlist.length?s.tw_playlist.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${v.duration?fmt(v.duration):''}</small></div><button onclick="twRemove(this.dataset.u)" data-u="${esc(v.url)}">Entfernen</button></div>`).join(''):'<div class="empty">Noch keine VODs in der Playlist.</div>';
  $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('cvInfo').textContent=s.cd_cover?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
  $('muJobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.kind=='music'&&(j.state!='fertig'||true)).slice(-5).map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''}${j.state=='lädt Musik'?' '+j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'||j.state=='fertig'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
+ $('ckInfo').textContent=s.yt_cookies?'✅':'';
  $('muList').innerHTML=s.music.map(m=>`<div class="vid"><div class="t">${m==s.now_playing?'🔊 ':''}${esc(m)}</div><button onclick="delSong(this.dataset.n)" data-n="${esc(m)}">Löschen</button></div>`).join('');
  if(!cfgLoaded){$('cd_theme').innerHTML=Object.entries(s.themes).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
   for(const k of CDF)$(k).value=s.cfg[k];$('cd_game_ps5').value=s.cfg.cd_game;$('cd_boxlabel_ps5').value=s.cfg.cd_boxlabel;$('cd_shuffle_music').checked=s.cfg.cd_shuffle_music;$('cd_volume').value=s.cfg.cd_volume;$('volV').textContent=s.cfg.cd_volume;showTh()}
@@ -1933,7 +1976,7 @@ async function asset(kind,f){
   if(!ok){alert('Upload fehlgeschlagen: '+err);refresh();return}
   if(kind=='music')$('muInfo').textContent=`(lädt hoch: ${esc(f.name)} ${Math.round((i+1)/total*100)} % · ${mb(Math.min(f.size,(i+1)*CH))} / ${mb(f.size)}${i==total-1?' – wird verarbeitet …':''})`;
  }
- refresh();if(kind!='music')showPrev();
+ refresh();if(kind=='bg'||kind=='cover')showPrev();
 }
 $('bgFile').onchange=e=>{if(e.target.files[0])asset('bg',e.target.files[0]);e.target.value=''};
 $('muFile').onchange=async e=>{const fs=[...e.target.files];e.target.value='';$('muInfo').textContent='(lädt hoch …)';for(const f of fs)await asset('music',f)};
@@ -1941,6 +1984,7 @@ $('bgDel').onclick=async()=>{await api('/api/asset_delete',{kind:'bg'});refresh(
 $('cvFile').onchange=e=>{if(e.target.files[0])asset('cover',e.target.files[0]);e.target.value=''};
 $('cvDel').onclick=async()=>{await api('/api/asset_delete',{kind:'cover'});refresh();showPrev()};
 async function delSong(n){if(confirm('Song löschen?')){await api('/api/asset_delete',{kind:'music',name:n});refresh()}}
+$('ckFile').onchange=e=>{if(e.target.files[0])asset('cookies',e.target.files[0]).then(()=>alert('Cookies gespeichert ✅ – jetzt den Link nochmal einfügen.'));e.target.value=''};
 $('bMuLink').onclick=async()=>{const u=$('muLink').value.trim();if(!u)return;const j=await api('/api/music_link',{url:u});if(j.ok){$('muLink').value='';refresh()}};
 $('muSkip').onclick=async()=>{await api('/api/music_skip');setTimeout(refresh,800)};
 $('bUpd').onclick=async()=>{if(!confirm('Neueste Version installieren? Der Stream bleibt dabei online.'))return;
@@ -2196,6 +2240,9 @@ class Handler(BaseHTTPRequestHandler):
                 rebuild_layers()
             except Exception as e:  # noqa
                 return self._send(200, {"error": f"Cover konnte nicht geladen werden: {e}"})
+        elif path == "/api/cookies_delete":
+            if os.path.exists(YT_COOKIES):
+                os.remove(YT_COOKIES)
         elif path == "/api/music_link":
             try:
                 music_importer.add(str(data.get("url", "")))
@@ -2356,7 +2403,7 @@ class Handler(BaseHTTPRequestHandler):
         except (KeyError, ValueError):
             return self._send(400, {"error": "Ungültige Anfrage"})
         allowed = {"bg": (".png", ".jpg", ".jpeg", ".webp"), "cover": (".png", ".jpg", ".jpeg", ".webp"),
-                   "music": MUSIC_UPLOAD_EXT}
+                   "music": MUSIC_UPLOAD_EXT, "cookies": (".txt",)}
         if kind not in allowed or ext not in allowed[kind] or not uid:
             return self._send(400, {"error": f"Dateityp {ext or '?'} nicht erlaubt"})
         tmp = os.path.join(RUN_DIR, f"chunk_{uid}{ext}")
@@ -2391,6 +2438,15 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, {"ok": True, "done": True})
 
     def _finish_asset(self, kind, name, ext, tmp):
+        if kind == "cookies":
+            txt = open(tmp, "r", encoding="utf-8", errors="replace").read()
+            os.remove(tmp)
+            if "youtube.com" not in txt or "\t" not in txt:
+                raise RuntimeError("Das ist keine cookies.txt mit YouTube-Cookies (Netscape-Format)")
+            with open(YT_COOKIES, "w", encoding="utf-8") as fh:
+                fh.write(txt)
+            os.chmod(YT_COOKIES, 0o600)
+            return
         if kind in ("bg", "cover"):
             save_upload_image(tmp, kind)
             rebuild_layers()                         # wird live ausgetauscht
@@ -2470,6 +2526,7 @@ def status():
         "cd_bg": os.path.exists(BG_ORIG),
         "cd_cover": os.path.exists(COVER_ORIG),
         "music": [os.path.basename(m) for m in list_music()],
+        "yt_cookies": os.path.exists(YT_COOKIES),
         "now_playing": os.path.basename(audio_feeder.current) if audio_feeder.current else "",
         "disk_free_gb": round(shutil.disk_usage(BASE).free / 1e9, 1),
         "log": log_tail(),
