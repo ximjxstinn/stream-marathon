@@ -98,6 +98,7 @@ DEFAULT_CFG = {
     "cd_volume": 60,
     "cd_shuffle_music": True,
     "cfg_version": 3,
+    "vod_channel": "xImJxstinn",
 }
 TZ_NAME = "Europe/Berlin"
 CD_DIR = os.path.join(BASE, "countdown")
@@ -240,7 +241,7 @@ class Converter:
             raise RuntimeError("Keine Videospur gefunden – ist das wirklich ein Video?")
         tmp_out = os.path.join(TMP_DIR, name + ".mp4")
         kbit = int(vb[:-1])
-        cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostats",
+        cmd = ["nice", "-n", "19", "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostats",
                "-progress", "pipe:1", "-i", src,
                "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
                "-map", "0:v:0", "-map", "0:a:0" if has_audio else "1:a:0",
@@ -942,6 +943,112 @@ def log_tail(n=25):
 
 
 converter = Converter()
+
+
+# ------------------------------------------------------------ Twitch-VODs ----
+YTDLP = os.path.join(BASE, "bin", "yt-dlp")
+YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+
+
+def ensure_ytdlp():
+    """Lädt das Hilfsprogramm yt-dlp beim ersten Mal selbst herunter (kein SSH nötig)."""
+    if os.path.exists(YTDLP):
+        return
+    import urllib.request
+    os.makedirs(os.path.dirname(YTDLP), exist_ok=True)
+    tmp = YTDLP + ".new"
+    with urllib.request.urlopen(YTDLP_URL, timeout=120) as r, open(tmp, "wb") as fh:
+        shutil.copyfileobj(r, fh)
+    os.chmod(tmp, 0o755)
+    os.replace(tmp, YTDLP)
+
+
+def ytdlp(*args, **kw):
+    ensure_ytdlp()
+    return [sys.executable, YTDLP, "--no-warnings", *args]
+
+
+_vod_cache = {}
+
+
+def list_vods(channel):
+    channel = re.sub(r"[^A-Za-z0-9_]", "", channel)[:30]
+    if not channel:
+        raise RuntimeError("Kanalname fehlt")
+    hit = _vod_cache.get(channel.lower())
+    if hit and time.time() - hit[0] < 120:
+        return hit[1]
+    vods = []
+    for kind, url in (("VOD", f"https://www.twitch.tv/{channel}/videos?filter=archives&sort=time"),
+                      ("Highlight", f"https://www.twitch.tv/{channel}/videos?filter=highlights&sort=time")):
+        r = subprocess.run(ytdlp("--flat-playlist", "-J", "--playlist-end", "40", url),
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            continue
+        for e in json.loads(r.stdout or "{}").get("entries") or []:
+            vurl = e.get("url") or e.get("webpage_url") or ""
+            if not vurl.startswith("http"):
+                vurl = f"https://www.twitch.tv/videos/{str(e.get('id', '')).lstrip('v')}"
+            vods.append({"id": str(e.get("id", "")), "title": e.get("title") or "Ohne Titel", "url": vurl,
+                         "duration": e.get("duration") or 0, "timestamp": e.get("timestamp") or 0, "kind": kind})
+    if not vods:
+        raise RuntimeError("Keine VODs gefunden – ist der Kanalname richtig und sind die VODs öffentlich?")
+    vods.sort(key=lambda v: v["timestamp"], reverse=True)
+    _vod_cache[channel.lower()] = (time.time(), vods)
+    return vods
+
+
+class VodImporter:
+    """Lädt VODs direkt auf den Server und gibt sie danach an die Umwandlung weiter."""
+
+    def __init__(self):
+        self.q = queue.Queue()
+        threading.Thread(target=self._worker, daemon=True).start()
+
+    def add(self, url, title, duration):
+        if not re.match(r"^https://(www\.|m\.)?twitch\.tv/", url):
+            raise RuntimeError("Nur Twitch-Links erlaubt")
+        need = max(duration, 600) / 3600 * 2.0e9 + 1.0e9      # grob 2 GB pro Stunde + Puffer
+        free = shutil.disk_usage(BASE).free
+        if need > free:
+            raise RuntimeError(f"Nicht genug Speicher frei ({free / 1e9:.1f} GB frei, ca. {need / 1e9:.1f} GB nötig)")
+        key = "twitch_" + secrets.token_hex(4)
+        converter.jobs[key] = {"state": "wartet auf Download", "progress": 0, "title": title, "error": ""}
+        self.q.put((key, url, title))
+
+    def _worker(self):
+        while True:
+            key, url, title = self.q.get()
+            job = converter.jobs[key]
+            try:
+                job["state"] = "lädt von Twitch"
+                out_base = os.path.join(UPLOAD_DIR, key)
+                cmd = ["nice", "-n", "10"] + ytdlp(
+                    "-f", "best[height<=720][fps<=30]/best[height<=720]/best", "--newline", "--no-part",
+                    "--concurrent-fragments", "4", "-o", out_base + ".%(ext)s", url)
+                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                last = ""
+                for line in p.stdout:
+                    last = line.strip() or last
+                    m = re.search(r"\[download\]\s+([\d.]+)%", line)
+                    if m:
+                        job["progress"] = int(float(m.group(1)))
+                if p.wait() != 0:
+                    raise RuntimeError("Download fehlgeschlagen: " + last[-200:])
+                files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(key + ".")]
+                if not files:
+                    raise RuntimeError("Download-Datei nicht gefunden")
+                converter.jobs.pop(key, None)
+                converter.add(os.path.join(UPLOAD_DIR, files[0]), title)   # danach normale Umwandlung
+            except Exception as e:  # noqa
+                job["state"] = "fehler"
+                job["error"] = str(e)[:300]
+                for f in os.listdir(UPLOAD_DIR):
+                    if f.startswith(key + "."):
+                        os.remove(os.path.join(UPLOAD_DIR, f))
+
+
+vod_importer = VodImporter()
 streamer = None  # wird in main() erstellt
 
 
@@ -1034,6 +1141,12 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
 <section class="card" id="vidCard"><h2>Videos</h2>
  <label class="filebtn">＋ Videos hochladen<input type="file" id="file" accept="video/*" multiple></label>
  <div class="hint">Videos werden nach dem Upload einmal umgewandelt, danach landen sie automatisch in der Playlist.</div>
+ <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+  <b>📺 Direkt von Twitch übernehmen</b>
+  <div class="hint">Der Server lädt die VODs selbst – du musst nichts herunterladen. Twitch löscht VODs nach einiger Zeit, Highlights bleiben.</div>
+  <div style="display:flex;gap:8px;margin-top:8px"><input type="text" id="vodCh" placeholder="Kanalname" style="flex:1"><button class="go" id="bVods">VODs laden</button></div>
+  <div id="vodList" style="margin-top:8px"></div>
+ </div>
  <div id="uploads"></div><div id="jobs"></div><div id="vids" style="margin-top:10px"></div>
 </section>
 <section class="card"><h2>Einstellungen</h2>
@@ -1073,7 +1186,7 @@ async function refresh(){
  $('sub').textContent=(s.sender_ok?(s.running?`Zuschauer sehen: ${s.showing} · `:''):'⚠ Sender-Dienst läuft nicht · ')+`Speicher frei: ${s.disk_free_gb} GB`+(s.mode=='videos'?` · ${s.videos.length} Videos (${fmt(s.total_duration)})`:'');
  $('bStart').disabled=s.running;$('bStop').disabled=!s.running;$('bRe').disabled=!s.running;
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
- $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${j.state=='konvertiert'?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
+ $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${(j.state=='konvertiert'||j.state=='lädt von Twitch')?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('log').textContent=s.log||'(noch leer)';
  $('keyinfo').textContent=s.key_set?'✅ gesetzt':'❌ fehlt';$('ytkeyinfo').textContent=s.yt_key_set?'✅ gesetzt':'❌ fehlt';
  $('dests').innerHTML=Object.values(s.dest).map(d=>`<div style="display:flex;align-items:center;gap:8px;margin:4px 0"><span class="dot${d.live?' live':''}" style="width:10px;height:10px"></span><b>${d.name}</b><span style="color:var(--mut);font-size:14px">${d.live?'LIVE seit '+fmt(d.uptime):esc(d.msg)}${d.next_planned?' · geplanter Neustart in '+fmt(d.next_planned):''}${d.restarts?' · Reconnects: '+d.restarts:''}</span></div>`).join('');
@@ -1144,6 +1257,14 @@ $('bUpd').onclick=async()=>{if(!confirm('Neueste Version installieren? Der Strea
   await api('/api/restart_sender');
  else if(!j.sender_changed)alert('Update installiert ✅ Der Stream bleibt online – Zuschauer sehen kurz „Neu verbinden …“.');
  setTimeout(()=>location.reload(),5000)};
+let VODS=[];
+$('bVods').onclick=async()=>{$('vodList').innerHTML='<div class="hint">Lade Liste von Twitch …</div>';
+ const r=await fetch('/api/vods?channel='+encodeURIComponent($('vodCh').value.trim()));const j=await r.json();
+ if(j.error){$('vodList').innerHTML=`<div class="hint" style="color:#ff6b6b">${esc(j.error)}</div>`;return}
+ VODS=j.vods;$('vodList').innerHTML=VODS.map((v,i)=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${v.kind}${v.timestamp?' · '+new Date(v.timestamp*1000).toLocaleDateString('de-DE'):''}${v.duration?' · '+fmt(v.duration):''}</small></div><button onclick="impVod(${i},this)">Übernehmen</button></div>`).join('')};
+async function impVod(i,b){const v=VODS[i];b.disabled=true;const j=await api('/api/vod_import',{url:v.url,title:v.title,duration:v.duration});
+ b.textContent=j.ok?'✅ läuft':'Fehler';refresh()}
+fetch('/api/status').then(r=>r.json()).then(s=>{$('vodCh').value=s.vod_channel||'xImJxstinn'});
 refresh();setInterval(refresh,3000);
 </script></body></html>"""
 
@@ -1201,6 +1322,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, PANEL_HTML, "text/html")
         if path == "/api/status":
             return self._send(200, status())
+        if path == "/api/vods":
+            ch = (parse_qs(urlparse(self.path).query).get("channel") or [get_cfg()["vod_channel"]])[0]
+            try:
+                vods = list_vods(ch)
+                set_cfg(vod_channel=re.sub(r"[^A-Za-z0-9_]", "", ch)[:30])
+                return self._send(200, {"ok": True, "vods": vods})
+            except Exception as e:  # noqa
+                return self._send(200, {"error": f"VODs konnten nicht geladen werden: {e}"})
         if path == "/api/preview.png":
             out = os.path.join(CD_DIR, "preview.png")
             try:
@@ -1338,6 +1467,12 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             if streamer.want:
                 streamer.restart()
+        elif path == "/api/vod_import":
+            try:
+                vod_importer.add(str(data.get("url", "")), str(data.get("title", "Twitch-VOD"))[:80],
+                                 float(data.get("duration") or 0))
+            except Exception as e:  # noqa
+                return self._send(200, {"error": str(e)})
         elif path == "/api/dismiss":
             converter.jobs.pop(str(data.get("name", "")), None)
         else:
@@ -1552,6 +1687,7 @@ def status():
         "quality_locked": bool(vids) or converter.busy(),
         "shuffle": cfg["shuffle"],
         "mode": cfg["mode"],
+        "vod_channel": cfg["vod_channel"],
         "cfg": {k: v for k, v in cfg.items() if k.startswith("cd_")},
         "themes": THEMES,
         "cd_bg": os.path.exists(BG_ORIG),
