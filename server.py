@@ -102,6 +102,7 @@ DEFAULT_CFG = {
     "show_runtime": True,             # "● LIVE seit …" im Stream einblenden
     "runtime_label": "LIVE seit",
     "runtime_mode": "start",          # "start" = seit Start, "detail" = Twitch · YouTube · Gesamt
+    "runtime_pos": "tr",              # Position der Einblendung (tl, tc, tr, bl, bc, br)
     "tw_playlist": [],                # Twitch-VODs, die direkt (ohne Speichern) abgespielt werden
 }
 TZ_NAME = "Europe/Berlin"
@@ -355,9 +356,23 @@ def color_hex(cfg):
     return "0x" + (re.sub(r"[^0-9a-fA-F]", "", cfg.get("cd_color", "")) + "ffc400")[:6]
 
 
+RUNTIME_POS = {"tl": "oben links", "tc": "oben Mitte", "tr": "oben rechts",
+               "bl": "unten links", "bc": "unten Mitte", "br": "unten rechts"}
+
+
 class Ticker(threading.Thread):
     """Schreibt jede Viertelsekunde alle Texte des Countdowns in Dateien."""
     BAR_LEN = 60
+
+    def _runtime_files(self, cfg):
+        txt = self._runtime(cfg)
+        rest = txt.replace("●  ", "", 1) if txt.strip() else " "
+        pos = cfg.get("runtime_pos", "tr")
+        out = {}
+        for p in RUNTIME_POS:
+            out[f"runtime_{p}"] = txt if p == pos else " "
+            out[f"runtime_rest_{p}"] = rest if p == pos else " "
+        return out
 
     @staticmethod
     def _runtime(cfg):
@@ -422,8 +437,7 @@ class Ticker(threading.Thread):
             # Konsolen-Design
             "k_games": "Spiele", "k_media": "Medien", "k_user": "xImJxstinn",
             "clock": datetime.now(ZoneInfo(TZ_NAME)).strftime("%H:%M"),
-            "runtime": self._runtime(cfg),
-            "runtime_rest": self._runtime(cfg).replace("●  ", "", 1) if self._runtime(cfg).strip() else " ",
+            **self._runtime_files(cfg),
             "k_sub": hide("Vorgeladen · Spielbar in"),
             "k_btn": "Spielen" if done else "Vorbestellt",
             "pct": f"{int(frac * 100)} %",
@@ -646,10 +660,18 @@ def theme_filters(cfg, w, h):
     f = []
     ry = "h*0.115" if theme == "konsole" else "h*0.04"
     pad = int(h * 0.012)
-    # ganze Zeile rot (mit Kasten), dann alles außer dem Punkt rechtsbündig in Weiß darüber
-    runtime = [T("runtime", B, "h*0.026", "0xff3b3b", "w*0.965-text_w", ry,
-                 f":box=1:boxcolor=black@0.45:boxborderw={pad}"),
-               T("runtime_rest", B, "h*0.026", "white", "w*0.965-text_w", ry)]
+    # Zeit-Einblendung an allen Positionen vorbereitet; nur die gewählte bekommt Text.
+    # Ganze Zeile rot (mit Kasten), dann alles außer dem Punkt rechtsbündig in Weiß darüber.
+    by = "h*0.955-h*0.026*1.25"   # feste Höhe, damit Rot und Weiß deckungsgleich liegen
+    pos_xy = {"tl": ("w*0.035", ry), "tc": ("(w-text_w)/2", ry), "tr": ("w*0.965-text_w", ry),
+              "bl": ("w*0.035", by), "bc": ("(w-text_w)/2", by), "br": ("w*0.965-text_w", by)}
+    pre = "h*0.026*1.56884"   # Breite von "●  " in DejaVu Sans Bold (ausgemessen)
+    rest_x = {"l": f"w*0.035+{pre}", "c": f"(w-text_w)/2+{pre}/2", "r": "w*0.965-text_w"}
+    runtime = []
+    for p, (x, y) in pos_xy.items():
+        runtime.append(T(f"runtime_{p}", B, "h*0.026", "0xff3b3b", x, y,
+                         f":box=1:boxcolor=black@0.45:boxborderw={pad}:alpha='if(lt(text_w,h*0.05),0,1)'"))
+        runtime.append(T(f"runtime_rest_{p}", B, "h*0.026", "white", rest_x[p[1]], y))
     if theme == "standard":
         f.append(f"drawbox=x=0:y=ih*0.30:w=iw:h=ih*0.40:color={col}@0.08:t=fill")
         f.append(T("title", B, "h*0.085", "white", "(w-text_w)/2", "h*0.13"))
@@ -1466,7 +1488,8 @@ async function refresh(){
    return `<div style="margin-top:10px;font-size:15px">📊 <b>Gesamt ${ks.map(k=>s.dest[k].name).join(' + ')}:</b> ${fmtL(ses)} in dieser Sitzung<br><span style="color:var(--mut);font-size:14px">Insgesamt gestreamt: ${fmt(tot)}</span></div>`})()+
   Object.entries(s.dest).filter(([k])=>ST[k]&&(ST[k].total||ST[k].session)).map(([k,d])=>{const x=ST[k];return `<div style="margin-top:8px;font-size:14px"><b>${d.name}</b>: live ${fmtL(x.session)} in dieser Sitzung (${pct(x.session,s.session_secs)} % online) · Abbrüche: ${x.session_drops} · längste Strecke am Stück: ${fmtL(x.longest)}<br><span style="color:var(--mut)">Insgesamt gestreamt: ${fmt(x.total)}</span></div>`}).join('')+
   `<div class="btns" style="margin-top:10px;align-items:center"><label class="chk" style="margin:0"><input type="checkbox" id="showRt" ${s.show_runtime?'checked':''} onchange="api('/api/config',{show_runtime:this.checked})"> Im Stream zeigen:</label>
-   <select style="width:auto" onchange="api('/api/config',{runtime_mode:this.value})"><option value="start" ${s.runtime_mode=='start'?'selected':''}>● ${esc(s.runtime_label)} …</option><option value="detail" ${s.runtime_mode=='detail'?'selected':''}>● Twitch · YouTube · Gesamt</option></select></div>`;
+   <select style="width:auto" onchange="api('/api/config',{runtime_mode:this.value})"><option value="start" ${s.runtime_mode=='start'?'selected':''}>● ${esc(s.runtime_label)} …</option><option value="detail" ${s.runtime_mode=='detail'?'selected':''}>● Twitch · YouTube · Gesamt</option></select>
+   <select style="width:auto" onchange="api('/api/config',{runtime_pos:this.value}).then(()=>setTimeout(showPrev,500))">${Object.entries(s.runtime_positions).map(([k,v])=>`<option value="${k}" ${s.runtime_pos==k?'selected':''}>📍 ${v}</option>`).join('')}</select></div>`;
  $('dests').innerHTML=Object.values(s.dest).map(d=>`<div style="display:flex;align-items:center;gap:8px;margin:4px 0"><span class="dot${d.live?' live':''}" style="width:10px;height:10px"></span><b>${d.name}</b><span style="color:var(--mut);font-size:14px">${d.live?'LIVE seit '+fmt(d.uptime):esc(d.msg)}${d.next_planned?' · geplanter Neustart in '+fmt(d.next_planned):''}${d.restarts?' · Reconnects: '+d.restarts:''}</span></div>`).join('');
  const cd=s.mode=='countdown',tw=s.mode=='twitch';$('mCd').className=cd?'go':'';$('mTw').className=tw?'go':'';$('mVid').className=(!cd&&!tw)?'go':'';
  $('cdBox').style.display=cd?'':'none';$('twBox').style.display=tw?'':'none';
@@ -1699,6 +1722,8 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             if "show_runtime" in data:
                 upd["show_runtime"] = bool(data["show_runtime"])
+            if data.get("runtime_pos") in RUNTIME_POS:
+                upd["runtime_pos"] = data["runtime_pos"]
             if data.get("runtime_mode") in ("start", "detail"):
                 upd["runtime_mode"] = data["runtime_mode"]
             if "runtime_label" in data:
@@ -2029,6 +2054,7 @@ def status():
         "stats": stats.data["dest"],
         "show_runtime": cfg.get("show_runtime", True), "runtime_label": cfg.get("runtime_label", "LIVE seit"),
         "runtime_mode": cfg.get("runtime_mode", "start"),
+        "runtime_pos": cfg.get("runtime_pos", "tr"), "runtime_positions": RUNTIME_POS,
         "tw_playlist": cfg.get("tw_playlist") or [],
         "tw_now": {"title": streamer.vod["title"], "pos": streamer.vod["pos"] + (vod_progress_seconds() if streamer.source_alive() else 0),
                    "duration": streamer.vod["duration"]} if streamer.vod["url"] else None,
