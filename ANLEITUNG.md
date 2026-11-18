@@ -77,6 +77,12 @@ Tipp für YouTube: In YouTube Studio bei den Stream-Einstellungen „Automatisch
 - **„Neu verbinden …“:** Muss der Countdown neu starten (Design, Farbe, Qualität), sehen die Zuschauer ein paar Sekunden ein „Neu verbinden …“-Bild. Die Verbindung zu Twitch und YouTube bleibt dabei bestehen.
 - **Live-Änderungen:** Texte, Datum, Hintergrundbild, Songs und Lautstärke werden übernommen, ohne dass der Stream neu startet. Ein neuer Stream-Key verbindet nur die betroffene Plattform neu. Musik darf beliebig lang sein, auch 10-Stunden-Mixe gehen.
 
+## ⏱ Stream-Zähler
+- **Läuft seit Start:** Die Zeit seit ▶ Starten. Sie läuft bei Abbrüchen, Updates und Server-Neustarts weiter und beginnt erst nach ■ Stoppen neu.
+- **Pro Plattform:** echte Live-Zeit, Online-Anteil in %, Abbrüche, längste Strecke am Stück und die Gesamtzeit über alle Streams.
+- **Im Stream:** oben rechts „● LIVE seit …“, im Panel unter Status ein- und ausschaltbar, ohne Neustart.
+- Unter Einstellungen → „Zähler zurücksetzen“ setzt du alles auf 0.
+
 ## Gut zu wissen
 - **Kennzeichnung:** Markiere den Stream als Wiederholung, z. B. mit „🔁 24/7 Rerun“ im Titel. So denkt niemand, du sitzt gerade live da.
 - **Traffic:** Bei 3000 kbit/s rund um die Uhr kommst du auf ungefähr 1 TB im Monat. Bei Hetzner sind 20 TB inklusive.

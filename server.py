@@ -99,6 +99,8 @@ DEFAULT_CFG = {
     "cd_shuffle_music": True,
     "cfg_version": 3,
     "vod_channel": "xImJxstinn",
+    "show_runtime": True,             # "● LIVE seit …" im Stream einblenden
+    "runtime_label": "LIVE seit",
     "tw_playlist": [],                # Twitch-VODs, die direkt (ohne Speichern) abgespielt werden
 }
 TZ_NAME = "Europe/Berlin"
@@ -356,6 +358,12 @@ class Ticker(threading.Thread):
     """Schreibt jede Viertelsekunde alle Texte des Countdowns in Dateien."""
     BAR_LEN = 60
 
+    @staticmethod
+    def _runtime(cfg):
+        if not cfg.get("show_runtime", True) or not streamer or not streamer.session_started:
+            return " "
+        return f"●  {cfg.get('runtime_label', 'LIVE seit')} {fmt_dur(time.time() - streamer.session_started, long=True)}"
+
     def __init__(self):
         super().__init__(daemon=True)
         self.n = 0
@@ -403,6 +411,8 @@ class Ticker(threading.Thread):
             # Konsolen-Design
             "k_games": "Spiele", "k_media": "Medien", "k_user": "xImJxstinn",
             "clock": datetime.now(ZoneInfo(TZ_NAME)).strftime("%H:%M"),
+            "runtime": self._runtime(cfg),
+            "runtime_rest": self._runtime(cfg).replace("●  ", "", 1) if self._runtime(cfg).strip() else " ",
             "k_sub": hide("Vorgeladen · Spielbar in"),
             "k_btn": "Spielen" if done else "Vorbestellt",
             "pct": f"{int(frac * 100)} %",
@@ -618,6 +628,12 @@ def theme_filters(cfg, w, h):
 
     theme = cfg.get("cd_theme", "release")
     f = []
+    ry = "h*0.115" if theme == "konsole" else "h*0.04"
+    pad = int(h * 0.012)
+    # ganze Zeile rot (mit Kasten), dann alles außer dem Punkt rechtsbündig in Weiß darüber
+    runtime = [T("runtime", B, "h*0.026", "0xff3b3b", "w*0.965-text_w", ry,
+                 f":box=1:boxcolor=black@0.45:boxborderw={pad}"),
+               T("runtime_rest", B, "h*0.026", "white", "w*0.965-text_w", ry)]
     if theme == "standard":
         f.append(f"drawbox=x=0:y=ih*0.30:w=iw:h=ih*0.40:color={col}@0.08:t=fill")
         f.append(T("title", B, "h*0.085", "white", "(w-text_w)/2", "h*0.13"))
@@ -692,7 +708,7 @@ def theme_filters(cfg, w, h):
         for cx in (0.75, 0.857):
             f.append(T("colon", R, "h*0.06", "white@0.85", f"w*{cx}-text_w/2", "h*0.825"))
         f.append(T("done", B, "h*0.06", col, "w*0.52+(w*0.435-text_w)/2", "h*0.715+(h*0.2-text_h)/2"))
-    return f
+    return f + runtime
 
 
 def build_countdown_cmd(cfg, output, preview=False, fmt="flv"):
@@ -737,6 +753,75 @@ def build_countdown_cmd(cfg, output, preview=False, fmt="flv"):
               ["-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0"]), output]
     return cmd
 
+
+
+# ------------------------------------------------------------- Statistik ----
+STATS_PATH = os.path.join(BASE, "stats.json")
+
+
+def fmt_dur(sec, long=False):
+    sec = int(max(0, sec))
+    d, h, m, s_ = sec // 86400, sec // 3600 % 24, sec // 60 % 60, sec % 60
+    if long:
+        return (f"{d} Tag{'e' if d != 1 else ''} " if d else "") + f"{h:02d}:{m:02d}:{s_:02d}"
+    return (f"{d} T " if d else "") + f"{h} h {m:02d} min"
+
+
+class StatsTracker(threading.Thread):
+    """Zählt jede Sekunde, die eine Plattform wirklich live ist – dauerhaft gespeichert."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.data = load_json(STATS_PATH, {})
+        self.data.setdefault("dest", {})
+        self._was_live = {}
+
+    def d(self, k):
+        return self.data["dest"].setdefault(k, {"total": 0, "session": 0, "drops": 0, "session_drops": 0,
+                                                "longest": 0, "current": 0})
+
+    def new_session(self):
+        for k in DESTINATIONS:
+            x = self.d(k)
+            x.update(session=0, session_drops=0, current=0)
+        self.save()
+
+    def reset_all(self):
+        self.data = {"dest": {}}
+        self.new_session()
+
+    def save(self):
+        save_json(STATS_PATH, self.data)
+
+    def run(self):
+        n = 0
+        while True:
+            time.sleep(1)
+            try:
+                st = sender_status()
+                want = streamer is not None and streamer.want
+                for k, dd in st["dest"].items():
+                    x = self.d(k)
+                    live = bool(dd.get("live")) and want
+                    if live:
+                        x["total"] += 1
+                        x["session"] += 1
+                        x["current"] += 1
+                        x["longest"] = max(x["longest"], x["current"])
+                    elif self._was_live.get(k) and want:
+                        x["drops"] += 1                    # war live, ist es plötzlich nicht mehr
+                        x["session_drops"] += 1
+                        x["current"] = 0
+                    self._was_live[k] = live
+                n += 1
+                if n % 15 == 0:
+                    self.save()
+            except Exception as e:  # noqa
+                print("Statistik-Fehler:", e, flush=True)
+
+
+stats = StatsTracker()
+streamer = None
 
 ticker = Ticker()
 image_feeder = ImageFeeder()
@@ -796,14 +881,18 @@ class Streamer:
         self.vod = {"order": [], "url": None, "title": "", "pos": 0.0, "tries": 0, "duration": 0}
         threading.Thread(target=self._fifo_writer, daemon=True).start()
         st = load_json(STATE_PATH, {})
+        self.session_started = st.get("session_started") if st.get("want") else None
         if st.get("want"):
             self.start()  # nach Neustart/Update automatisch weitermachen
 
     def _save_state(self):
-        save_json(STATE_PATH, {"want": self.want})
+        save_json(STATE_PATH, {"want": self.want, "session_started": self.session_started})
 
     def start(self):
         with lock:
+            if not self.session_started:
+                self.session_started = time.time()   # neue Sitzung nur nach bewusstem Stopp
+                stats.new_session()
             self.want = True
             self._save_state()
             if not self.thread or not self.thread.is_alive():
@@ -813,6 +902,7 @@ class Streamer:
     def stop(self):
         with lock:
             self.want = False
+            self.session_started = None
             self._save_state()
             self._kill()
             self.status_msg = "Gestoppt"
@@ -1230,6 +1320,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div class="status"><span class="dot" id="dot"></span><span id="st">…</span></div>
  <div class="sub" id="sub"></div>
  <div id="dests" style="margin-top:12px"></div>
+ <div id="runtime" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)"></div>
  <div class="btns"><button class="go" id="bStart">▶ Starten</button><button class="stop" id="bStop">■ Stoppen</button><button id="bRe">↻ Neu starten</button></div>
 </section>
 <section class="card"><h2>Modus</h2>
@@ -1305,11 +1396,14 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <label>Update</label>
  <div class="btns" style="margin-top:0"><button id="bUpd">⬆ Neueste Version installieren</button></div>
  <div class="hint">Lädt die neueste Version von GitHub. Der Stream bleibt online – Zuschauer sehen ein paar Sekunden „Neu verbinden …“.</div>
+ <label>Statistik</label>
+ <div class="btns" style="margin-top:0"><button onclick="if(confirm('Alle Stream-Zeiten auf 0 setzen?'))api('/api/stats_reset').then(refresh)">Zähler zurücksetzen</button></div>
 </section>
 <section class="card"><h2>Log</h2><pre id="log"></pre></section>
 </main>
 <script>
 const $=id=>document.getElementById(id);
+const fmtL=s=>{s=Math.max(0,Math.round(s));const d=Math.floor(s/86400),p=n=>String(n).padStart(2,'0');return (d?d+(d==1?' Tag ':' Tage '):'')+p(Math.floor(s%86400/3600))+':'+p(Math.floor(s%3600/60))+':'+p(s%60)};
 const fmt=s=>{s=Math.round(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h?`${h} h ${m} min`:`${m} min ${s%60} s`};
 const mb=b=>(b/1048576).toFixed(0)+' MB';
 let cfgLoaded=false;
@@ -1324,6 +1418,10 @@ async function refresh(){
  $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${(j.state=='konvertiert'||j.state=='lädt von Twitch')?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('log').textContent=s.log||'(noch leer)';
  $('keyinfo').textContent=s.key_set?'✅ gesetzt':'❌ fehlt';$('ytkeyinfo').textContent=s.yt_key_set?'✅ gesetzt':'❌ fehlt';
+ const ST=s.stats||{},pct=(a,b)=>b>0?Math.min(100,a/b*100).toFixed(1).replace('.',','):'–';
+ $('runtime').innerHTML=(s.session_started?`<div style="font-size:15px">⏱ <b>Läuft seit Start:</b> ${fmtL(s.session_secs)}</div><div class="hint" style="margin-top:2px">Läuft bei Abbrüchen, Updates und Neustarts weiter – beginnt erst nach ■ Stoppen neu.</div>`:'<div class="hint">Stream gestoppt – der Zähler startet mit ▶ Starten.</div>')+
+  Object.entries(s.dest).filter(([k])=>ST[k]&&(ST[k].total||ST[k].session)).map(([k,d])=>{const x=ST[k];return `<div style="margin-top:8px;font-size:14px"><b>${d.name}</b>: live ${fmtL(x.session)} in dieser Sitzung (${pct(x.session,s.session_secs)} % online) · Abbrüche: ${x.session_drops} · längste Strecke am Stück: ${fmtL(x.longest)}<br><span style="color:var(--mut)">Insgesamt gestreamt: ${fmt(x.total)}</span></div>`}).join('')+
+  `<div class="btns" style="margin-top:10px"><label class="chk" style="margin:0"><input type="checkbox" id="showRt" ${s.show_runtime?'checked':''} onchange="api('/api/config',{show_runtime:this.checked})"> „● ${esc(s.runtime_label)} …“ im Stream zeigen</label></div>`;
  $('dests').innerHTML=Object.values(s.dest).map(d=>`<div style="display:flex;align-items:center;gap:8px;margin:4px 0"><span class="dot${d.live?' live':''}" style="width:10px;height:10px"></span><b>${d.name}</b><span style="color:var(--mut);font-size:14px">${d.live?'LIVE seit '+fmt(d.uptime):esc(d.msg)}${d.next_planned?' · geplanter Neustart in '+fmt(d.next_planned):''}${d.restarts?' · Reconnects: '+d.restarts:''}</span></div>`).join('');
  const cd=s.mode=='countdown',tw=s.mode=='twitch';$('mCd').className=cd?'go':'';$('mTw').className=tw?'go':'';$('mVid').className=(!cd&&!tw)?'go':'';
  $('cdBox').style.display=cd?'':'none';$('twBox').style.display=tw?'':'none';
@@ -1554,6 +1652,10 @@ class Handler(BaseHTTPRequestHandler):
                     upd["cd_volume"] = max(0, min(100, int(data["cd_volume"])))
                 except (TypeError, ValueError):
                     pass
+            if "show_runtime" in data:
+                upd["show_runtime"] = bool(data["show_runtime"])
+            if "runtime_label" in data:
+                upd["runtime_label"] = str(data["runtime_label"])[:30]
             if "cd_shuffle_music" in data:
                 upd["cd_shuffle_music"] = bool(data["cd_shuffle_music"])
             if "cd_target" in data:
@@ -1627,6 +1729,8 @@ class Handler(BaseHTTPRequestHandler):
             if streamer.vod["url"] == url and get_cfg()["mode"] == "twitch":
                 streamer._vod_done()
                 streamer._kill()                         # Sender zeigt kurz "Neu verbinden …", dann nächstes VOD
+        elif path == "/api/stats_reset":
+            stats.reset_all()
         elif path == "/api/twpl_skip":
             if get_cfg()["mode"] == "twitch":
                 streamer._vod_done()
@@ -1821,6 +1925,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, {"ok": True, "sender_changed": sender_changed})
 
         def _restart():
+            stats.save()
             streamer._kill()
             os._exit(0)                                      # systemd startet das Panel neu
         threading.Timer(1.0, _restart).start()
@@ -1852,6 +1957,10 @@ def status():
         "shuffle": cfg["shuffle"],
         "mode": cfg["mode"],
         "vod_channel": cfg["vod_channel"],
+        "session_started": streamer.session_started,
+        "session_secs": time.time() - streamer.session_started if streamer.session_started else 0,
+        "stats": stats.data["dest"],
+        "show_runtime": cfg.get("show_runtime", True), "runtime_label": cfg.get("runtime_label", "LIVE seit"),
         "tw_playlist": cfg.get("tw_playlist") or [],
         "tw_now": {"title": streamer.vod["title"], "pos": streamer.vod["pos"] + (vod_progress_seconds() if streamer.source_alive() else 0),
                    "duration": streamer.vod["duration"]} if streamer.vod["url"] else None,
@@ -1891,7 +2000,7 @@ def main():
     except Exception as e:  # noqa
         print("Ebenen-Fehler:", e, flush=True)
     ticker.tick()
-    for t in (ticker, image_feeder, audio_feeder):
+    for t in (ticker, image_feeder, audio_feeder, stats):
         t.start()
     # alte Einzel-Musikdatei (frühere Version) in die Playlist übernehmen
     for fn in os.listdir(CD_DIR):
@@ -1907,6 +2016,7 @@ def main():
     import signal
 
     def _shutdown(*_):
+        stats.save()
         streamer._kill()                                     # ffmpeg nicht verwaist zurücklassen
         os._exit(0)
     signal.signal(signal.SIGTERM, _shutdown)
