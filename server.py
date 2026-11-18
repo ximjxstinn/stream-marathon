@@ -882,6 +882,15 @@ class Streamer:
         threading.Thread(target=self._fifo_writer, daemon=True).start()
         st = load_json(STATE_PATH, {})
         self.session_started = st.get("session_started") if st.get("want") else None
+        up = max((d.get("uptime", 0) for d in sender_status()["dest"].values()), default=0)
+        if st.get("want") and (not self.session_started or time.time() - self.session_started < up - 30):
+            # Startzeit fehlt oder ist zu spät: die Live-Zeit des Senders zählt
+            self.session_started = time.time() - up
+            for k, d in sender_status()["dest"].items():
+                x = stats.d(k)
+                x["session"] = max(x["session"], int(d.get("uptime", 0)))
+                x["current"] = x["longest"] = max(x["longest"], int(d.get("uptime", 0)))
+                x["total"] = max(x["total"], x["session"])
         if st.get("want"):
             self.start()  # nach Neustart/Update automatisch weitermachen
 
@@ -1403,6 +1412,10 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
 </main>
 <script>
 const $=id=>document.getElementById(id);
+async function setStart(){const now=new Date(),pad=n=>String(n).padStart(2,'0');
+ const def=`${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+ const v=prompt('Seit wann läuft der Stream? (Format: JJJJ-MM-TTTHH:MM, deutsche Zeit)',def);if(!v)return;
+ const j=await api('/api/session_start',{when:v.trim().replace(' ','T')});if(j.ok)refresh()}
 const fmtL=s=>{s=Math.max(0,Math.round(s));const d=Math.floor(s/86400),p=n=>String(n).padStart(2,'0');return (d?d+(d==1?' Tag ':' Tage '):'')+p(Math.floor(s%86400/3600))+':'+p(Math.floor(s%3600/60))+':'+p(s%60)};
 const fmt=s=>{s=Math.round(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h?`${h} h ${m} min`:`${m} min ${s%60} s`};
 const mb=b=>(b/1048576).toFixed(0)+' MB';
@@ -1419,7 +1432,7 @@ async function refresh(){
  $('log').textContent=s.log||'(noch leer)';
  $('keyinfo').textContent=s.key_set?'✅ gesetzt':'❌ fehlt';$('ytkeyinfo').textContent=s.yt_key_set?'✅ gesetzt':'❌ fehlt';
  const ST=s.stats||{},pct=(a,b)=>b>0?Math.min(100,a/b*100).toFixed(1).replace('.',','):'–';
- $('runtime').innerHTML=(s.session_started?`<div style="font-size:15px">⏱ <b>Läuft seit Start:</b> ${fmtL(s.session_secs)}</div><div class="hint" style="margin-top:2px">Läuft bei Abbrüchen, Updates und Neustarts weiter – beginnt erst nach ■ Stoppen neu.</div>`:'<div class="hint">Stream gestoppt – der Zähler startet mit ▶ Starten.</div>')+
+ $('runtime').innerHTML=(s.session_started?`<div style="font-size:15px">⏱ <b>Läuft seit Start:</b> ${fmtL(s.session_secs)}</div><div class="hint" style="margin-top:2px">Läuft bei Abbrüchen, Updates und Neustarts weiter – beginnt erst nach ■ Stoppen neu. <a href="#" style="color:var(--acc)" onclick="setStart();return false">Startzeit ändern</a></div>`:'<div class="hint">Stream gestoppt – der Zähler startet mit ▶ Starten.</div>')+
   Object.entries(s.dest).filter(([k])=>ST[k]&&(ST[k].total||ST[k].session)).map(([k,d])=>{const x=ST[k];return `<div style="margin-top:8px;font-size:14px"><b>${d.name}</b>: live ${fmtL(x.session)} in dieser Sitzung (${pct(x.session,s.session_secs)} % online) · Abbrüche: ${x.session_drops} · längste Strecke am Stück: ${fmtL(x.longest)}<br><span style="color:var(--mut)">Insgesamt gestreamt: ${fmt(x.total)}</span></div>`}).join('')+
   `<div class="btns" style="margin-top:10px"><label class="chk" style="margin:0"><input type="checkbox" id="showRt" ${s.show_runtime?'checked':''} onchange="api('/api/config',{show_runtime:this.checked})"> „● ${esc(s.runtime_label)} …“ im Stream zeigen</label></div>`;
  $('dests').innerHTML=Object.values(s.dest).map(d=>`<div style="display:flex;align-items:center;gap:8px;margin:4px 0"><span class="dot${d.live?' live':''}" style="width:10px;height:10px"></span><b>${d.name}</b><span style="color:var(--mut);font-size:14px">${d.live?'LIVE seit '+fmt(d.uptime):esc(d.msg)}${d.next_planned?' · geplanter Neustart in '+fmt(d.next_planned):''}${d.restarts?' · Reconnects: '+d.restarts:''}</span></div>`).join('');
@@ -1729,6 +1742,18 @@ class Handler(BaseHTTPRequestHandler):
             if streamer.vod["url"] == url and get_cfg()["mode"] == "twitch":
                 streamer._vod_done()
                 streamer._kill()                         # Sender zeigt kurz "Neu verbinden …", dann nächstes VOD
+        elif path == "/api/session_start":
+            # Startzeit von Hand setzen ("YYYY-MM-DDTHH:MM", deutsche Zeit)
+            try:
+                ts = target_epoch({"cd_target": str(data.get("when", ""))[:16]})[0]
+            except Exception:  # noqa
+                return self._send(200, {"error": "Ungültige Zeit"})
+            if ts > time.time():
+                return self._send(200, {"error": "Die Startzeit darf nicht in der Zukunft liegen"})
+            if not streamer.want:
+                return self._send(200, {"error": "Der Stream läuft gerade nicht"})
+            streamer.session_started = ts
+            streamer._save_state()
         elif path == "/api/stats_reset":
             stats.reset_all()
         elif path == "/api/twpl_skip":
