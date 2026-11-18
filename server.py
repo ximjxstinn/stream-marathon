@@ -1525,6 +1525,92 @@ class VodImporter:
 vod_importer = VodImporter()
 
 
+# ---------------------------------------------------------- Musik per Link ----
+class MusicLinkImporter:
+    """Holt den Ton von einem Link (YouTube, SoundCloud, …) direkt auf den Server – auch ganze Playlists."""
+
+    def __init__(self):
+        self.q = queue.Queue()
+        threading.Thread(target=self._worker, daemon=True).start()
+
+    def add(self, url):
+        url = url.strip()
+        if not re.match(r"^https?://", url):
+            raise RuntimeError("Bitte einen vollständigen Link einfügen (https://…)")
+        if "spotify.com" in url or "music.apple.com" in url:
+            raise RuntimeError("Spotify-/Apple-Music-Links gehen nicht – die Songs sind kopiergeschützt")
+        if shutil.disk_usage(BASE).free < 2e9:
+            raise RuntimeError("Weniger als 2 GB Speicher frei")
+        key = "link_" + secrets.token_hex(4)
+        converter.jobs[key] = {"state": "lädt Musik", "progress": 0, "title": url[:70], "error": "", "kind": "music"}
+        self.q.put((key, url))
+
+    def _worker(self):
+        while True:
+            key, url = self.q.get()
+            job = converter.jobs[key]
+            tmpdir = os.path.join(RUN_DIR, key)
+            os.makedirs(tmpdir, exist_ok=True)
+            try:
+                cmd = ["nice", "-n", "10"] + ytdlp(
+                    "-f", "bestaudio/best", "--newline", "--no-part", "--yes-playlist", "--playlist-end", "50",
+                    "--max-filesize", "1500M", "-o", os.path.join(tmpdir, "%(title).70B.%(ext)s"), url)
+                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                last, item = "", ""
+                for line in p.stdout:
+                    last = line.strip() or last
+                    m = re.search(r"\[download\]\s+([\d.]+)%", line)
+                    if m:
+                        job["progress"] = int(float(m.group(1)))
+                    m = re.search(r"Downloading item (\d+) of (\d+)", line)
+                    if m:
+                        item = f" (Song {m.group(1)}/{m.group(2)})"
+                    m = re.search(r"Destination: .*/([^/]+)$", line.strip())
+                    if m:
+                        job["title"] = os.path.splitext(m.group(1))[0][:60] + item
+                p.wait()
+                files = [f for f in os.listdir(tmpdir) if not f.endswith((".part", ".ytdl", ".json"))]
+                if not files:
+                    raise RuntimeError("Nichts heruntergeladen: " + last[-160:])
+                job["state"] = "wird verarbeitet"
+                added = 0
+                for fn in files:
+                    try:
+                        self._store(os.path.join(tmpdir, fn), fn)
+                        added += 1
+                    except Exception as e:  # noqa
+                        log_line(f"Musik-Link: '{fn}' übersprungen ({e})")
+                if not added:
+                    raise RuntimeError("Keine abspielbare Tonspur gefunden")
+                job.update(state="fertig", progress=100, title=f"{added} Song{'s' if added != 1 else ''} hinzugefügt")
+            except Exception as e:  # noqa
+                job.update(state="fehler", error=str(e)[:300])
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+
+    @staticmethod
+    def _store(path, fn):
+        _, has_video, has_audio = probe(path)
+        if not has_audio:
+            raise RuntimeError("keine Tonspur")
+        base = re.sub(r"[^\w .()&–-]+", "_", os.path.splitext(fn)[0]).strip() or "song"
+        out = os.path.join(RUN_DIR, f"extract_{secrets.token_hex(4)}.mka")
+        r = subprocess.run(["nice", "-n", "10", "ffmpeg", "-v", "error", "-y", "-i", path, "-vn", "-map", "0:a:0",
+                            "-c:a", "copy", out], capture_output=True, text=True)
+        if r.returncode != 0:
+            r = subprocess.run(["nice", "-n", "10", "ffmpeg", "-v", "error", "-y", "-i", path, "-vn", "-map", "0:a:0",
+                                "-c:a", "libopus", "-b:a", "128k", out], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError("Ton nicht lesbar")
+        dst, i = os.path.join(MUSIC_DIR, base + ".mka"), 2
+        while os.path.exists(dst):
+            dst, i = os.path.join(MUSIC_DIR, f"{base} ({i}).mka"), i + 1
+        os.replace(out, dst)
+
+
+music_importer = MusicLinkImporter()
+
+
 # ------------------------------------------- Twitch-VODs ohne Speichern ----
 _stream_url_cache = {}
 
@@ -1674,6 +1760,8 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <div class="btns" style="margin-top:0"><label class="filebtn">Cover wählen<input type="file" id="cvFile" accept="image/png,image/jpeg,image/webp"></label><button onclick="api('/api/default_cover').then(j=>{refresh();if(j.ok)showPrev()})">🎨 Vice-City-Cover verwenden</button><button id="cvDel">Entfernen</button></div></div>
   <label>Musik-Playlist <span id="muInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">＋ Songs hinzufügen<input type="file" id="muFile" accept="audio/*,video/*,.mp3,.m4a,.mp4,.webm,.mkv" multiple></label><button id="muSkip">⏭ Nächster Song</button></div>
+  <div style="display:flex;gap:8px;margin-top:8px"><input type="text" id="muLink" placeholder="Link einfügen (YouTube, SoundCloud, Playlist …)" style="flex:1"><button class="go" id="bMuLink">＋ Per Link</button></div>
+  <div id="muJobs"></div>
   <div id="muList" style="margin-top:8px"></div>
   <label>Lautstärke: <span id="volV"></span> %</label><input type="range" id="cd_volume" min="0" max="100" style="width:100%">
   <label class="chk"><input type="checkbox" id="cd_shuffle_music"> Songs zufällig mischen</label>
@@ -1743,7 +1831,7 @@ async function refresh(){
  $('sub').textContent=(s.sender_ok?(s.running?`Zuschauer sehen: ${s.showing=='Live-Programm'?(s.mode=='twitch'?'Twitch-VODs':s.mode=='countdown'?'Countdown':'Videos'):s.showing} · `:''):'⚠ Sender-Dienst läuft nicht · ')+`Speicher frei: ${s.disk_free_gb} GB`+(s.mode=='videos'?` · ${s.videos.length} Videos (${fmt(s.total_duration)})`:'');
  $('bStart').disabled=s.running;$('bStop').disabled=!s.running;$('bRe').disabled=!s.running;
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
- $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${(j.state=='konvertiert'||j.state=='lädt von Twitch')?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
+ $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig'&&j.kind!='music').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${(j.state=='konvertiert'||j.state=='lädt von Twitch')?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('log').textContent=s.log||'(noch leer)';
  const PF=s.perf||{};$('perfPreset').value=PF.preset;$('perfAuto').checked=PF.auto;
  $('perfInfo').textContent=`Server-Auslastung: ${Math.round(PF.load/PF.cpus*100)} % (${PF.cpus} Kern${PF.cpus>1?'e':''})`+(PF.lag>1?` · ⚠ Live-Bild hinkt ${PF.lag} s hinterher`:' · Live-Bild läuft flüssig')+(PF.note?` · ${PF.note}`:'');
@@ -1766,6 +1854,7 @@ async function refresh(){
  $('twNow').innerHTML=s.tw_now?`🔴 Läuft: <b>${esc(s.tw_now.title)}</b><br><small style="color:var(--mut)">${fmt(s.tw_now.pos)}${s.tw_now.duration?' / '+fmt(s.tw_now.duration):''}</small>`:'';
  $('twList').innerHTML=s.tw_playlist.length?s.tw_playlist.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${v.duration?fmt(v.duration):''}</small></div><button onclick="twRemove(this.dataset.u)" data-u="${esc(v.url)}">Entfernen</button></div>`).join(''):'<div class="empty">Noch keine VODs in der Playlist.</div>';
  $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('cvInfo').textContent=s.cd_cover?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
+ $('muJobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.kind=='music'&&(j.state!='fertig'||true)).slice(-5).map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''}${j.state=='lädt Musik'?' '+j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'||j.state=='fertig'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('muList').innerHTML=s.music.map(m=>`<div class="vid"><div class="t">${m==s.now_playing?'🔊 ':''}${esc(m)}</div><button onclick="delSong(this.dataset.n)" data-n="${esc(m)}">Löschen</button></div>`).join('');
  if(!cfgLoaded){$('cd_theme').innerHTML=Object.entries(s.themes).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
   for(const k of CDF)$(k).value=s.cfg[k];$('cd_game_ps5').value=s.cfg.cd_game;$('cd_boxlabel_ps5').value=s.cfg.cd_boxlabel;$('cd_shuffle_music').checked=s.cfg.cd_shuffle_music;$('cd_volume').value=s.cfg.cd_volume;$('volV').textContent=s.cfg.cd_volume;showTh()}
@@ -1826,6 +1915,7 @@ $('bgDel').onclick=async()=>{await api('/api/asset_delete',{kind:'bg'});refresh(
 $('cvFile').onchange=e=>{if(e.target.files[0])asset('cover',e.target.files[0]);e.target.value=''};
 $('cvDel').onclick=async()=>{await api('/api/asset_delete',{kind:'cover'});refresh();showPrev()};
 async function delSong(n){if(confirm('Song löschen?')){await api('/api/asset_delete',{kind:'music',name:n});refresh()}}
+$('bMuLink').onclick=async()=>{const u=$('muLink').value.trim();if(!u)return;const j=await api('/api/music_link',{url:u});if(j.ok){$('muLink').value='';refresh()}};
 $('muSkip').onclick=async()=>{await api('/api/music_skip');setTimeout(refresh,800)};
 $('bUpd').onclick=async()=>{if(!confirm('Neueste Version installieren? Der Stream bleibt dabei online.'))return;
  const j=await api('/api/update');if(!j.ok)return;
@@ -2080,6 +2170,11 @@ class Handler(BaseHTTPRequestHandler):
                 rebuild_layers()
             except Exception as e:  # noqa
                 return self._send(200, {"error": f"Cover konnte nicht geladen werden: {e}"})
+        elif path == "/api/music_link":
+            try:
+                music_importer.add(str(data.get("url", "")))
+            except Exception as e:  # noqa
+                return self._send(200, {"error": str(e)})
         elif path == "/api/music_skip":
             audio_feeder.skip = True
         elif path == "/api/update":
