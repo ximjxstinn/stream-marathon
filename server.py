@@ -101,6 +101,8 @@ DEFAULT_CFG = {
     "vod_channel": "xImJxstinn",
     "show_runtime": True,             # "● LIVE seit …" im Stream einblenden
     "auto_update": True,              # neue Versionen automatisch installieren
+    "perf_preset": "veryfast",        # Encoder-Einstellung für Live-Bild (wird bei Überlastung automatisch schneller)
+    "perf_auto": True,                # bei Überlastung automatisch sparsamer werden
     "runtime_label": "LIVE seit",
     "runtime_mode": "start",          # "start" = seit Start, "detail" = Twitch · YouTube · Gesamt
     "runtime_pos": "tr",              # Position der Einblendung (tl, tc, tr, bl, bc, br)
@@ -302,7 +304,7 @@ THEMES = {"ps5": "PS5-Startseite (Bild + Countdown-Leiste)", "release": "PS5-Rel
 MUSIC_EXT = (".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac", ".opus", ".mka")
 MUSIC_UPLOAD_EXT = MUSIC_EXT + (".mp4", ".webm", ".mkv", ".mov", ".m4v", ".wma", ".aiff", ".aif")  # Videos: nur der Ton wird genutzt
 # Einstellungen, bei denen der Stream wirklich neu starten muss
-RESTART_KEYS = {"mode", "cd_theme", "cd_color", "quality"}   # Bild-Quelle neu
+RESTART_KEYS = {"mode", "cd_theme", "cd_color", "quality", "perf_preset"}   # Bild-Quelle neu
 RELAY_KEYS = {"twitch": {"stream_key", "server", "tw_enabled"}, "youtube": {"yt_key", "yt_server", "yt_enabled"}}
 SPINNER = "◐◓◑◒"
 
@@ -355,6 +357,14 @@ def atomic_write(path, text, _cache={}):
 
 def color_hex(cfg):
     return "0x" + (re.sub(r"[^0-9a-fA-F]", "", cfg.get("cd_color", "")) + "ffc400")[:6]
+
+
+PRESETS = ["veryfast", "superfast", "ultrafast"]    # von "beste Qualität" bis "am sparsamsten"
+
+
+def live_preset(cfg):
+    p = cfg.get("perf_preset", "veryfast")
+    return p if p in PRESETS else "veryfast"
 
 
 RUNTIME_POS = {"tl": "oben links", "tc": "oben Mitte", "tr": "oben rechts",
@@ -783,10 +793,11 @@ def build_countdown_cmd(cfg, output, preview=False, fmt="flv"):
     # Eingang 2: Musik (live austauschbar)
     cmd += ["-thread_queue_size", "4096", "-f", "s16le", "-ar", "44100", "-ac", "2", "-i", AUDIO_FIFO]
     cmd += ["-filter_complex_script", script, "-map", "[v]", "-map", "2:a:0",
-            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+            "-c:v", "libx264", "-preset", live_preset(cfg), "-pix_fmt", "yuv420p",
             "-b:v", vb, "-maxrate", vb, "-bufsize", vb, "-x264-params", "nal-hrd=cbr:force-cfr=1:repeat-headers=1",
             "-g", str(fps * 2), "-keyint_min", str(fps * 2), "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
+            "-progress", "pipe:2", "-stats_period", "2",
             *(["-f", "flv", "-flvflags", "no_duration_filesize"] if fmt == "flv" else
               ["-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0"]), output]
     return cmd
@@ -936,11 +947,12 @@ def build_slate_loop(cfg=None, force=False):
            f"x=(w-text_w)/2:y=h*0.92[v]")
     tmp = out + ".new.mp4"
     kbit = int(vb[:-1])
-    cmd = ["nice", "-n", "15", "ffmpeg", "-v", "error", "-y",
+    cmd = ["nice", "-n", "19", "ffmpeg", "-v", "error", "-y", "-threads", "1", "-filter_threads", "1",
+           "-filter_complex_threads", "1",
            "-f", "lavfi", "-i", bg, "-f", "lavfi", "-i", glow, "-f", "lavfi", "-i", spin, "-f", "lavfi", "-i", track,
            "-f", "lavfi", "-t", "3", "-i", "anullsrc=r=44100:cl=stereo",
            "-filter_complex", vf.replace("[b][2:v]", "[b][2:v]"), "-map", "[v]", "-map", "4:a", "-t", "3",
-           "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p",
+           "-c:v", "libx264", "-preset", "medium", "-threads", "1", "-pix_fmt", "yuv420p",
            "-b:v", vb, "-maxrate", vb, "-bufsize", vb, "-x264-params", "nal-hrd=cbr:force-cfr=1:repeat-headers=1",
            "-g", str(fps * 2), "-keyint_min", str(fps * 2), "-sc_threshold", "0",
            "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2", "-movflags", "+faststart", tmp]
@@ -1111,6 +1123,8 @@ class Streamer:
         self.fails = 0
         self.last_data = 0
         self.outq = queue.Queue(maxsize=200)
+        self.lag = 0.0
+        self.perf_note = ""
         self.vod = {"order": [], "url": None, "title": "", "pos": 0.0, "tries": 0, "duration": 0}
         threading.Thread(target=self._fifo_writer, daemon=True).start()
         st = load_json(STATE_PATH, {})
@@ -1227,6 +1241,50 @@ class Streamer:
         log_line(f"Twitch-VOD unterbrochen – mache bei {int(v['pos'] // 60)} min weiter")
         return v["tries"] <= 1
 
+    def _stderr_reader(self, proc, log):
+        """Schreibt ffmpeg-Meldungen ins Log – aber ohne Wiederholungs-Spam – und misst die Verzögerung."""
+        lag_lines, last_note, last_t = 0, time.time(), None
+        progress_keys = ("frame=", "fps=", "stream_", "bitrate=", "total_size=", "out_time", "dup_frames=",
+                         "drop_frames=", "speed=", "progress=")
+        try:
+            for raw in proc.stderr:
+                line = raw.decode("utf-8", "replace").rstrip()
+                if line.startswith("speed="):
+                    # Geschwindigkeit < 1x = Server schafft keine Echtzeit -> Verzögerung aufsummieren
+                    try:
+                        sp = float(line.split("=", 1)[1].rstrip("x"))
+                    except ValueError:
+                        continue
+                    now = time.time()
+                    if last_t and time.time() - self.started_at > 10:    # Startphase nicht mitzählen
+                        dt = now - last_t
+                        self.lag = max(0.0, self.lag + (1.0 - min(sp, 1.05)) * dt) if sp < 0.97 else max(0.0, self.lag - dt * 0.05)
+                        if self.lag > 1 and now - last_note > 30:
+                            log.write(time.strftime("[%Y-%m-%d %H:%M:%S] ") +
+                                      f"Hinweis: Live-Bild läuft nur mit {sp:.2f}x Echtzeit – "
+                                      f"{self.lag:.1f} s Verzögerung (Server ausgelastet)\n")
+                            log.flush()
+                            last_note = now
+                    last_t = now
+                    continue
+                if line.startswith(progress_keys):
+                    continue
+                m = re.search(r"after a lag of ([\d.]+)s", line)
+                if m:
+                    self.lag = float(m.group(1))
+                    lag_lines += 1
+                    if time.time() - last_note > 30:
+                        log.write(time.strftime("[%Y-%m-%d %H:%M:%S] ") +
+                                  f"Hinweis: Live-Bild hinkt {self.lag:.1f} s hinterher (Server ausgelastet)\n")
+                        log.flush()
+                        last_note = time.time()
+                    continue
+                if line:
+                    log.write(line + "\n")
+                    log.flush()
+        except (OSError, ValueError):
+            pass
+
     def _fifo_writer(self):
         """Schreibt das fertige Bild in die Pipe zum Sender."""
         while True:
@@ -1301,8 +1359,10 @@ class Streamer:
                 log_line(f"Bild-Quelle startet ({info})")
                 log = open(LOG_PATH, "a", encoding="utf-8")
                 self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                             stderr=log, env=FF_ENV, bufsize=0)
+                                             stderr=subprocess.PIPE, env=FF_ENV, bufsize=0)
                 threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
+                self.lag = 0.0
+                threading.Thread(target=self._stderr_reader, args=(self.proc, log), daemon=True).start()
                 self.started_at = self.last_data = time.time()
                 self.status_msg = "Läuft"
                 reason = None
@@ -1312,6 +1372,20 @@ class Streamer:
                         reason = "Bild-Quelle hängt – starte neu"
                         self._kill()
                         break
+                    # Server kommt nicht hinterher -> sparsamere Einstellung
+                    if self.lag > 4 and cfg["mode"] != "videos" and cfg.get("perf_auto", True):
+                        cur = live_preset(cfg)
+                        if cur == PRESETS[-1] and self.lag > 8:
+                            self.perf_note = ("Server zu schwach für diese Qualität – unter Einstellungen → Qualität "
+                                              "auf 720p30 stellen oder einen größeren Server nehmen")
+                        if cur != PRESETS[-1]:
+                            nxt = PRESETS[PRESETS.index(cur) + 1]
+                            set_cfg(perf_preset=nxt)
+                            reason = (f"Server kommt nicht hinterher ({self.lag:.0f} s Verzögerung) – "
+                                      f"schalte auf sparsamere Einstellung '{nxt}' um")
+                            self.perf_note = reason
+                            self._kill()
+                            break
                 ran = time.time() - self.started_at
                 log_line(reason or f"Bild-Quelle beendet (Code {self.proc.returncode})")
                 log.close()
@@ -1494,7 +1568,7 @@ def build_vod_cmd(cfg, stream_url, start_pos, output):
             "-map", "0:v:0", "-map", "0:a:0?",
             "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
                    f"fps={fps},format=yuv420p,setsar=1",
-            "-c:v", "libx264", "-preset", "veryfast", "-b:v", vb, "-maxrate", vb, "-bufsize", vb,
+            "-c:v", "libx264", "-preset", live_preset(cfg), "-b:v", vb, "-maxrate", vb, "-bufsize", vb,
             "-x264-params", "nal-hrd=cbr:force-cfr=1:repeat-headers=1",
             "-g", str(fps * 2), "-keyint_min", str(fps * 2), "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
@@ -1631,6 +1705,10 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <label>YouTube Server</label><input type="text" id="yt_server">
  <label>Geplant neu verbinden nach (Stunden) – YouTube-Limit ca. 24 h</label><input type="text" id="yt_max_hours" inputmode="decimal">
  <div class="hint">YouTube Studio → Erstellen → Livestream starten → Stream. Den Stream-Schlüssel dort kopieren. Am besten einen dauerhaften Schlüssel nehmen. Neuen Key speichern = nur diese Plattform verbindet kurz neu.</div>
+ <label>Leistung (Live-Bild)</label>
+ <select id="perfPreset" onchange="api('/api/config',{perf_preset:this.value})"><option value="veryfast">Beste Qualität (braucht mehr Leistung)</option><option value="superfast">Ausgewogen</option><option value="ultrafast">Sparsam (für kleine Server)</option></select>
+ <label class="chk"><input type="checkbox" id="perfAuto" onchange="api('/api/config',{perf_auto:this.checked})"> Automatisch sparsamer werden, wenn der Server nicht hinterherkommt</label>
+ <div class="hint" id="perfInfo"></div>
  <label>Qualität</label><select id="quality"></select>
  <div class="hint" id="qhint"></div>
  <label class="chk"><input type="checkbox" id="shuffle"> Videos zufällig mischen</label>
@@ -1667,6 +1745,8 @@ async function refresh(){
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
  $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${(j.state=='konvertiert'||j.state=='lädt von Twitch')?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('log').textContent=s.log||'(noch leer)';
+ const PF=s.perf||{};$('perfPreset').value=PF.preset;$('perfAuto').checked=PF.auto;
+ $('perfInfo').textContent=`Server-Auslastung: ${Math.round(PF.load/PF.cpus*100)} % (${PF.cpus} Kern${PF.cpus>1?'e':''})`+(PF.lag>1?` · ⚠ Live-Bild hinkt ${PF.lag} s hinterher`:' · Live-Bild läuft flüssig')+(PF.note?` · ${PF.note}`:'');
  const U=s.update_info||{};$('autoUpd').checked=s.auto_update;
  $('updInfo').textContent=`Version ${U.sha?U.sha.slice(0,7):'?'}${U.installed?' · installiert '+new Date(U.installed*1000).toLocaleString('de-DE'):''}${U.result?' · '+U.result:''}`;
  $('senderPending').style.display=U.sender_pending?'':'none';
@@ -1926,6 +2006,10 @@ class Handler(BaseHTTPRequestHandler):
                     upd["cd_volume"] = max(0, min(100, int(data["cd_volume"])))
                 except (TypeError, ValueError):
                     pass
+            if data.get("perf_preset") in PRESETS:
+                upd["perf_preset"] = data["perf_preset"]
+            if "perf_auto" in data:
+                upd["perf_auto"] = bool(data["perf_auto"])
             if "auto_update" in data:
                 upd["auto_update"] = bool(data["auto_update"])
             if "show_runtime" in data:
@@ -2248,6 +2332,8 @@ def status():
         "vod_channel": cfg["vod_channel"],
         "session_started": streamer.session_started,
         "auto_update": cfg.get("auto_update", True),
+        "perf": {"preset": live_preset(cfg), "auto": cfg.get("perf_auto", True), "lag": round(streamer.lag, 1),
+                 "load": round(os.getloadavg()[0], 2), "cpus": os.cpu_count() or 1, "note": streamer.perf_note},
         "update_info": {"result": auto_updater.last_result, "checked": auto_updater.last_check,
                         **{k: v for k, v in load_json(VERSION_PATH, {}).items() if k in ("sha", "installed", "sender_pending")}},
         "session_secs": time.time() - streamer.session_started if streamer.session_started else 0,
