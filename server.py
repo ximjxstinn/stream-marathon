@@ -101,6 +101,7 @@ DEFAULT_CFG = {
     "vod_channel": "xImJxstinn",
     "show_runtime": True,             # "● LIVE seit …" im Stream einblenden
     "runtime_label": "LIVE seit",
+    "runtime_mode": "start",          # "start" = seit Start, "detail" = Twitch · YouTube · Gesamt
     "tw_playlist": [],                # Twitch-VODs, die direkt (ohne Speichern) abgespielt werden
 }
 TZ_NAME = "Europe/Berlin"
@@ -362,6 +363,16 @@ class Ticker(threading.Thread):
     def _runtime(cfg):
         if not cfg.get("show_runtime", True) or not streamer or not streamer.session_started:
             return " "
+        if cfg.get("runtime_mode") == "detail":
+            parts, total = [], 0
+            for k, d in DESTINATIONS.items():
+                if cfg.get(d["enabled"]) and cfg.get(d["key"]):
+                    sec = stats.d(k)["session"]
+                    total += sec
+                    parts.append(f"{d['name']} {fmt_dur(sec, long=True)}")
+            if len(parts) > 1:
+                parts.append(f"Gesamt {fmt_dur(total, long=True)}")
+            return "●  LIVE  " + "  ·  ".join(parts) if parts else " "
         return f"●  {cfg.get('runtime_label', 'LIVE seit')} {fmt_dur(time.time() - streamer.session_started, long=True)}"
 
     def __init__(self):
@@ -1437,8 +1448,12 @@ async function refresh(){
  $('keyinfo').textContent=s.key_set?'✅ gesetzt':'❌ fehlt';$('ytkeyinfo').textContent=s.yt_key_set?'✅ gesetzt':'❌ fehlt';
  const ST=s.stats||{},pct=(a,b)=>b>0?Math.min(100,a/b*100).toFixed(1).replace('.',','):'–';
  $('runtime').innerHTML=(s.session_started?`<div style="font-size:15px">⏱ <b>Läuft seit Start:</b> ${fmtL(s.session_secs)}</div><div class="hint" style="margin-top:2px">Läuft bei Abbrüchen, Updates und Neustarts weiter – beginnt erst nach ■ Stoppen neu. <a href="#" style="color:var(--acc)" onclick="setStart();return false">Startzeit ändern</a></div>`:'<div class="hint">Stream gestoppt – der Zähler startet mit ▶ Starten.</div>')+
+  (()=>{const ks=Object.keys(s.dest).filter(k=>ST[k]&&(ST[k].total||ST[k].session));if(ks.length<1)return'';
+   const ses=ks.reduce((a,k)=>a+ST[k].session,0),tot=ks.reduce((a,k)=>a+ST[k].total,0);
+   return `<div style="margin-top:10px;font-size:15px">📊 <b>Gesamt ${ks.map(k=>s.dest[k].name).join(' + ')}:</b> ${fmtL(ses)} in dieser Sitzung<br><span style="color:var(--mut);font-size:14px">Insgesamt gestreamt: ${fmt(tot)}</span></div>`})()+
   Object.entries(s.dest).filter(([k])=>ST[k]&&(ST[k].total||ST[k].session)).map(([k,d])=>{const x=ST[k];return `<div style="margin-top:8px;font-size:14px"><b>${d.name}</b>: live ${fmtL(x.session)} in dieser Sitzung (${pct(x.session,s.session_secs)} % online) · Abbrüche: ${x.session_drops} · längste Strecke am Stück: ${fmtL(x.longest)}<br><span style="color:var(--mut)">Insgesamt gestreamt: ${fmt(x.total)}</span></div>`}).join('')+
-  `<div class="btns" style="margin-top:10px"><label class="chk" style="margin:0"><input type="checkbox" id="showRt" ${s.show_runtime?'checked':''} onchange="api('/api/config',{show_runtime:this.checked})"> „● ${esc(s.runtime_label)} …“ im Stream zeigen</label></div>`;
+  `<div class="btns" style="margin-top:10px;align-items:center"><label class="chk" style="margin:0"><input type="checkbox" id="showRt" ${s.show_runtime?'checked':''} onchange="api('/api/config',{show_runtime:this.checked})"> Im Stream zeigen:</label>
+   <select style="width:auto" onchange="api('/api/config',{runtime_mode:this.value})"><option value="start" ${s.runtime_mode=='start'?'selected':''}>● ${esc(s.runtime_label)} …</option><option value="detail" ${s.runtime_mode=='detail'?'selected':''}>● Twitch · YouTube · Gesamt</option></select></div>`;
  $('dests').innerHTML=Object.values(s.dest).map(d=>`<div style="display:flex;align-items:center;gap:8px;margin:4px 0"><span class="dot${d.live?' live':''}" style="width:10px;height:10px"></span><b>${d.name}</b><span style="color:var(--mut);font-size:14px">${d.live?'LIVE seit '+fmt(d.uptime):esc(d.msg)}${d.next_planned?' · geplanter Neustart in '+fmt(d.next_planned):''}${d.restarts?' · Reconnects: '+d.restarts:''}</span></div>`).join('');
  const cd=s.mode=='countdown',tw=s.mode=='twitch';$('mCd').className=cd?'go':'';$('mTw').className=tw?'go':'';$('mVid').className=(!cd&&!tw)?'go':'';
  $('cdBox').style.display=cd?'':'none';$('twBox').style.display=tw?'':'none';
@@ -1671,6 +1686,8 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             if "show_runtime" in data:
                 upd["show_runtime"] = bool(data["show_runtime"])
+            if data.get("runtime_mode") in ("start", "detail"):
+                upd["runtime_mode"] = data["runtime_mode"]
             if "runtime_label" in data:
                 upd["runtime_label"] = str(data["runtime_label"])[:30]
             if "cd_shuffle_music" in data:
@@ -1998,6 +2015,7 @@ def status():
         "session_secs": time.time() - streamer.session_started if streamer.session_started else 0,
         "stats": stats.data["dest"],
         "show_runtime": cfg.get("show_runtime", True), "runtime_label": cfg.get("runtime_label", "LIVE seit"),
+        "runtime_mode": cfg.get("runtime_mode", "start"),
         "tw_playlist": cfg.get("tw_playlist") or [],
         "tw_now": {"title": streamer.vod["title"], "pos": streamer.vod["pos"] + (vod_progress_seconds() if streamer.source_alive() else 0),
                    "duration": streamer.vod["duration"]} if streamer.vod["url"] else None,
