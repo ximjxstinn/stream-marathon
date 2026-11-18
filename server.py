@@ -402,7 +402,7 @@ class Ticker(threading.Thread):
             "r_tage": hide("Tage"), "r_std": hide("Stunden"), "r_min": hide("Minuten"), "r_sek": hide("Sekunden"),
             "spin": hide(SPINNER[int(now) % 4]),
             # Texte aus dem Panel
-            "title": cfg["cd_title"], "done": show(cfg["cd_done"]), "tile": " " if os.path.exists(COVER_ORIG) and cfg["cd_theme"] in ("ps5", "release") else cfg["cd_tile"],
+            "title": cfg["cd_title"], "done": show(cfg["cd_done"]), "tile": " " if os.path.exists(COVER_ORIG) and cfg["cd_theme"] in ("ps5", "release", "konsole") else cfg["cd_tile"],
             "release": "Release: " + release, "release_short": release,
             "badge": "●  " + cfg["cd_badge"], "badge_dot": "●",
             "head_full": cfg["cd_head1"] + cfg["cd_hl"], "head1": cfg["cd_head1"] or " ",
@@ -549,6 +549,8 @@ def tile_box(theme, w, h):
     """Position + Größe der Cover-Kachel (x, y, Kante) je Design."""
     if theme == "ps5":
         return int(w * 0.045), int(h * 0.69), int(h * 0.215)
+    if theme == "konsole":
+        return int(w * 0.05), int(h * 0.15), int(h * 0.22)
     return int(w * 0.045), int(h * 0.715), int(h * 0.2)
 
 
@@ -571,7 +573,7 @@ def rebuild_layers(cfg=None):
     w, h, _, _ = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
     theme = cfg.get("cd_theme", "ps5")
     has_bg, has_cover = os.path.exists(BG_ORIG), os.path.exists(COVER_ORIG)
-    needs_strip = theme in ("ps5", "release")
+    needs_strip = theme in ("ps5", "release", "konsole")   # Kachel (und ggf. Leiste) liegt in der Bild-Ebene
     if not has_bg and not has_cover and not needs_strip:
         for fp in (BG_RAW, BG_LAYER):
             if os.path.exists(fp):
@@ -587,11 +589,14 @@ def rebuild_layers(cfg=None):
         last, n = f"[l{n}]", n + 1
     if needs_strip:
         x, y, size = tile_box(theme, w, h)
-        top, scol = (int(h * 0.645), "0x0c1120@0.90") if theme == "ps5" else (int(h * 0.655), "0x05060b@0.93")
-        graph.append(f"color=c={scol}:s={w}x{h - top},format=rgba[st]")
-        graph.append(f"color=c=0x1c2244:s={size}x{size},format=rgba[tf]")
-        graph.append(f"{last}[st]overlay=0:{top}:shortest=1[s0]")
-        graph.append(f"[s0][tf]overlay={x}:{y}:shortest=1[s1]")
+        tile_col = "0x0a2a7a@0.85" if theme == "konsole" else "0x1c2244"
+        graph.append(f"color=c={tile_col}:s={size}x{size},format=rgba[tf]")
+        if theme != "konsole":
+            top, scol = (int(h * 0.645), "0x0c1120@0.90") if theme == "ps5" else (int(h * 0.655), "0x05060b@0.93")
+            graph.append(f"color=c={scol}:s={w}x{h - top},format=rgba[st]")
+            graph.append(f"{last}[st]overlay=0:{top}:shortest=1[s0]")
+            last = "[s0]"
+        graph.append(f"{last}[tf]overlay={x}:{y}:shortest=1[s1]")
         last = "[s1]"
     if has_cover and needs_strip:
         x, y, size = tile_box(theme, w, h)
@@ -644,13 +649,11 @@ def theme_filters(cfg, w, h):
         f.append(T("done", B, "h*0.13", col, "(w-text_w)/2", "h*0.40", ":shadowcolor=black@0.6:shadowx=5:shadowy=5"))
 
     elif theme == "konsole":
-        f.append("vignette=PI/5")
         f.append(T("k_games", B, "h*0.034", "white", "w*0.05", "h*0.06"))
         f.append(T("k_media", R, "h*0.034", "white@0.55", "w*0.05+h*0.17", "h*0.06"))
         f.append(T("clock", B, "h*0.034", "white", "w*0.95-text_w", "h*0.06"))
         f.append(T("k_user", R, "h*0.03", "white@0.75", "w*0.95-text_w-h*0.17", "h*0.065"))
         f.append("drawbox=x=iw*0.05-4:y=ih*0.15-4:w=ih*0.22+8:h=ih*0.22+8:color=white:t=4")
-        f.append("drawbox=x=iw*0.05:y=ih*0.15:w=ih*0.22:h=ih*0.22:color=0x0a2a7a@0.85:t=fill")
         f.append(T("tile", B, "h*0.05", "white", "w*0.05+(h*0.22-text_w)/2", "h*0.15+(h*0.22-text_h)/2"))
         for i in range(6):
             f.append(f"drawbox=x=iw*0.05+ih*0.25+{i}*ih*0.165:y=ih*0.185:w=ih*0.145:h=ih*0.145:color=white@0.10:t=fill")
@@ -733,7 +736,8 @@ def build_countdown_cmd(cfg, output, preview=False, fmt="flv"):
     else:
         cmd += ["-thread_queue_size", "8", "-f", "rawvideo", "-pix_fmt", "rgba", "-video_size", f"{w}x{h}",
                 "-framerate", "1", "-i", IMAGE_FIFO]
-    graph = (f"[0:v]scale={w}:{h},setsar=1,fps={fps},format=yuv420p[base];"
+    vig = ",vignette=PI/5" if theme == "konsole" else ""     # Vignette nur auf den Hintergrund, nicht aufs Cover
+    graph = (f"[0:v]scale={w}:{h},setsar=1,fps={fps},format=yuv420p{vig}[base];"
              f"[1:v]scale={w}:{h},format=rgba[img];"
              f"[base][img]overlay=0:0:eof_action=repeat:format=auto,format=yuv420p,"
              + ",\n".join(theme_filters(cfg, w, h)) + "[v]")
@@ -1363,7 +1367,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <img id="prev" style="width:100%;border-radius:10px;margin-top:14px;display:none">
   <label>Hintergrundbild <span id="bgInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">Bild wählen<input type="file" id="bgFile" accept="image/png,image/jpeg,image/webp"></label><button id="bgDel">Entfernen</button></div>
-  <div data-th="ps5 release"><label>Cover (quadratisch) <span id="cvInfo"></span></label>
+  <div data-th="ps5 release konsole"><label>Cover (quadratisch) <span id="cvInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">Cover wählen<input type="file" id="cvFile" accept="image/png,image/jpeg,image/webp"></label><button id="cvDel">Entfernen</button></div></div>
   <label>Musik-Playlist <span id="muInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">＋ Songs hinzufügen<input type="file" id="muFile" accept="audio/*,video/*,.mp3,.m4a,.mp4,.webm,.mkv" multiple></label><button id="muSkip">⏭ Nächster Song</button></div>
@@ -1933,9 +1937,17 @@ class Handler(BaseHTTPRequestHandler):
         so lange mit "Neu verbinden …" online. Der Sender selbst wird nur auf Wunsch neu gestartet."""
         import urllib.request
         try:
-            code = urllib.request.urlopen(UPDATE_URL, timeout=30).read()
+            # genaue neueste Version über die Commit-ID holen (umgeht den 5-Minuten-Zwischenspeicher von GitHub)
+            api = "https://api.github.com/repos/ximjxstinn/stream-marathon/commits/stream24"
+            req = urllib.request.Request(api, headers={"Accept": "application/vnd.github+json", "User-Agent": "stream24"})
+            try:
+                sha = json.loads(urllib.request.urlopen(req, timeout=20).read())["sha"]
+                base_url = f"https://raw.githubusercontent.com/ximjxstinn/stream-marathon/{sha}/"
+            except Exception:  # noqa
+                base_url = UPDATE_URL.rsplit("/", 1)[0] + "/"
+            code = urllib.request.urlopen(base_url + "server.py?t=" + str(int(time.time())), timeout=30).read()
             compile(code, "server.py", "exec")
-            scode = urllib.request.urlopen(SENDER_URL, timeout=30).read()
+            scode = urllib.request.urlopen(base_url + "sender.py?t=" + str(int(time.time())), timeout=30).read()
             compile(scode, "sender.py", "exec")
         except Exception as e:  # noqa
             return self._send(200, {"error": f"Update fehlgeschlagen: {e}"})
