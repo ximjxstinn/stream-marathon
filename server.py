@@ -959,10 +959,24 @@ RAW_BASE = "https://raw.githubusercontent.com/ximjxstinn/stream-marathon/"
 VERSION_PATH = os.path.join(BASE, "version.json")
 
 
+_sha_cache = {"etag": None, "sha": None}
+
+
 def latest_sha():
+    """Neueste Commit-ID. Mit ETag: 'nichts Neues' (304) zählt bei GitHub nicht gegen das Abfrage-Limit."""
     import urllib.request
-    req = urllib.request.Request(REPO_API, headers={"Accept": "application/vnd.github+json", "User-Agent": "stream24"})
-    return json.loads(urllib.request.urlopen(req, timeout=20).read())["sha"]
+    import urllib.error
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "stream24"}
+    if _sha_cache["etag"]:
+        headers["If-None-Match"] = _sha_cache["etag"]
+    try:
+        r = urllib.request.urlopen(urllib.request.Request(REPO_API, headers=headers), timeout=20)
+    except urllib.error.HTTPError as e:
+        if e.code == 304 and _sha_cache["sha"]:
+            return _sha_cache["sha"]
+        raise
+    _sha_cache.update(etag=r.headers.get("ETag"), sha=json.loads(r.read())["sha"])
+    return _sha_cache["sha"]
 
 
 def do_update(sha=None):
@@ -1001,7 +1015,7 @@ def restart_panel():
 
 
 class AutoUpdater(threading.Thread):
-    """Prüft alle 10 Minuten, ob es eine neue Version gibt, und installiert sie automatisch.
+    """Prüft alle 15 Sekunden, ob es eine neue Version gibt, und installiert sie automatisch.
     Das Panel startet dann neu – der Stream bleibt online (kurz "Neu verbinden …").
     Ein Sender-Update wird nur vorgemerkt, damit der Stream nicht abbricht."""
 
@@ -1011,13 +1025,15 @@ class AutoUpdater(threading.Thread):
         self.last_result = ""
 
     def run(self):
-        time.sleep(120)                               # nach dem Start erst mal in Ruhe laufen lassen
+        time.sleep(30)                                # nach dem Start kurz in Ruhe laufen lassen
         while True:
+            wait = 15
             try:
                 self.check()
             except Exception as e:  # noqa
                 self.last_result = f"Prüfen fehlgeschlagen: {e}"
-            time.sleep(600)
+                wait = 120                            # z. B. GitHub-Limit erreicht -> etwas länger warten
+            time.sleep(wait)
 
     def check(self, force=False):
         self.last_check = time.time()
@@ -1620,7 +1636,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <label class="chk"><input type="checkbox" id="shuffle"> Videos zufällig mischen</label>
  <div class="btns"><button class="go" id="bSave">Speichern</button></div>
  <label>Update</label>
- <label class="chk" style="margin-top:4px"><input type="checkbox" id="autoUpd" onchange="api('/api/config',{auto_update:this.checked})"> Automatisch updaten (prüft alle 10 Minuten, Stream bleibt online)</label>
+ <label class="chk" style="margin-top:4px"><input type="checkbox" id="autoUpd" onchange="api('/api/config',{auto_update:this.checked})"> Automatisch updaten (sofort, Stream bleibt online)</label>
  <div class="hint" id="updInfo"></div>
  <div id="senderPending" style="display:none;margin-top:8px;padding:10px;border-radius:8px;background:#2a2140">🛰 Ein Sender-Update ist bereit. Beim Neustart des Senders ist der Stream ca. 10 Sekunden offline – mach das, wann es dir passt.
   <div class="btns"><button class="go" onclick="if(confirm('Sender jetzt neu starten? Der Stream ist ca. 10 Sekunden offline.'))api('/api/restart_sender').then(refresh)">Sender jetzt neu starten</button></div></div>
