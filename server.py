@@ -815,6 +815,19 @@ class StatsTracker(threading.Thread):
             try:
                 st = sender_status()
                 want = streamer is not None and streamer.want
+                # Zähler darf nie weniger zeigen als die echte Verbindung (z. B. Twitch-Uptime)
+                if want and st.get("ok") and streamer.session_started:
+                    up = max((d.get("uptime", 0) for d in st["dest"].values()), default=0)
+                    if up > time.time() - streamer.session_started + 30:
+                        streamer.session_started = time.time() - up
+                        streamer._save_state()
+                        for k, dd in st["dest"].items():
+                            x = self.d(k)
+                            u = int(dd.get("uptime", 0))
+                            x["session"] = max(x["session"], u)
+                            x["current"] = max(x["current"], u)
+                            x["longest"] = max(x["longest"], x["current"])
+                            x["total"] = max(x["total"], x["session"])
                 for k, dd in st["dest"].items():
                     x = self.d(k)
                     live = bool(dd.get("live")) and want
