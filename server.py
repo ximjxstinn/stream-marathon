@@ -1016,24 +1016,16 @@ RAW_BASE = "https://raw.githubusercontent.com/ximjxstinn/stream-marathon/"
 VERSION_PATH = os.path.join(BASE, "version.json")
 
 
-_sha_cache = {"etag": None, "sha": None}
-
-
 def latest_sha():
-    """Neueste Commit-ID. Mit ETag: 'nichts Neues' (304) zählt bei GitHub nicht gegen das Abfrage-Limit."""
+    """Neueste Commit-ID über das Git-Protokoll (wie 'git ls-remote') – ohne API-Abfragelimit."""
     import urllib.request
-    import urllib.error
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": "stream24"}
-    if _sha_cache["etag"]:
-        headers["If-None-Match"] = _sha_cache["etag"]
-    try:
-        r = urllib.request.urlopen(urllib.request.Request(REPO_API, headers=headers), timeout=20)
-    except urllib.error.HTTPError as e:
-        if e.code == 304 and _sha_cache["sha"]:
-            return _sha_cache["sha"]
-        raise
-    _sha_cache.update(etag=r.headers.get("ETag"), sha=json.loads(r.read())["sha"])
-    return _sha_cache["sha"]
+    url = "https://github.com/ximjxstinn/stream-marathon.git/info/refs?service=git-upload-pack"
+    req = urllib.request.Request(url, headers={"User-Agent": "git/2.40 stream24"})
+    data = urllib.request.urlopen(req, timeout=20).read().decode("utf-8", "replace")
+    m = re.search(r"([0-9a-f]{40}) refs/heads/stream24\b", data)
+    if not m:
+        raise RuntimeError("Branch stream24 nicht gefunden")
+    return m.group(1)
 
 
 def do_update(sha=None):
@@ -1072,7 +1064,7 @@ def restart_panel():
 
 
 class AutoUpdater(threading.Thread):
-    """Prüft alle 15 Sekunden, ob es eine neue Version gibt, und installiert sie automatisch.
+    """Prüft alle 20 Sekunden, ob es eine neue Version gibt, und installiert sie automatisch.
     Das Panel startet dann neu – der Stream bleibt online (kurz "Neu verbinden …").
     Ein Sender-Update wird nur vorgemerkt, damit der Stream nicht abbricht."""
 
@@ -1084,12 +1076,12 @@ class AutoUpdater(threading.Thread):
     def run(self):
         time.sleep(30)                                # nach dem Start kurz in Ruhe laufen lassen
         while True:
-            wait = 15
+            wait = 20
             try:
                 self.check()
             except Exception as e:  # noqa
                 self.last_result = f"Prüfen fehlgeschlagen: {e}"
-                wait = 120                            # z. B. GitHub-Limit erreicht -> etwas länger warten
+                wait = 120                            # z. B. GitHub nicht erreichbar -> etwas länger warten
             time.sleep(wait)
 
     def check(self, force=False):
