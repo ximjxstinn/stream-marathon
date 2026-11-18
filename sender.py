@@ -26,7 +26,7 @@ STATUS_PATH = os.path.join(BASE, "sender_status.json")
 RUN_DIR = os.path.join(BASE, "countdown", "run")
 INPUT_FIFO = os.path.join(RUN_DIR, "output.ts")
 RESTART_FLAG = os.path.join(RUN_DIR, "restart_sender")
-SENDER_VERSION = 2
+SENDER_VERSION = 3
 
 QUALITIES = {"720p30": (1280, 720, 30, "3000k"), "720p60": (1280, 720, 60, "4500k"),
              "1080p30": (1920, 1080, 30, "4500k"), "1080p60": (1920, 1080, 60, "6000k")}
@@ -371,7 +371,7 @@ class Sender:
             if src != self.source:
                 self.source = src
                 self.retimer.new_session()
-                log_line("Sender: sende " + ("Countdown" if src == "input" else "'Neu verbinden …'"))
+                log_line("Sender: sende " + ("Live-Programm vom Panel" if src == "input" else "'Neu verbinden …'"))
             out = self.retimer.process(data)
         if out:
             self.last_out = time.time()
@@ -449,7 +449,7 @@ class Sender:
             return
         _last[0] = time.time()
         data = {"updated": time.time(), "version": SENDER_VERSION, "want": self.want,
-                "showing": "Countdown" if self.source == "input" and time.time() - self.last_input < 2
+                "showing": "Live-Programm" if self.source == "input" and time.time() - self.last_input < 2
                 else ("Neu verbinden …" if self.slate else "–"),
                 "dest": {k: {"name": r.d["name"], "live": r.live(), "msg": r.status_msg, "restarts": r.restarts,
                              "uptime": time.time() - r.started_at if r.live() else 0, "planned": r.planned,

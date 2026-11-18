@@ -99,6 +99,7 @@ DEFAULT_CFG = {
     "cd_shuffle_music": True,
     "cfg_version": 3,
     "vod_channel": "xImJxstinn",
+    "tw_playlist": [],                # Twitch-VODs, die direkt (ohne Speichern) abgespielt werden
 }
 TZ_NAME = "Europe/Berlin"
 CD_DIR = os.path.join(BASE, "countdown")
@@ -792,6 +793,7 @@ class Streamer:
         self.fails = 0
         self.last_data = 0
         self.outq = queue.Queue(maxsize=200)
+        self.vod = {"order": [], "url": None, "title": "", "pos": 0.0, "tries": 0, "duration": 0}
         threading.Thread(target=self._fifo_writer, daemon=True).start()
         st = load_json(STATE_PATH, {})
         if st.get("want"):
@@ -821,6 +823,9 @@ class Streamer:
     def playlist_changed(self):
         self._dirty = True
 
+    def source_alive(self):
+        return bool(self.proc and self.proc.poll() is None)
+
     def _kill(self):
         p = self.proc
         if p and p.poll() is None:
@@ -846,6 +851,49 @@ class Streamer:
                 acc += v["duration"] or total
         with open(PLAYLIST_PATH, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
+
+    # --- Twitch-Playlist (ohne Speichern) ---
+    def _next_vod(self, cfg):
+        items = cfg.get("tw_playlist") or []
+        if not items:
+            return None
+        urls = [i["url"] for i in items]
+        v = self.vod
+        if v["url"] in urls:                             # aktuelles VOD weiterspielen
+            return next(i for i in items if i["url"] == v["url"])
+        v["order"] = [u for u in v["order"] if u in urls]
+        if not v["order"]:
+            v["order"] = urls[:]
+            if cfg.get("shuffle"):
+                random.shuffle(v["order"])
+        url = v["order"].pop(0)
+        item = next(i for i in items if i["url"] == url)
+        v.update(url=url, title=item["title"], pos=0.0, tries=0, duration=float(item.get("duration") or 0))
+        if v["order"]:
+            prefetch_stream_url(v["order"][0])           # nächsten Link schon mal holen
+        return item
+
+    def _vod_done(self):
+        self.vod.update(url=None, pos=0.0, tries=0)
+
+    def _vod_after(self, code, reason):
+        """Nach Ende eines VOD-Teils: weiter an gleicher Stelle oder nächstes VOD. True = sofort weiter."""
+        v = self.vod
+        played = vod_progress_seconds()
+        v["pos"] += played
+        near_end = v["duration"] and v["pos"] >= v["duration"] - 20
+        if (code == 0 and not reason) or near_end:
+            log_line(f"Twitch-VOD fertig: {v['title']}")
+            self._vod_done()
+            return True
+        v["tries"] = 0 if played > 60 else v["tries"] + 1
+        _stream_url_cache.pop(v["url"], None)           # beim nächsten Versuch frischen Link holen
+        if v["tries"] >= 4:
+            log_line(f"Twitch-VOD '{v['title']}' bricht immer wieder ab – überspringe")
+            self._vod_done()
+            return True
+        log_line(f"Twitch-VOD unterbrochen – mache bei {int(v['pos'] // 60)} min weiter")
+        return v["tries"] <= 1
 
     def _fifo_writer(self):
         """Schreibt das fertige Bild in die Pipe zum Sender."""
@@ -887,6 +935,23 @@ class Streamer:
                     time.sleep(5)
                     continue
                 info = "Countdown"
+            elif cfg["mode"] == "twitch":
+                item = self._next_vod(cfg)
+                if not item:
+                    self.status_msg = "Twitch-Playlist ist leer – im Panel VODs hinzufügen"
+                    time.sleep(3)
+                    continue
+                try:
+                    self.status_msg = f"Hole Abspiel-Link: {item['title']} …"
+                    surl = resolve_stream_url(item["url"])
+                except Exception as e:  # noqa
+                    log_line(f"Twitch-VOD '{item['title']}' nicht abspielbar: {e} – nächstes")
+                    _stream_url_cache.pop(item["url"], None)
+                    self._vod_done()
+                    time.sleep(2)
+                    continue
+                cmd = build_vod_cmd(cfg, surl, self.vod["pos"], out)
+                info = f"Twitch-VOD: {item['title']} ab {int(self.vod['pos'] // 60)} min"
             else:
                 vids = [v for v in list_videos() if v["quality"] in ("", cfg["quality"])]
                 if not vids:
@@ -918,6 +983,9 @@ class Streamer:
                 ran = time.time() - self.started_at
                 log_line(reason or f"Bild-Quelle beendet (Code {self.proc.returncode})")
                 log.close()
+                if cfg["mode"] == "twitch" and self.want and self.vod["url"]:
+                    if self._vod_after(self.proc.returncode, reason):
+                        continue                      # direkt weiter mit dem nächsten VOD
             except Exception as e:  # noqa
                 self.status_msg = f"Fehler: {e}"
             if self.want:
@@ -1049,6 +1117,67 @@ class VodImporter:
 
 
 vod_importer = VodImporter()
+
+
+# ------------------------------------------- Twitch-VODs ohne Speichern ----
+_stream_url_cache = {}
+
+
+def resolve_stream_url(url):
+    """Holt einen frischen Abspiel-Link für ein Twitch-VOD (Links laufen nach einiger Zeit ab)."""
+    hit = _stream_url_cache.get(url)
+    if hit and time.time() - hit[0] < 1800:
+        return hit[1]
+    r = subprocess.run(ytdlp("-g", "-f", "best[height<=720][fps<=30]/best[height<=720]/best", url),
+                       capture_output=True, text=True, timeout=120)
+    lines = [l for l in r.stdout.splitlines() if l.startswith("http")]
+    if r.returncode != 0 or not lines:
+        raise RuntimeError((r.stderr.strip().splitlines() or ["kein Abspiel-Link"])[-1][:200])
+    _stream_url_cache[url] = (time.time(), lines[0])
+    return lines[0]
+
+
+def prefetch_stream_url(url):
+    threading.Thread(target=lambda: _safe(resolve_stream_url, url), daemon=True).start()
+
+
+def _safe(fn, *a):
+    try:
+        return fn(*a)
+    except Exception:  # noqa
+        return None
+
+
+VOD_PROGRESS = os.path.join(RUN_DIR, "vod_progress.txt")
+
+
+def build_vod_cmd(cfg, stream_url, start_pos, output):
+    w, h, fps, vb = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
+    if os.path.exists(VOD_PROGRESS):
+        os.remove(VOD_PROGRESS)
+    return ["ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_on_network_error", "1",
+            "-reconnect_delay_max", "10", "-rw_timeout", "20000000",
+            "-re", *(["-ss", f"{start_pos:.1f}"] if start_pos > 1 else []), "-i", stream_url,
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
+                   f"fps={fps},format=yuv420p,setsar=1",
+            "-c:v", "libx264", "-preset", "veryfast", "-b:v", vb, "-maxrate", vb, "-bufsize", vb,
+            "-x264-params", "nal-hrd=cbr:force-cfr=1:repeat-headers=1",
+            "-g", str(fps * 2), "-keyint_min", str(fps * 2), "-sc_threshold", "0",
+            "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
+            "-progress", VOD_PROGRESS, "-stats_period", "2",
+            "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", output]
+
+
+def vod_progress_seconds():
+    try:
+        with open(VOD_PROGRESS, "r", encoding="utf-8", errors="replace") as fh:
+            vals = re.findall(r"out_time_us=(\d+)", fh.read())
+        return int(vals[-1]) / 1e6 if vals else 0.0
+    except OSError:
+        return 0.0
+
 streamer = None  # wird in main() erstellt
 
 
@@ -1104,7 +1233,13 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div class="btns"><button class="go" id="bStart">▶ Starten</button><button class="stop" id="bStop">■ Stoppen</button><button id="bRe">↻ Neu starten</button></div>
 </section>
 <section class="card"><h2>Modus</h2>
- <div class="btns" style="margin-top:0"><button id="mCd">⏱ Countdown</button><button id="mVid">🎞 Videos</button></div>
+ <div class="btns" style="margin-top:0"><button id="mCd">⏱ Countdown</button><button id="mTw">📺 Twitch-VODs</button><button id="mVid">🎞 Gespeicherte Videos</button></div>
+ <div id="twBox" style="display:none">
+  <div class="hint">Spielt VODs direkt von Twitch ab – ohne Speicher. VODs fügst du unten bei „Videos → Direkt von Twitch“ mit „▶ Abspielen“ hinzu.</div>
+  <div id="twNow" style="margin-top:10px"></div>
+  <div class="btns"><button id="twSkip">⏭ Nächstes VOD</button></div>
+  <div id="twList" style="margin-top:8px"></div>
+ </div>
  <div id="cdBox">
   <label>Design</label><select id="cd_theme"></select>
   <div class="hint">Design oder Farbe wechseln = ein paar Sekunden „Neu verbinden …“ (Stream bleibt online). Alles andere wird live übernommen.</div>
@@ -1142,8 +1277,8 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <label class="filebtn">＋ Videos hochladen<input type="file" id="file" accept="video/*" multiple></label>
  <div class="hint">Videos werden nach dem Upload einmal umgewandelt, danach landen sie automatisch in der Playlist.</div>
  <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
-  <b>📺 Direkt von Twitch übernehmen</b>
-  <div class="hint">Der Server lädt die VODs selbst – du musst nichts herunterladen. Twitch löscht VODs nach einiger Zeit, Highlights bleiben.</div>
+  <b>📺 Direkt von Twitch</b>
+  <div class="hint"><b>▶ Abspielen</b> = direkt von Twitch streamen, braucht 0 GB Speicher (Modus „📺 Twitch-VODs“). <b>⬇ Speichern</b> = auf den Server laden (bleibt auch, wenn Twitch das VOD löscht).</div>
   <div style="display:flex;gap:8px;margin-top:8px"><input type="text" id="vodCh" placeholder="Kanalname" style="flex:1"><button class="go" id="bVods">VODs laden</button></div>
   <div id="vodList" style="margin-top:8px"></div>
  </div>
@@ -1183,15 +1318,17 @@ async function api(p,body){const r=await fetch(p,{method:'POST',headers:{'Conten
 async function refresh(){
  const r=await fetch('/api/status');if(r.status==401)return location.reload();const s=await r.json();
  $('dot').className='dot'+(s.live?' live':'');$('st').textContent=s.live?'LIVE':(s.running?s.message:'Gestoppt');
- $('sub').textContent=(s.sender_ok?(s.running?`Zuschauer sehen: ${s.showing} · `:''):'⚠ Sender-Dienst läuft nicht · ')+`Speicher frei: ${s.disk_free_gb} GB`+(s.mode=='videos'?` · ${s.videos.length} Videos (${fmt(s.total_duration)})`:'');
+ $('sub').textContent=(s.sender_ok?(s.running?`Zuschauer sehen: ${s.showing=='Live-Programm'?(s.mode=='twitch'?'Twitch-VODs':s.mode=='countdown'?'Countdown':'Videos'):s.showing} · `:''):'⚠ Sender-Dienst läuft nicht · ')+`Speicher frei: ${s.disk_free_gb} GB`+(s.mode=='videos'?` · ${s.videos.length} Videos (${fmt(s.total_duration)})`:'');
  $('bStart').disabled=s.running;$('bStop').disabled=!s.running;$('bRe').disabled=!s.running;
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
  $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${(j.state=='konvertiert'||j.state=='lädt von Twitch')?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('log').textContent=s.log||'(noch leer)';
  $('keyinfo').textContent=s.key_set?'✅ gesetzt':'❌ fehlt';$('ytkeyinfo').textContent=s.yt_key_set?'✅ gesetzt':'❌ fehlt';
  $('dests').innerHTML=Object.values(s.dest).map(d=>`<div style="display:flex;align-items:center;gap:8px;margin:4px 0"><span class="dot${d.live?' live':''}" style="width:10px;height:10px"></span><b>${d.name}</b><span style="color:var(--mut);font-size:14px">${d.live?'LIVE seit '+fmt(d.uptime):esc(d.msg)}${d.next_planned?' · geplanter Neustart in '+fmt(d.next_planned):''}${d.restarts?' · Reconnects: '+d.restarts:''}</span></div>`).join('');
- const cd=s.mode=='countdown';$('mCd').className=cd?'go':'';$('mVid').className=cd?'':'go';
- $('cdBox').style.display=cd?'':'none';$('vidCard').style.opacity=cd?'.45':'1';
+ const cd=s.mode=='countdown',tw=s.mode=='twitch';$('mCd').className=cd?'go':'';$('mTw').className=tw?'go':'';$('mVid').className=(!cd&&!tw)?'go':'';
+ $('cdBox').style.display=cd?'':'none';$('twBox').style.display=tw?'':'none';
+ $('twNow').innerHTML=s.tw_now?`🔴 Läuft: <b>${esc(s.tw_now.title)}</b><br><small style="color:var(--mut)">${fmt(s.tw_now.pos)}${s.tw_now.duration?' / '+fmt(s.tw_now.duration):''}</small>`:'';
+ $('twList').innerHTML=s.tw_playlist.length?s.tw_playlist.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${v.duration?fmt(v.duration):''}</small></div><button onclick="twRemove(this.dataset.u)" data-u="${esc(v.url)}">Entfernen</button></div>`).join(''):'<div class="empty">Noch keine VODs in der Playlist.</div>';
  $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('cvInfo').textContent=s.cd_cover?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
  $('muList').innerHTML=s.music.map(m=>`<div class="vid"><div class="t">${m==s.now_playing?'🔊 ':''}${esc(m)}</div><button onclick="delSong(this.dataset.n)" data-n="${esc(m)}">Löschen</button></div>`).join('');
  if(!cfgLoaded){$('cd_theme').innerHTML=Object.entries(s.themes).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
@@ -1219,6 +1356,9 @@ function upload(f){const id='u'+Math.random().toString(36).slice(2);const el=doc
  x.onerror=()=>{el.querySelector('small').textContent='Upload fehlgeschlagen'};x.send(f)}
 $('mCd').onclick=async()=>{await api('/api/config',{mode:'countdown'});refresh()};
 $('mVid').onclick=async()=>{await api('/api/config',{mode:'videos'});refresh()};
+$('mTw').onclick=async()=>{await api('/api/config',{mode:'twitch'});refresh()};
+$('twSkip').onclick=async()=>{await api('/api/twpl_skip');setTimeout(refresh,800)};
+async function twRemove(u){if(confirm('VOD aus der Playlist entfernen?')){await api('/api/twpl_remove',{url:u});refresh()}}
 const CDF=['cd_theme','cd_target','cd_color','cd_badge','cd_head1','cd_hl','cd_head2','cd_sub','cd_game','cd_boxlabel','cd_title','cd_tile','cd_done'];
 function showTh(){const t=$('cd_theme').value;document.querySelectorAll('[data-th]').forEach(e=>e.style.display=e.dataset.th.split(' ').includes(t)?'':'none')}
 $('cd_theme').onchange=showTh;
@@ -1261,7 +1401,10 @@ let VODS=[];
 $('bVods').onclick=async()=>{$('vodList').innerHTML='<div class="hint">Lade Liste von Twitch …</div>';
  const r=await fetch('/api/vods?channel='+encodeURIComponent($('vodCh').value.trim()));const j=await r.json();
  if(j.error){$('vodList').innerHTML=`<div class="hint" style="color:#ff6b6b">${esc(j.error)}</div>`;return}
- VODS=j.vods;$('vodList').innerHTML=VODS.map((v,i)=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${v.kind}${v.timestamp?' · '+new Date(v.timestamp*1000).toLocaleDateString('de-DE'):''}${v.duration?' · '+fmt(v.duration):''}</small></div><button onclick="impVod(${i},this)">Übernehmen</button></div>`).join('')};
+ VODS=j.vods;$('vodList').innerHTML=VODS.map((v,i)=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${v.kind}${v.timestamp?' · '+new Date(v.timestamp*1000).toLocaleDateString('de-DE'):''}${v.duration?' · '+fmt(v.duration):''}</small></div><div style="display:flex;gap:6px"><button class="go" onclick="playVod(${i},this)">▶ Abspielen</button><button onclick="impVod(${i},this)">⬇ Speichern</button></div></div>`).join('')+
+ (VODS.length>1?`<div class="btns"><button class="go" onclick="playAll(this)">▶ Alle ${VODS.length} zur Playlist</button></div>`:'')};
+async function playVod(i,b){const v=VODS[i];b.disabled=true;const j=await api('/api/twpl_add',{items:[v]});b.textContent=j.ok?'✅ drin':'Fehler';refresh()}
+async function playAll(b){b.disabled=true;const j=await api('/api/twpl_add',{items:VODS});b.textContent=j.ok?'✅ alle drin':'Fehler';refresh()}
 async function impVod(i,b){const v=VODS[i];b.disabled=true;const j=await api('/api/vod_import',{url:v.url,title:v.title,duration:v.duration});
  b.textContent=j.ok?'✅ läuft':'Fehler';refresh()}
 fetch('/api/status').then(r=>r.json()).then(s=>{$('vodCh').value=s.vod_channel||'xImJxstinn'});
@@ -1395,7 +1538,7 @@ class Handler(BaseHTTPRequestHandler):
                         pass
             if "shuffle" in data:
                 upd["shuffle"] = bool(data["shuffle"])
-            if data.get("mode") in ("videos", "countdown"):
+            if data.get("mode") in ("videos", "countdown", "twitch"):
                 upd["mode"] = data["mode"]
             if data.get("cd_theme") in THEMES:
                 upd["cd_theme"] = data["cd_theme"]
@@ -1467,6 +1610,27 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             if streamer.want:
                 streamer.restart()
+        elif path == "/api/twpl_add":
+            items = data.get("items") or []
+            pl = get_cfg().get("tw_playlist") or []
+            have = {i["url"] for i in pl}
+            for it in items[:200]:
+                url = str(it.get("url", ""))
+                if re.match(r"^https://(www\.|m\.)?twitch\.tv/", url) and url not in have:
+                    pl.append({"url": url, "title": str(it.get("title", "Twitch-VOD"))[:80],
+                               "duration": float(it.get("duration") or 0)})
+                    have.add(url)
+            set_cfg(tw_playlist=pl)
+        elif path == "/api/twpl_remove":
+            url = str(data.get("url", ""))
+            set_cfg(tw_playlist=[i for i in (get_cfg().get("tw_playlist") or []) if i["url"] != url])
+            if streamer.vod["url"] == url and get_cfg()["mode"] == "twitch":
+                streamer._vod_done()
+                streamer._kill()                         # Sender zeigt kurz "Neu verbinden …", dann nächstes VOD
+        elif path == "/api/twpl_skip":
+            if get_cfg()["mode"] == "twitch":
+                streamer._vod_done()
+                streamer._kill()
         elif path == "/api/vod_import":
             try:
                 vod_importer.add(str(data.get("url", "")), str(data.get("title", "Twitch-VOD"))[:80],
@@ -1688,6 +1852,9 @@ def status():
         "shuffle": cfg["shuffle"],
         "mode": cfg["mode"],
         "vod_channel": cfg["vod_channel"],
+        "tw_playlist": cfg.get("tw_playlist") or [],
+        "tw_now": {"title": streamer.vod["title"], "pos": streamer.vod["pos"] + (vod_progress_seconds() if streamer.source_alive() else 0),
+                   "duration": streamer.vod["duration"]} if streamer.vod["url"] else None,
         "cfg": {k: v for k, v in cfg.items() if k.startswith("cd_")},
         "themes": THEMES,
         "cd_bg": os.path.exists(BG_ORIG),

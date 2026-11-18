@@ -33,9 +33,13 @@ Steuern kannst du alles übers Handy-Panel: Videos hochladen, Starten und Stoppe
 4. **▶ Starten** drücken. Nach ein paar Sekunden bist du auf Twitch live.
 
 
-## 📺 VODs direkt von Twitch übernehmen
-Im Panel unter **Videos → „Direkt von Twitch übernehmen“** den Kanalnamen eintragen (voreingestellt: xImJxstinn) und auf **VODs laden** tippen. Dann beim gewünschten VOD oder Highlight auf **Übernehmen** tippen.
-Der Server lädt das Video selbst herunter, du musst nichts herunterladen. Danach wandelt er es um, und es landet in der Video-Playlist. Das läuft mit niedriger Priorität, damit der Live-Stream nicht ruckelt.
+## 📺 VODs direkt von Twitch (ohne Speicher)
+Im Panel unter **Videos → „Direkt von Twitch“** gibt es bei jedem VOD zwei Knöpfe:
+- **▶ Abspielen:** Das VOD kommt in die Twitch-Playlist und wird direkt von Twitch gestreamt. Das braucht **0 GB** Speicher. Dafür unter Modus **📺 Twitch-VODs** wählen. Bricht ein VOD mittendrin ab, geht es an derselben Stelle weiter.
+- **⬇ Speichern:** Das VOD wird auf den Server geladen und bleibt auch dann, wenn Twitch es löscht.
+
+Zum Laden der Liste den Kanalnamen eintragen, (voreingestellt: xImJxstinn) und auf **VODs laden** tippen.
+Beim Speichern lädt das Video selbst herunter, du musst nichts herunterladen. Danach wandelt er es um, und es landet in der Video-Playlist. Das läuft mit niedriger Priorität, damit der Live-Stream nicht ruckelt.
 Um die Videos abzuspielen, unter **Modus** auf **🎞 Videos** wechseln.
 Twitch löscht normale VODs nach einiger Zeit, Highlights bleiben dauerhaft.
 
