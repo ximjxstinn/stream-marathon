@@ -101,6 +101,10 @@ DEFAULT_CFG = {
     "vod_channel": "xImJxstinn",
     "show_runtime": True,             # "● LIVE seit …" im Stream einblenden
     "auto_update": True,              # neue Versionen automatisch installieren
+    "game_auto": True,                # nach dem Release automatisch zum nächsten Spiel wechseln
+    "game_done_hours": 12,            # so lange "… IST DA!" zeigen, dann nächstes Spiel
+    "game_current": "gta6",
+    "games_custom": [],
     "chat_enabled": True,             # Twitch-Chat mitlesen
     "chat_on_stream": True,           # Chat im Stream anzeigen
     "chat_channel": "ximjxstinn",
@@ -1270,6 +1274,109 @@ CHAT_LAYOUT = {
     "standard": ("w*0.03", 0.06, 0.024, 40),
 }
 
+
+# ----------------------------------------------------- Spiele-Warteschlange ----
+# Nach dem Release (+ einige Stunden "IST DA!") wechselt der Countdown automatisch zum nächsten Spiel.
+GAMES_CACHE = os.path.join(BASE, "games.json")
+GAMES_DIR = os.path.join(CD_DIR, "games")
+os.makedirs(GAMES_DIR, exist_ok=True)
+MONTHS = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober",
+          "November", "Dezember"]
+
+
+def all_games():
+    """Spiele aus der zentralen Liste (GitHub) + eigene Spiele aus dem Panel, nach Datum sortiert."""
+    games = {}
+    for g in load_json(GAMES_CACHE, []) + (get_cfg().get("games_custom") or []):
+        try:
+            target_epoch({"cd_target": g["target"]})
+            games[g["id"]] = g
+        except Exception:  # noqa
+            continue
+    return sorted(games.values(), key=lambda g: g["target"])
+
+
+def game_texts(g):
+    """Alle Countdown-Texte für ein Spiel."""
+    _, dt = target_epoch({"cd_target": g["target"]})
+    short = g.get("short") or g["name"]
+    hl = f"{dt.hour} Uhr" if dt.minute == 0 else dt.strftime("%H:%M Uhr")
+    return {
+        "cd_target": g["target"], "cd_title": g["name"], "cd_game": g["name"],
+        "cd_tile": (g.get("tile") or short)[:20], "cd_done": f"{short} IST DA!"[:60],
+        "cd_head1": f"{short} ab ", "cd_hl": hl, "cd_head2": "spielbar",
+        "cd_sub": f"Freischaltung am {dt.day}. {MONTHS[dt.month - 1]}: Uhrzeit für Deutschland\\nund weltweit",
+        "cd_badge": "RELEASE-UHRZEIT · COUNTDOWN",
+    }
+
+
+def switch_game(g, reason=""):
+    """Wechselt den Countdown live auf ein anderes Spiel – mit eigenem Cover/Hintergrund pro Spiel."""
+    cfg = get_cfg()
+    old = cfg.get("game_current") or "gta6"
+    # Bilder des alten Spiels wegsichern, die des neuen holen
+    for src, name in ((COVER_ORIG, "cover"), (BG_ORIG, "bg")):
+        keep = os.path.join(GAMES_DIR, f"{old}_{name}.png")
+        if os.path.exists(src):
+            os.replace(src, keep)
+        new = os.path.join(GAMES_DIR, f"{g['id']}_{name}.png")
+        if os.path.exists(new):
+            shutil.copy(new, src)
+    set_cfg(game_current=g["id"], **game_texts(g))
+    _safe(rebuild_layers)
+    log_line(f"Countdown gewechselt: {g['name']} ({g['target'].replace('T', ' ')})" + (f" – {reason}" if reason else ""))
+
+
+def next_game(after_epoch):
+    for g in all_games():
+        if target_epoch({"cd_target": g["target"]})[0] > after_epoch + 60:
+            return g
+    return None
+
+
+class GameQueue(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.last_fetch = 0
+
+    def fetch(self):
+        """Zentrale Spieleliste von GitHub holen (alle 6 Stunden)."""
+        import urllib.request
+        try:
+            data = urllib.request.urlopen(RAW_BASE + latest_sha() + "/games.json", timeout=20).read()
+            games = json.loads(data)
+            if isinstance(games, list):
+                save_json(GAMES_CACHE, games)
+            self.last_fetch = time.time()
+        except Exception as e:  # noqa
+            log_line(f"Spieleliste konnte nicht geladen werden: {e}")
+
+    def run(self):
+        time.sleep(20)
+        while True:
+            try:
+                if time.time() - self.last_fetch > 6 * 3600:
+                    self.fetch()
+                self.check()
+            except Exception as e:  # noqa
+                print("Spiele-Warteschlange:", e, flush=True)
+            time.sleep(60)
+
+    def check(self):
+        cfg = get_cfg()
+        if not cfg.get("game_auto", True) or cfg.get("mode") != "countdown":
+            return
+        tgt, _ = target_epoch(cfg)
+        hold = float(cfg.get("game_done_hours", 12)) * 3600
+        if time.time() < tgt + hold:
+            return
+        g = next_game(time.time())
+        if g:
+            switch_game(g, f"automatisch, {cfg.get('cd_title')} ist seit {cfg.get('game_done_hours', 12)} h draußen")
+
+
+game_queue = GameQueue()
+
 ticker = Ticker()
 image_feeder = ImageFeeder()
 audio_feeder = AudioFeeder()
@@ -2038,6 +2145,15 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <div class="hint">Songs, Bild und Lautstärke werden live getauscht – der Stream läuft weiter. Nur lizenzfreie Musik verwenden (z. B. StreamBeats, NCS), sonst drohen DMCA-Strikes.</div>
  </div>
 </section>
+<section class="card"><h2>🎮 Nächste Spiele</h2>
+ <label class="chk" style="margin-top:0"><input type="checkbox" id="gAuto" onchange="api('/api/config',{game_auto:this.checked})"> Nach dem Release automatisch zum nächsten Spiel wechseln</label>
+ <label>So lange „… IST DA!“ zeigen (Stunden), dann nächstes Spiel</label><input type="text" id="gHours" inputmode="decimal" onchange="api('/api/config',{game_done_hours:parseFloat(this.value.replace(',','.'))||0})">
+ <div id="gList" style="margin-top:10px"></div>
+ <label>Eigenes Spiel hinzufügen</label>
+ <div style="display:flex;gap:8px;flex-wrap:wrap"><input type="text" id="gName" placeholder="Name, z. B. Fable" style="flex:2;min-width:140px"><input type="text" id="gShort" placeholder="Kurz, z. B. Fable" style="flex:1;min-width:90px"><input type="datetime-local" id="gWhen" style="flex:1;min-width:170px"></div>
+ <div class="btns"><button class="go" id="bGAdd">＋ Hinzufügen</button></div>
+ <div class="hint">Die Liste großer Releases pflege ich zentral und sie kommt automatisch per Update. Wechsel passieren live – ohne Neustart.</div>
+</section>
 <section class="card"><h2>💬 Chat im Stream</h2>
  <label class="chk" style="margin-top:0"><input type="checkbox" id="chOn"> Twitch-Chat im Stream anzeigen</label>
  <div class="hint" id="chInfo"></div>
@@ -2115,6 +2231,8 @@ async function refresh(){
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
  $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig'&&j.kind!='music').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${(j.state=='konvertiert'||j.state=='lädt von Twitch')?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('log').textContent=s.log||'(noch leer)';
+ const G=s.games||{};$('gAuto').checked=G.auto;if(document.activeElement!==$('gHours'))$('gHours').value=G.done_hours;
+ $('gList').innerHTML=(G.list||[]).filter(g=>!g.past||g.id==G.current).map(g=>`<div class="vid"><div class="t">${g.id==G.current?'▶ ':''}<b>${esc(g.name)}</b><br><small>${new Date(g.target).toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})} Uhr${g.id==G.current?' · läuft gerade':''}${g.custom?' · eigenes':''}</small></div><div style="display:flex;gap:6px">${g.id!=G.current&&!g.past?`<button onclick="api('/api/game_switch',{id:'${g.id}'}).then(refresh)">Jetzt zeigen</button>`:''}${g.custom?`<button onclick="api('/api/game_remove',{id:'${g.id}'}).then(refresh)">✕</button>`:''}</div></div>`).join('');
  const CH=s.chat||{};$('chOn').checked=CH.on_stream&&CH.enabled;
  $('chInfo').textContent=CH.connected?`✅ Verbunden mit #${CH.channel} · ${CH.chatters} ${CH.chatters==1?'Person hat':'Leute haben'} in dieser Sitzung geschrieben`:'⏳ Verbinde mit dem Twitch-Chat …';
  $('chRecent').innerHTML=(CH.recent||[]).map(m=>`<div style="font-size:13px;color:var(--mut)"><b style="color:var(--txt)">${esc(m.name)}:</b> ${esc(m.text)}</div>`).join('');
@@ -2203,6 +2321,7 @@ $('cvFile').onchange=e=>{if(e.target.files[0])asset('cover',e.target.files[0]);e
 $('cvDel').onclick=async()=>{await api('/api/asset_delete',{kind:'cover'});refresh();showPrev()};
 async function delSong(n){if(confirm('Song löschen?')){await api('/api/asset_delete',{kind:'music',name:n});refresh()}}
 $('ckFile').onchange=e=>{if(e.target.files[0])asset('cookies',e.target.files[0]).then(()=>alert('Cookies gespeichert ✅ – jetzt den Link nochmal einfügen.'));e.target.value=''};
+$('bGAdd').onclick=async()=>{const j=await api('/api/game_add',{name:$('gName').value,short:$('gShort').value,target:$('gWhen').value});if(j.ok){$('gName').value=$('gShort').value=$('gWhen').value='';refresh()}};
 $('chOn').onchange=e=>api('/api/config',{chat_on_stream:e.target.checked,chat_enabled:true});
 $('bChSave').onclick=async()=>{const j=await api('/api/config',{chat_channel:$('chChan').value,discord_link:$('chDc').value,tiktok_link:$('chTt').value,chat_blocklist:$('chBlock').value,chat_ignore:$('chIgn').value});if(j.ok)alert('Gespeichert ✅')};
 $('bMuLink').onclick=async()=>{const u=$('muLink').value.trim();if(!u)return;const j=await api('/api/music_link',{url:u});if(j.ok){$('muLink').value='';refresh()}};
@@ -2397,6 +2516,13 @@ class Handler(BaseHTTPRequestHandler):
                          ("discord_link", 80), ("tiktok_link", 80)):
                 if k in data:
                     upd[k] = clean_text(str(data[k]))[:n]
+            if "game_auto" in data:
+                upd["game_auto"] = bool(data["game_auto"])
+            if "game_done_hours" in data:
+                try:
+                    upd["game_done_hours"] = max(0.0, min(168.0, float(data["game_done_hours"])))
+                except (TypeError, ValueError):
+                    pass
             if "auto_update" in data:
                 upd["auto_update"] = bool(data["auto_update"])
             if "show_runtime" in data:
@@ -2517,6 +2643,29 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"error": "Der Stream läuft gerade nicht"})
             streamer.session_started = ts
             streamer._save_state()
+        elif path == "/api/game_add":
+            name = clean_text(str(data.get("name", "")))[:60]
+            when = str(data.get("target", ""))[:16]
+            try:
+                target_epoch({"cd_target": when})
+            except Exception:  # noqa
+                return self._send(200, {"error": "Ungültiges Datum"})
+            if not name:
+                return self._send(200, {"error": "Name fehlt"})
+            gid = "c_" + re.sub(r"[^a-z0-9]", "", name.lower())[:20] + "_" + when[:10].replace("-", "")
+            short = clean_text(str(data.get("short") or name))[:30]
+            custom = [g for g in (get_cfg().get("games_custom") or []) if g["id"] != gid]
+            custom.append({"id": gid, "name": name, "short": short, "tile": short[:20], "target": when})
+            set_cfg(games_custom=custom)
+        elif path == "/api/game_remove":
+            gid = str(data.get("id", ""))
+            set_cfg(games_custom=[g for g in (get_cfg().get("games_custom") or []) if g["id"] != gid])
+        elif path == "/api/game_switch":
+            gid = str(data.get("id", ""))
+            g = next((x for x in all_games() if x["id"] == gid), None) if gid else next_game(time.time())
+            if not g:
+                return self._send(200, {"error": "Kein passendes Spiel gefunden"})
+            switch_game(g, "von Hand")
         elif path == "/api/stats_reset":
             stats.reset_all()
         elif path == "/api/twpl_skip":
@@ -2736,6 +2885,10 @@ def status():
         "vod_channel": cfg["vod_channel"],
         "session_started": streamer.session_started,
         "auto_update": cfg.get("auto_update", True),
+        "games": {"auto": cfg.get("game_auto", True), "done_hours": cfg.get("game_done_hours", 12),
+                  "current": cfg.get("game_current"),
+                  "list": [{**g, "custom": g["id"].startswith("c_"),
+                            "past": target_epoch({"cd_target": g["target"]})[0] < time.time()} for g in all_games()]},
         "chat": {"enabled": cfg.get("chat_enabled", True), "on_stream": cfg.get("chat_on_stream", True),
                  "channel": cfg.get("chat_channel", ""), "connected": twitch_chat.connected,
                  "chatters": len(twitch_chat.chatters), "blocklist": cfg.get("chat_blocklist", ""),
@@ -2794,7 +2947,7 @@ def main():
     threading.Thread(target=lambda: _safe(build_slate_loop), daemon=True).start()
     if not load_json(VERSION_PATH, {}).get("sha"):
         _safe(lambda: save_json(VERSION_PATH, {"sha": latest_sha(), "installed": time.time()}))
-    for t in (ticker, image_feeder, audio_feeder, stats, auto_updater, twitch_chat):
+    for t in (ticker, image_feeder, audio_feeder, stats, auto_updater, twitch_chat, game_queue):
         t.start()
     # alte Einzel-Musikdatei (frühere Version) in die Playlist übernehmen
     for fn in os.listdir(CD_DIR):

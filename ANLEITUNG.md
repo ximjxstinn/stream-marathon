@@ -118,3 +118,9 @@ server {
 }
 ```
 Danach `certbot --nginx -d stream.ximjxstinn.de` für HTTPS. Den Port 8090 musst du dann nicht mehr in der Firewall freigeben.
+
+## 🎮 Nächste Spiele (automatisch weiter)
+Nach dem Release läuft der Stream einfach weiter: Erst wird **„… IST DA!“** gezeigt (Standard 12 Stunden, im Panel einstellbar), danach wechselt der Countdown **live ohne Neustart** zum nächsten großen Spiel.
+- Die Liste großer Releases kommt zentral per Update (aktuell: GTA 6 → Fable 23.02.2027 → Final Fantasy VII Revelation 08.04.2027).
+- Eigene Spiele kannst du im Panel unter „🎮 Nächste Spiele“ hinzufügen, mit „Jetzt zeigen“ sofort wechseln.
+- Cover und Hintergrund werden pro Spiel gespeichert: Lade nach dem Wechsel ein Cover für das neue Spiel hoch, das GTA-Cover bleibt für später erhalten.
