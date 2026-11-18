@@ -1545,49 +1545,74 @@ class MusicLinkImporter:
         converter.jobs[key] = {"state": "lädt Musik", "progress": 0, "title": url[:70], "error": "", "kind": "music"}
         self.q.put((key, url))
 
+    PARALLEL = 4                       # so viele Songs gleichzeitig
+
     def _worker(self):
         while True:
             key, url = self.q.get()
             job = converter.jobs[key]
-            tmpdir = os.path.join(RUN_DIR, key)
-            os.makedirs(tmpdir, exist_ok=True)
             try:
-                cmd = ["nice", "-n", "10"] + ytdlp(
-                    "-f", "bestaudio/best", "--newline", "--no-part", "--yes-playlist", "--playlist-end", "200",
-                    "--ignore-errors", "--sleep-requests", "1",
-                    "--max-filesize", "1500M", "-o", os.path.join(tmpdir, "%(title).70B.%(ext)s"), url)
-                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-                last, item = "", ""
-                for line in p.stdout:
-                    last = line.strip() or last
-                    m = re.search(r"\[download\]\s+([\d.]+)%", line)
-                    if m:
-                        job["progress"] = int(float(m.group(1)))
-                    m = re.search(r"Downloading item (\d+) of (\d+)", line)
-                    if m:
-                        item = f" (Song {m.group(1)}/{m.group(2)})"
-                    m = re.search(r"Destination: .*/([^/]+)$", line.strip())
-                    if m:
-                        job["title"] = os.path.splitext(m.group(1))[0][:60] + item
-                p.wait()
-                files = [f for f in os.listdir(tmpdir) if not f.endswith((".part", ".ytdl", ".json"))]
-                if not files:
-                    raise RuntimeError("Nichts heruntergeladen: " + last[-160:])
-                job["state"] = "wird verarbeitet"
-                added = 0
-                for fn in files:
-                    try:
-                        self._store(os.path.join(tmpdir, fn), fn)
-                        added += 1
-                    except Exception as e:  # noqa
-                        log_line(f"Musik-Link: '{fn}' übersprungen ({e})")
-                if not added:
-                    raise RuntimeError("Keine abspielbare Tonspur gefunden")
-                job.update(state="fertig", progress=100, title=f"{added} Song{'s' if added != 1 else ''} hinzugefügt")
+                # 1) Liste holen (geht schnell, ohne Download)
+                job["state"] = "liest Playlist"
+                r = subprocess.run(ytdlp("--flat-playlist", "-J", "--playlist-end", "200", url),
+                                   capture_output=True, text=True, timeout=180)
+                info = json.loads(r.stdout or "{}") if r.returncode == 0 else {}
+                entries = [e for e in (info.get("entries") or []) if e]
+                items = [(e.get("url") or e.get("webpage_url") or e.get("id"), e.get("title") or "") for e in entries]
+                items = [(u if str(u).startswith("http") else f"https://www.youtube.com/watch?v={u}", t)
+                         for u, t in items if u] or [(url, info.get("title") or "")]
+                total = len(items)
+                done, ok, lock_ = [0], [0], threading.Lock()
+                job.update(state="lädt Musik", progress=0, title=(info.get("title") or "Musik")[:50] + f" (0/{total})")
+                todo = queue.Queue()
+                for it in items:
+                    todo.put(it)
+
+                def runner():
+                    while True:
+                        try:
+                            u, t = todo.get_nowait()
+                        except queue.Empty:
+                            return
+                        try:
+                            self._fetch_one(u)
+                            with lock_:
+                                ok[0] += 1
+                        except Exception as e:  # noqa
+                            log_line(f"Musik-Link: '{t or u}' übersprungen ({str(e)[:120]})")
+                        with lock_:
+                            done[0] += 1
+                            job["progress"] = int(done[0] / total * 100)
+                            job["title"] = (info.get("title") or "Musik")[:50] + f" ({done[0]}/{total})"
+
+                threads = [threading.Thread(target=runner, daemon=True) for _ in range(min(self.PARALLEL, total))]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+                if not ok[0]:
+                    raise RuntimeError("Kein Song ließ sich laden")
+                job.update(state="fertig", progress=100,
+                           title=f"{ok[0]} von {total} Song{'s' if total != 1 else ''} hinzugefügt")
             except Exception as e:  # noqa
                 job.update(state="fehler", error=str(e)[:300])
-            finally:
-                shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def _fetch_one(self, url):
+        """Einen Song laden und SOFORT in die Playlist legen."""
+        tmpdir = os.path.join(RUN_DIR, "link_" + secrets.token_hex(4))
+        os.makedirs(tmpdir, exist_ok=True)
+        try:
+            r = subprocess.run(["nice", "-n", "10"] + ytdlp(
+                "-f", "bestaudio/best", "--no-part", "--no-playlist", "--max-filesize", "1500M",
+                "-o", os.path.join(tmpdir, "%(title).70B.%(ext)s"), url),
+                capture_output=True, text=True, timeout=1800)
+            files = [f for f in os.listdir(tmpdir) if not f.endswith((".part", ".ytdl", ".json"))]
+            if not files:
+                raise RuntimeError((r.stderr.strip().splitlines() or ["nichts geladen"])[-1])
+            for fn in files:
+                self._store(os.path.join(tmpdir, fn), fn)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     @staticmethod
     def _store(path, fn):
