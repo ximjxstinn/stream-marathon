@@ -26,7 +26,7 @@ STATUS_PATH = os.path.join(BASE, "sender_status.json")
 RUN_DIR = os.path.join(BASE, "countdown", "run")
 INPUT_FIFO = os.path.join(RUN_DIR, "output.ts")
 RESTART_FLAG = os.path.join(RUN_DIR, "restart_sender")
-SENDER_VERSION = 3
+SENDER_VERSION = 4
 
 QUALITIES = {"720p30": (1280, 720, 30, "3000k"), "720p60": (1280, 720, 60, "4500k"),
              "1080p30": (1920, 1080, 30, "4500k"), "1080p60": (1920, 1080, 60, "6000k")}
@@ -315,6 +315,13 @@ class Relay:
 # ------------------------------------------------------------------ Sender ----
 def slate_cmd(cfg):
     w, h, fps, vb = QUALITIES.get(cfg.get("quality"), QUALITIES["720p30"])
+    # Vom Panel vorbereitete, animierte Schleife ("Neu verbinden …") -> nur abspielen, kaum CPU.
+    # So kann das Design über Panel-Updates geändert werden, ohne den Sender neu zu starten.
+    loop = os.path.join(RUN_DIR, f"slate_{w}x{h}.mp4")
+    if os.path.exists(loop) and os.path.getsize(loop) > 10000:
+        return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-re", "-stream_loop", "-1", "-i", loop,
+                "-map", "0:v:0", "-map", "0:a:0", "-c", "copy",
+                "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1"]
     bg = os.path.join(RUN_DIR, f"slate_bg_{w}x{h}.png")
     if not os.path.exists(bg):
         g = "exp(-((X-W/2)^2+(Y-H*0.45)^2)/(2*(H*0.32)^2))"

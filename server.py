@@ -100,6 +100,7 @@ DEFAULT_CFG = {
     "cfg_version": 3,
     "vod_channel": "xImJxstinn",
     "show_runtime": True,             # "● LIVE seit …" im Stream einblenden
+    "auto_update": True,              # neue Versionen automatisch installieren
     "runtime_label": "LIVE seit",
     "runtime_mode": "start",          # "start" = seit Start, "detail" = Twitch · YouTube · Gesamt
     "runtime_pos": "tr",              # Position der Einblendung (tl, tc, tr, bl, bc, br)
@@ -873,6 +874,172 @@ class StatsTracker(threading.Thread):
 stats = StatsTracker()
 streamer = None
 
+
+# ------------------------------------------------ "Neu verbinden"-Animation ----
+# Wird EINMAL vom Panel als kurze, nahtlose 3-Sekunden-Schleife gerendert.
+# Der Sender spielt sie nur ab (kaum CPU) – Design-Änderungen brauchen so kein Sender-Update.
+SLATE_DESIGN = 3
+
+
+def slate_path(cfg):
+    w, h, _, _ = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
+    return os.path.join(RUN_DIR, f"slate_{w}x{h}.mp4")
+
+
+def build_slate_loop(cfg=None, force=False):
+    cfg = cfg or get_cfg()
+    w, h, fps, vb = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
+    out = slate_path(cfg)
+    meta_p = out + ".json"
+    if not force and os.path.exists(out) and load_json(meta_p, {}).get("design") == SLATE_DESIGN:
+        return out
+    q = lambda p: "'" + p.replace("'", "") + "'"   # noqa
+    B, R = q(font("bold")), q(font("regular"))
+    for name, text in (("sl_title", "Neu verbinden"), ("sl_t1", "Neu verbinden."), ("sl_t2", "Neu verbinden.."),
+                       ("sl_t3", "Neu verbinden..."),
+                       ("sl_sub", "Der Stream geht gleich weiter"), ("sl_brand", "xImJxstinn · 24/7")):
+        atomic_write(os.path.join(RUN_DIR, name + ".txt"), text)
+    tf = lambda n: q(os.path.join(RUN_DIR, n + ".txt"))   # noqa
+    ring = int(h * 0.30) // 2 * 2          # Größe des Lade-Rings
+    rc = ring / 2
+    r_out, r_in = rc * 0.92, rc * 0.80
+    P = 1.5                                 # Umdrehung / Puls in Sekunden (3 s Schleife = 2 Perioden)
+    g = f"exp(-((X-W/2)^2+(Y-H*0.40)^2)/(2*(H*0.30)^2))"
+    bg = (f"color=c=black:s={w}x{h}:r={fps}:d=3,format=rgb24,"
+          f"geq=r='clip(10+38*{g},0,255)':g='clip(8+14*{g},0,255)':b='clip(24+80*{g},0,255)'")
+    # Leuchten hinter dem Ring: pulsiert
+    glow = (f"color=c=black@0:s={ring * 2}x{ring * 2}:r={fps}:d=3,format=rgba,"
+            f"geq=r=155:g=92:b=246:a='clip(150*exp(-(hypot(X-W/2,Y-H/2)/(W*0.22))^2)*(0.55+0.45*sin(2*PI*T/{P})),0,255)'")
+    # Lade-Ring: Bogen mit auslaufendem Schweif, dreht sich
+    ang = f"mod(atan2(Y-{rc},X-{rc})+PI-2*PI*T/{P}+8*PI,2*PI)/(2*PI)"
+    edge = f"clip(min(hypot(X-{rc},Y-{rc})-{r_in},{r_out}-hypot(X-{rc},Y-{rc}))/1.5,0,1)"
+    spin = (f"color=c=black@0:s={ring}x{ring}:r={fps}:d=3,format=rgba,"
+            f"geq=r='clip(155+100*{ang},0,255)':g='clip(92+150*{ang},0,255)':b=255:"
+            f"a='clip(255*{edge}*pow({ang},1.6),0,255)'")
+    track = (f"color=c=black@0:s={ring}x{ring}:r={fps}:d=3,format=rgba,"
+             f"geq=r=255:g=255:b=255:a='clip(28*{edge},0,255)'")
+    fs = h * 0.075
+    x0 = f"(w-{fs * 9.414625:.2f})/2"     # zentriert für die volle Zeile mit drei Punkten
+    vf = (f"[0:v][1:v]overlay=(W-w)/2:H*0.40-h/2[a];[a][3:v]overlay=(W-w)/2:H*0.40-h/2[b];"
+          f"[b][2:v]overlay=(W-w)/2:H*0.40-h/2,format=yuv420p,"
+          f"null")
+    # Punkte erscheinen nacheinander: vier Varianten der Zeile, jeweils nur in ihrem Zeitfenster sichtbar
+    for i, name in enumerate(("sl_title", "sl_t1", "sl_t2", "sl_t3")):
+        lo, hi = 0.3 * i + (0.0 if i else -1), (0.3 * (i + 1) if i < 3 else 99)
+        vf += (f",drawtext=fontfile={B}:textfile={tf(name)}:expansion=none:fontsize={fs:.2f}:fontcolor=white:"
+               f"x={x0}:y=h*0.62:enable='between(mod(t,{P}),{max(lo, 0):.2f},{hi - 0.001:.3f})'")
+    vf += (f",drawtext=fontfile={R}:textfile={tf('sl_sub')}:expansion=none:fontsize=h*0.034:fontcolor=white@0.62:"
+           f"x=(w-text_w)/2:y=h*0.73"
+           f",drawbox=x=iw*0.3:y=ih*0.83:w=iw*0.4:h=ih*0.004:color=white@0.12:t=fill"
+           f",drawbox=x='iw*0.3+(0.5-0.5*cos(2*PI*t/3))*iw*0.32':y=ih*0.83:w=iw*0.08:h=ih*0.004:color=0xb98bff@0.95:t=fill"
+           f",drawtext=fontfile={B}:textfile={tf('sl_brand')}:expansion=none:fontsize=h*0.024:fontcolor=white@0.35:"
+           f"x=(w-text_w)/2:y=h*0.92[v]")
+    tmp = out + ".new.mp4"
+    kbit = int(vb[:-1])
+    cmd = ["nice", "-n", "15", "ffmpeg", "-v", "error", "-y",
+           "-f", "lavfi", "-i", bg, "-f", "lavfi", "-i", glow, "-f", "lavfi", "-i", spin, "-f", "lavfi", "-i", track,
+           "-f", "lavfi", "-t", "3", "-i", "anullsrc=r=44100:cl=stereo",
+           "-filter_complex", vf.replace("[b][2:v]", "[b][2:v]"), "-map", "[v]", "-map", "4:a", "-t", "3",
+           "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p",
+           "-b:v", vb, "-maxrate", vb, "-bufsize", vb, "-x264-params", "nal-hrd=cbr:force-cfr=1:repeat-headers=1",
+           "-g", str(fps * 2), "-keyint_min", str(fps * 2), "-sc_threshold", "0",
+           "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2", "-movflags", "+faststart", tmp]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("Neu-verbinden-Animation: " + r.stderr.strip()[-300:])
+    os.replace(tmp, out)
+    save_json(meta_p, {"design": SLATE_DESIGN})
+    return out
+
+
+
+# --------------------------------------------------------------- Updates ----
+REPO_API = "https://api.github.com/repos/ximjxstinn/stream-marathon/commits/stream24"
+RAW_BASE = "https://raw.githubusercontent.com/ximjxstinn/stream-marathon/"
+VERSION_PATH = os.path.join(BASE, "version.json")
+
+
+def latest_sha():
+    import urllib.request
+    req = urllib.request.Request(REPO_API, headers={"Accept": "application/vnd.github+json", "User-Agent": "stream24"})
+    return json.loads(urllib.request.urlopen(req, timeout=20).read())["sha"]
+
+
+def do_update(sha=None):
+    """Lädt server.py + sender.py in genau der neuesten Version. Gibt (ok, sender_geändert | Fehler) zurück."""
+    import urllib.request
+    try:
+        sha = sha or latest_sha()
+        base_url = RAW_BASE + sha + "/"
+        code = urllib.request.urlopen(base_url + "server.py", timeout=30).read()
+        compile(code, "server.py", "exec")
+        scode = urllib.request.urlopen(base_url + "sender.py", timeout=30).read()
+        compile(scode, "sender.py", "exec")
+    except Exception as e:  # noqa
+        return False, f"Update fehlgeschlagen: {e}"
+    here = os.path.dirname(os.path.abspath(__file__))
+    sp = os.path.join(here, "sender.py")
+    old = open(sp, "rb").read() if os.path.exists(sp) else b""
+    sender_changed = old != scode
+    for path, data in ((os.path.join(here, "server.py"), code), (sp, scode)):
+        with open(path + ".new", "wb") as fh:
+            fh.write(data)
+        os.replace(path + ".new", path)
+    v = load_json(VERSION_PATH, {})
+    v.update(sha=sha, installed=time.time(), sender_pending=bool(v.get("sender_pending") or sender_changed))
+    save_json(VERSION_PATH, v)
+    log_line(f"Update installiert ({sha[:7]})" + (" – Sender-Update bereit" if sender_changed else ""))
+    return True, sender_changed
+
+
+def restart_panel():
+    try:
+        stats.save()
+        streamer._kill()
+    finally:
+        os._exit(0)                                   # systemd startet das Panel neu (Stream bleibt online)
+
+
+class AutoUpdater(threading.Thread):
+    """Prüft alle 10 Minuten, ob es eine neue Version gibt, und installiert sie automatisch.
+    Das Panel startet dann neu – der Stream bleibt online (kurz "Neu verbinden …").
+    Ein Sender-Update wird nur vorgemerkt, damit der Stream nicht abbricht."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.last_check = 0
+        self.last_result = ""
+
+    def run(self):
+        time.sleep(120)                               # nach dem Start erst mal in Ruhe laufen lassen
+        while True:
+            try:
+                self.check()
+            except Exception as e:  # noqa
+                self.last_result = f"Prüfen fehlgeschlagen: {e}"
+            time.sleep(600)
+
+    def check(self, force=False):
+        self.last_check = time.time()
+        if not force and not get_cfg().get("auto_update", True):
+            self.last_result = "Auto-Update ist aus"
+            return
+        sha = latest_sha()
+        if sha == load_json(VERSION_PATH, {}).get("sha"):
+            self.last_result = "Aktuell"
+            return
+        if converter.busy() or any(f.startswith(("chunk_", "upload_")) for f in os.listdir(RUN_DIR)):
+            self.last_result = "Neue Version da – wartet, bis Uploads/Umwandlungen fertig sind"
+            return
+        ok, info = do_update(sha)
+        self.last_result = "Installiert" if ok else info
+        if ok:
+            time.sleep(1)
+            restart_panel()
+
+
+auto_updater = AutoUpdater()
+
 ticker = Ticker()
 image_feeder = ImageFeeder()
 audio_feeder = AudioFeeder()
@@ -1409,12 +1576,12 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <div data-th="ps5"><label>Spielname</label><input type="text" id="cd_game_ps5" maxlength="60" oninput="$('cd_game').value=this.value">
    <label>Text über dem Countdown</label><input type="text" id="cd_boxlabel_ps5" maxlength="60" oninput="$('cd_boxlabel').value=this.value"></div>
   <label>Text, wenn die Zeit abgelaufen ist</label><input type="text" id="cd_done" maxlength="60">
-  <div class="btns"><button class="go" id="bCdSave">Speichern (live)</button><button id="bPrev">👁 Vorschau</button></div>
+  <div class="btns"><button class="go" id="bCdSave">Speichern (live)</button><button id="bPrev">👁 Vorschau</button><button onclick="$('prev').style.display='block';$('prev').src='/api/slate_preview.png?'+Date.now()">👁 „Neu verbinden“</button></div>
   <img id="prev" style="width:100%;border-radius:10px;margin-top:14px;display:none">
   <label>Hintergrundbild <span id="bgInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">Bild wählen<input type="file" id="bgFile" accept="image/png,image/jpeg,image/webp"></label><button id="bgDel">Entfernen</button></div>
   <div data-th="ps5 release konsole"><label>Cover (quadratisch) <span id="cvInfo"></span></label>
-  <div class="btns" style="margin-top:0"><label class="filebtn">Cover wählen<input type="file" id="cvFile" accept="image/png,image/jpeg,image/webp"></label><button id="cvDel">Entfernen</button></div></div>
+  <div class="btns" style="margin-top:0"><label class="filebtn">Cover wählen<input type="file" id="cvFile" accept="image/png,image/jpeg,image/webp"></label><button onclick="api('/api/default_cover').then(j=>{refresh();if(j.ok)showPrev()})">🎨 Vice-City-Cover verwenden</button><button id="cvDel">Entfernen</button></div></div>
   <label>Musik-Playlist <span id="muInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">＋ Songs hinzufügen<input type="file" id="muFile" accept="audio/*,video/*,.mp3,.m4a,.mp4,.webm,.mkv" multiple></label><button id="muSkip">⏭ Nächster Song</button></div>
   <div id="muList" style="margin-top:8px"></div>
@@ -1453,7 +1620,11 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <label class="chk"><input type="checkbox" id="shuffle"> Videos zufällig mischen</label>
  <div class="btns"><button class="go" id="bSave">Speichern</button></div>
  <label>Update</label>
- <div class="btns" style="margin-top:0"><button id="bUpd">⬆ Neueste Version installieren</button></div>
+ <label class="chk" style="margin-top:4px"><input type="checkbox" id="autoUpd" onchange="api('/api/config',{auto_update:this.checked})"> Automatisch updaten (prüft alle 10 Minuten, Stream bleibt online)</label>
+ <div class="hint" id="updInfo"></div>
+ <div id="senderPending" style="display:none;margin-top:8px;padding:10px;border-radius:8px;background:#2a2140">🛰 Ein Sender-Update ist bereit. Beim Neustart des Senders ist der Stream ca. 10 Sekunden offline – mach das, wann es dir passt.
+  <div class="btns"><button class="go" onclick="if(confirm('Sender jetzt neu starten? Der Stream ist ca. 10 Sekunden offline.'))api('/api/restart_sender').then(refresh)">Sender jetzt neu starten</button></div></div>
+ <div class="btns"><button id="bUpd">⬆ Jetzt nach Update suchen</button></div>
  <div class="hint">Lädt die neueste Version von GitHub. Der Stream bleibt online – Zuschauer sehen ein paar Sekunden „Neu verbinden …“.</div>
  <label>Statistik</label>
  <div class="btns" style="margin-top:0"><button onclick="if(confirm('Alle Stream-Zeiten auf 0 setzen?'))api('/api/stats_reset').then(refresh)">Zähler zurücksetzen</button></div>
@@ -1480,6 +1651,9 @@ async function refresh(){
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
  $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${(j.state=='konvertiert'||j.state=='lädt von Twitch')?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('log').textContent=s.log||'(noch leer)';
+ const U=s.update_info||{};$('autoUpd').checked=s.auto_update;
+ $('updInfo').textContent=`Version ${U.sha?U.sha.slice(0,7):'?'}${U.installed?' · installiert '+new Date(U.installed*1000).toLocaleString('de-DE'):''}${U.result?' · '+U.result:''}`;
+ $('senderPending').style.display=U.sender_pending?'':'none';
  $('keyinfo').textContent=s.key_set?'✅ gesetzt':'❌ fehlt';$('ytkeyinfo').textContent=s.yt_key_set?'✅ gesetzt':'❌ fehlt';
  const ST=s.stats||{},pct=(a,b)=>b>0?Math.min(100,a/b*100).toFixed(1).replace('.',','):'–';
  $('runtime').innerHTML=(s.session_started?`<div style="font-size:15px">⏱ <b>Läuft seit Start:</b> ${fmtL(s.session_secs)}</div><div class="hint" style="margin-top:2px">Läuft bei Abbrüchen, Updates und Neustarts weiter – beginnt erst nach ■ Stoppen neu. <a href="#" style="color:var(--acc)" onclick="setStart();return false">Startzeit ändern</a></div>`:'<div class="hint">Stream gestoppt – der Zähler startet mit ▶ Starten.</div>')+
@@ -1639,6 +1813,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "vods": vods})
             except Exception as e:  # noqa
                 return self._send(200, {"error": f"VODs konnten nicht geladen werden: {e}"})
+        if path == "/api/slate_preview.png":
+            try:
+                src = build_slate_loop()
+                out = os.path.join(RUN_DIR, "slate_preview.png")
+                subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "1.0", "-i", src, "-frames:v", "1", "-update", "1", out],
+                               check=True, timeout=30)
+                with open(out, "rb") as fh:
+                    img = fh.read()
+            except Exception as e:  # noqa
+                return self._send(500, {"error": str(e)})
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(img)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return self.wfile.write(img)
         if path == "/api/preview.png":
             out = os.path.join(CD_DIR, "preview.png")
             try:
@@ -1720,6 +1910,8 @@ class Handler(BaseHTTPRequestHandler):
                     upd["cd_volume"] = max(0, min(100, int(data["cd_volume"])))
                 except (TypeError, ValueError):
                     pass
+            if "auto_update" in data:
+                upd["auto_update"] = bool(data["auto_update"])
             if "show_runtime" in data:
                 upd["show_runtime"] = bool(data["show_runtime"])
             if data.get("runtime_pos") in RUNTIME_POS:
@@ -1746,6 +1938,8 @@ class Handler(BaseHTTPRequestHandler):
             changed = {k for k, v in upd.items() if old.get(k) != v}
             if "cd_volume" in changed:
                 audio_feeder.reload = True           # Lautstärke live ändern
+            if "quality" in changed:
+                threading.Thread(target=lambda: _safe(build_slate_loop), daemon=True).start()
             if changed & {"cd_theme", "quality"}:
                 try:
                     rebuild_layers()
@@ -1771,6 +1965,21 @@ class Handler(BaseHTTPRequestHandler):
                     os.remove(p)
         elif path == "/api/restart_sender":
             open(SENDER_RESTART_FLAG, "w").close()           # Sender beendet sich, systemd startet ihn neu
+            v = load_json(VERSION_PATH, {})
+            v["sender_pending"] = False
+            save_json(VERSION_PATH, v)
+        elif path == "/api/default_cover":
+            import urllib.request
+            try:
+                tmp = os.path.join(RUN_DIR, "default_cover.png")
+                with urllib.request.urlopen(RAW_BASE + "stream24/assets/vice_city_cover.png", timeout=30) as r, \
+                        open(tmp, "wb") as fh:
+                    shutil.copyfileobj(r, fh)
+                save_upload_image(tmp, "cover")
+                os.remove(tmp)
+                rebuild_layers()
+            except Exception as e:  # noqa
+                return self._send(200, {"error": f"Cover konnte nicht geladen werden: {e}"})
         elif path == "/api/music_skip":
             audio_feeder.skip = True
         elif path == "/api/update":
@@ -1988,39 +2197,11 @@ class Handler(BaseHTTPRequestHandler):
         os.replace(tmp, dst)                         # kommt automatisch in die Playlist
 
     def _update(self):
-        """Lädt die neueste Version von GitHub. Das Panel startet neu – der Sender hält den Stream
-        so lange mit "Neu verbinden …" online. Der Sender selbst wird nur auf Wunsch neu gestartet."""
-        import urllib.request
-        try:
-            # genaue neueste Version über die Commit-ID holen (umgeht den 5-Minuten-Zwischenspeicher von GitHub)
-            api = "https://api.github.com/repos/ximjxstinn/stream-marathon/commits/stream24"
-            req = urllib.request.Request(api, headers={"Accept": "application/vnd.github+json", "User-Agent": "stream24"})
-            try:
-                sha = json.loads(urllib.request.urlopen(req, timeout=20).read())["sha"]
-                base_url = f"https://raw.githubusercontent.com/ximjxstinn/stream-marathon/{sha}/"
-            except Exception:  # noqa
-                base_url = UPDATE_URL.rsplit("/", 1)[0] + "/"
-            code = urllib.request.urlopen(base_url + "server.py?t=" + str(int(time.time())), timeout=30).read()
-            compile(code, "server.py", "exec")
-            scode = urllib.request.urlopen(base_url + "sender.py?t=" + str(int(time.time())), timeout=30).read()
-            compile(scode, "sender.py", "exec")
-        except Exception as e:  # noqa
-            return self._send(200, {"error": f"Update fehlgeschlagen: {e}"})
-        here = os.path.dirname(os.path.abspath(__file__))
-        sp = os.path.join(here, "sender.py")
-        old = open(sp, "rb").read() if os.path.exists(sp) else b""
-        sender_changed = old != scode
-        for path, data in ((os.path.join(here, "server.py"), code), (sp, scode)):
-            with open(path + ".new", "wb") as fh:
-                fh.write(data)
-            os.replace(path + ".new", path)
-        self._send(200, {"ok": True, "sender_changed": sender_changed})
-
-        def _restart():
-            stats.save()
-            streamer._kill()
-            os._exit(0)                                      # systemd startet das Panel neu
-        threading.Timer(1.0, _restart).start()
+        ok, info = do_update()
+        if not ok:
+            return self._send(200, {"error": info})
+        self._send(200, {"ok": True, "sender_changed": info})
+        threading.Timer(1.0, restart_panel).start()
 
 def status():
     cfg = get_cfg()
@@ -2050,6 +2231,9 @@ def status():
         "mode": cfg["mode"],
         "vod_channel": cfg["vod_channel"],
         "session_started": streamer.session_started,
+        "auto_update": cfg.get("auto_update", True),
+        "update_info": {"result": auto_updater.last_result, "checked": auto_updater.last_check,
+                        **{k: v for k, v in load_json(VERSION_PATH, {}).items() if k in ("sha", "installed", "sender_pending")}},
         "session_secs": time.time() - streamer.session_started if streamer.session_started else 0,
         "stats": stats.data["dest"],
         "show_runtime": cfg.get("show_runtime", True), "runtime_label": cfg.get("runtime_label", "LIVE seit"),
@@ -2094,7 +2278,10 @@ def main():
     except Exception as e:  # noqa
         print("Ebenen-Fehler:", e, flush=True)
     ticker.tick()
-    for t in (ticker, image_feeder, audio_feeder, stats):
+    threading.Thread(target=lambda: _safe(build_slate_loop), daemon=True).start()
+    if not load_json(VERSION_PATH, {}).get("sha"):
+        _safe(lambda: save_json(VERSION_PATH, {"sha": latest_sha(), "installed": time.time()}))
+    for t in (ticker, image_feeder, audio_feeder, stats, auto_updater):
         t.start()
     # alte Einzel-Musikdatei (frühere Version) in die Playlist übernehmen
     for fn in os.listdir(CD_DIR):
