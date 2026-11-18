@@ -101,6 +101,14 @@ DEFAULT_CFG = {
     "vod_channel": "xImJxstinn",
     "show_runtime": True,             # "● LIVE seit …" im Stream einblenden
     "auto_update": True,              # neue Versionen automatisch installieren
+    "chat_enabled": True,             # Twitch-Chat mitlesen
+    "chat_on_stream": True,           # Chat im Stream anzeigen
+    "chat_channel": "ximjxstinn",
+    "chat_blocklist": "",
+    "chat_ignore": "nightbot,streamelements,moobot,streamlabs,fossabot",
+    "chat_keep_min": 10,
+    "discord_link": "",
+    "tiktok_link": "",
     "perf_preset": "veryfast",        # Encoder-Einstellung für Live-Bild (wird bei Überlastung automatisch schneller)
     "perf_auto": True,                # bei Überlastung automatisch sparsamer werden
     "runtime_label": "LIVE seit",
@@ -375,6 +383,26 @@ class Ticker(threading.Thread):
     """Schreibt jede Viertelsekunde alle Texte des Countdowns in Dateien."""
     BAR_LEN = 60
 
+    def _chat_files(self, cfg):
+        out = {}
+        on = cfg.get("chat_enabled", True) and cfg.get("chat_on_stream", True)
+        lay = CHAT_LAYOUT.get(cfg.get("cd_theme", "ps5"), CHAT_LAYOUT["ps5"])
+        lines = twitch_chat.lines(lay[3]) if on else []
+        lines = lines + [("", "")] * (CHAT_LINES - len(lines))        # direkt unter der Überschrift, neueste unten
+        for i, (full, name) in enumerate(lines):
+            out[f"chat_{i}"] = full or " "
+            out[f"chat_n_{i}"] = name or " "
+        n = len(twitch_chat.chatters)
+        out["chat_head"] = (f"CHAT  ·  {n} {'Person zählt' if n == 1 else 'Leute zählen'} mit runter"
+                            if on and twitch_chat.connected else " ")
+        txt, until = twitch_chat.banner
+        out["chat_banner"] = txt if on and txt and time.time() < until else " "
+        if self.n % 40 == 0:
+            twitch_chat.save()
+        if streamer and streamer.session_started:
+            twitch_chat.reset_session(int(streamer.session_started))
+        return out
+
     def _runtime_files(self, cfg):
         txt = self._runtime(cfg)
         rest = txt.replace("●  ", "", 1) if txt.strip() else " "
@@ -449,6 +477,7 @@ class Ticker(threading.Thread):
             "k_games": "Spiele", "k_media": "Medien", "k_user": "xImJxstinn",
             "clock": datetime.now(ZoneInfo(TZ_NAME)).strftime("%H:%M"),
             **self._runtime_files(cfg),
+            **self._chat_files(cfg),
             "k_sub": hide("Vorgeladen · Spielbar in"),
             "k_btn": "Spielen" if done else "Vorbestellt",
             "pct": f"{int(frac * 100)} %",
@@ -755,7 +784,23 @@ def theme_filters(cfg, w, h):
         for cx in (0.75, 0.857):
             f.append(T("colon", R, "h*0.06", "white@0.85", f"w*{cx}-text_w/2", "h*0.825"))
         f.append(T("done", B, "h*0.06", col, "w*0.52+(w*0.435-text_w)/2", "h*0.715+(h*0.2-text_h)/2"))
-    return f + runtime
+    # Twitch-Chat
+    cx, cy, cfs, _ = CHAT_LAYOUT.get(theme, CHAT_LAYOUT["ps5"])
+    lh = cfs * 1.75
+    cpad = int(h * cfs * 0.35)
+    hide = "alpha='if(lt(text_w,h*0.05),0,1)'"
+    chat = [T("chat_head", B, f"h*{cfs:.3f}", "white", cx, f"h*{cy:.3f}",
+              f":box=1:boxcolor={col}@0.85:boxborderw={cpad}:{hide}")]
+    for i in range(CHAT_LINES):
+        y = f"h*{cy + lh * (i + 1.25):.4f}"
+        chat.append(T(f"chat_{i}", R, f"h*{cfs:.3f}", "white", cx, y,
+                      f":box=1:boxcolor=black@0.5:boxborderw={cpad}:{hide}"))
+        chat.append(T(f"chat_n_{i}", R, f"h*{cfs:.3f}", col, cx, y,
+                      f":borderw=1:bordercolor={col}"))                      # Name farbig + leicht fett, deckungsgleich
+    bx_, by_ = CHAT_BANNER.get(theme) or (cx, f"h*{cy + lh * (CHAT_LINES + 1.6):.4f}")
+    chat.append(T("chat_banner", B, f"h*{max(cfs, 0.024) * 1.35:.3f}", "white", bx_, by_,
+                  f":box=1:boxcolor={col}@0.92:boxborderw={int(h * cfs * 0.6)}:alpha='if(lt(text_w,h*0.1),0,1)'"))
+    return f + runtime + chat
 
 
 def build_countdown_cmd(cfg, output, preview=False, fmt="flv"):
@@ -1067,6 +1112,171 @@ class AutoUpdater(threading.Thread):
 
 
 auto_updater = AutoUpdater()
+
+
+# ------------------------------------------------------------ Twitch-Chat ----
+# Liest den Chat anonym mit (kein Login nötig) und zeigt ihn im Stream.
+import socket
+import ssl
+from collections import deque
+
+CHATTERS_PATH = os.path.join(BASE, "chatters.json")
+CHAT_LINES = 5
+URL_RE = re.compile(r"(https?://\S+|www\.\S+|\b\S+\.(?:com|de|net|org|tv|gg|io|ly|me|xyz|ru)\b\S*)", re.I)
+
+
+def clean_text(t):
+    t = "".join(ch for ch in t if ord(ch) < 0x2E80 and (ch.isprintable() or ch == " "))   # Emojis kann die Schrift nicht
+    return re.sub(r"\s+", " ", t).strip()
+
+
+class TwitchChat(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.msgs = deque(maxlen=50)          # dict(id, user, name, color, text, ts)
+        self.connected = False
+        self.channel = ""
+        self.sock = None
+        self.banner = ("", 0)                 # (Text, bis wann)
+        self.chatters = set(load_json(CHATTERS_PATH, {}).get("names", []))
+        self.session = load_json(CHATTERS_PATH, {}).get("session")
+        self._dirty = False
+
+    def reset_session(self, session_id):
+        if session_id != self.session:
+            self.session = session_id
+            self.chatters = set()
+            self._dirty = True
+
+    def run(self):
+        while True:
+            cfg = get_cfg()
+            ch = re.sub(r"[^a-z0-9_]", "", (cfg.get("chat_channel") or "").lower())
+            if not cfg.get("chat_enabled", True) or not ch:
+                self.connected = False
+                time.sleep(3)
+                continue
+            try:
+                self._session(ch)
+            except Exception as e:  # noqa
+                log_line(f"Twitch-Chat: Verbindung verloren ({e}) – verbinde neu")
+            self.connected = False
+            time.sleep(5)
+
+    def _session(self, ch):
+        test = os.environ.get("STREAM24_IRC_TEST")           # nur für Tests: "host:port" ohne TLS
+        if test:
+            host, port = test.split(":")
+            self.sock = socket.create_connection((host, int(port)), timeout=360)
+        else:
+            raw = socket.create_connection(("irc.chat.twitch.tv", 6697), timeout=360)
+            self.sock = ssl.create_default_context().wrap_socket(raw, server_hostname="irc.chat.twitch.tv")
+        nick = f"justinfan{random.randint(10000, 99999)}"
+        for line in ("CAP REQ :twitch.tv/tags twitch.tv/commands", "PASS SCHMOOPIIE", f"NICK {nick}", f"JOIN #{ch}"):
+            self.sock.sendall((line + "\r\n").encode())
+        self.channel, self.connected = ch, True
+        log_line(f"Twitch-Chat: verbunden mit #{ch}")
+        buf = b""
+        while True:
+            cfg = get_cfg()
+            if re.sub(r"[^a-z0-9_]", "", (cfg.get("chat_channel") or "").lower()) != ch or not cfg.get("chat_enabled", True):
+                self.sock.close()
+                return
+            data = self.sock.recv(65536)
+            if not data:
+                raise RuntimeError("Server hat getrennt")
+            buf += data
+            while b"\r\n" in buf:
+                line, buf = buf.split(b"\r\n", 1)
+                self._on_line(line.decode("utf-8", "replace"))
+
+    def _on_line(self, line):
+        if line.startswith("PING"):
+            self.sock.sendall(b"PONG :tmi.twitch.tv\r\n")
+            return
+        tags = {}
+        if line.startswith("@"):
+            tagstr, line = line[1:].split(" ", 1)
+            for kv in tagstr.split(";"):
+                k, _, v = kv.partition("=")
+                tags[k] = v.replace("\\s", " ")
+        parts = line.split(" ", 3)
+        if len(parts) < 3:
+            return
+        cmd = parts[1]
+        if cmd == "PRIVMSG" and len(parts) == 4:
+            user = parts[0][1:].split("!", 1)[0]
+            text = parts[3][1:] if parts[3].startswith(":") else parts[3]
+            self._message(user, tags, text)
+        elif cmd == "CLEARMSG":                         # Nachricht gelöscht
+            mid = tags.get("target-msg-id")
+            self.msgs = deque((m for m in self.msgs if m["id"] != mid), maxlen=50)
+        elif cmd == "CLEARCHAT":                        # Bann/Timeout oder Chat geleert
+            target = parts[3][1:] if len(parts) == 4 else None
+            if target:
+                self.msgs = deque((m for m in self.msgs if m["user"] != target.lower()), maxlen=50)
+            else:
+                self.msgs.clear()
+
+    def _message(self, user, tags, text):
+        cfg = get_cfg()
+        name = clean_text(tags.get("display-name") or user) or user
+        if text.startswith("\x01ACTION "):
+            text = text[8:].rstrip("\x01")
+        low = text.lower().strip()
+        # Befehle
+        if low.startswith("!discord") and cfg.get("discord_link"):
+            self.banner = (f"Discord:  {cfg['discord_link']}", time.time() + 12)
+            return
+        if low.startswith("!tiktok") and cfg.get("tiktok_link"):
+            self.banner = (f"TikTok:  {cfg['tiktok_link']}", time.time() + 12)
+            return
+        if user.lower() in [u.strip().lower() for u in (cfg.get("chat_ignore") or "").split(",") if u.strip()]:
+            return                                      # z. B. Bots wie Nightbot ausblenden
+        if low.startswith("!"):
+            return
+        bad = [w.strip().lower() for w in (cfg.get("chat_blocklist") or "").split(",") if w.strip()]
+        if any(w in low for w in bad):
+            return
+        text = URL_RE.sub("[Link]", clean_text(text))
+        if not text:
+            return
+        self.msgs.append({"id": tags.get("id", ""), "user": user.lower(), "name": name,
+                          "color": tags.get("color") or "", "text": text, "ts": time.time()})
+        if user.lower() not in self.chatters:
+            self.chatters.add(user.lower())
+            self._dirty = True
+
+    def save(self):
+        if self._dirty:
+            save_json(CHATTERS_PATH, {"session": self.session, "names": sorted(self.chatters)})
+            self._dirty = False
+
+    def lines(self, max_chars):
+        """Die neuesten Nachrichten (unten = neueste), gekürzt auf die Breite."""
+        cfg = get_cfg()
+        keep = float(cfg.get("chat_keep_min", 10)) * 60
+        recent = [m for m in self.msgs if time.time() - m["ts"] < keep][-CHAT_LINES:]
+        out = []
+        for m in recent:
+            full = f"{m['name']}: {m['text']}"
+            if len(full) > max_chars:
+                full = full[:max_chars - 1].rstrip() + "…"
+            out.append((full, (m["name"] + ":")[:max_chars]))
+        return out
+
+
+twitch_chat = TwitchChat()
+
+# Position des !discord/!tiktok-Banners je Design (x, y) – None = direkt unter dem Chat
+CHAT_BANNER = {"release": ("w*0.965-text_w", "h*0.555"), "konsole": ("w*0.965-text_w", "h*0.555")}
+# Position des Chats je Design: x, y (oben), Schriftgröße, max. Zeichen pro Zeile
+CHAT_LAYOUT = {
+    "ps5": ("w*0.035", 0.11, 0.026, 40),
+    "release": ("w*0.62", 0.13, 0.025, 38),
+    "konsole": ("w*0.765", 0.17, 0.021, 26),
+    "standard": ("w*0.03", 0.06, 0.024, 40),
+}
 
 ticker = Ticker()
 image_feeder = ImageFeeder()
@@ -1836,6 +2046,18 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <div class="hint">Songs, Bild und Lautstärke werden live getauscht – der Stream läuft weiter. Nur lizenzfreie Musik verwenden (z. B. StreamBeats, NCS), sonst drohen DMCA-Strikes.</div>
  </div>
 </section>
+<section class="card"><h2>💬 Chat im Stream</h2>
+ <label class="chk" style="margin-top:0"><input type="checkbox" id="chOn"> Twitch-Chat im Stream anzeigen</label>
+ <div class="hint" id="chInfo"></div>
+ <label>Twitch-Kanal</label><input type="text" id="chChan">
+ <label>Discord-Link (für !discord)</label><input type="text" id="chDc" placeholder="discord.gg/…">
+ <label>TikTok-Link (für !tiktok)</label><input type="text" id="chTt" placeholder="tiktok.com/@…">
+ <label>Gesperrte Wörter (mit Komma getrennt) – solche Nachrichten erscheinen nicht im Stream</label><input type="text" id="chBlock">
+ <label>Nutzer ausblenden (z. B. Bots)</label><input type="text" id="chIgn">
+ <div class="btns"><button class="go" id="bChSave">Speichern (live)</button></div>
+ <div class="hint">Links in Nachrichten werden zu [Link]. Löschst du eine Nachricht oder bannst jemanden auf Twitch, verschwindet sie sofort auch aus dem Stream.</div>
+ <div id="chRecent" style="margin-top:8px"></div>
+</section>
 <section class="card" id="vidCard"><h2>Videos</h2>
  <label class="filebtn">＋ Videos hochladen<input type="file" id="file" accept="video/*" multiple></label>
  <div class="hint">Videos werden nach dem Upload einmal umgewandelt, danach landen sie automatisch in der Playlist.</div>
@@ -1901,6 +2123,10 @@ async function refresh(){
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
  $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig'&&j.kind!='music').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${(j.state=='konvertiert'||j.state=='lädt von Twitch')?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('log').textContent=s.log||'(noch leer)';
+ const CH=s.chat||{};$('chOn').checked=CH.on_stream&&CH.enabled;
+ $('chInfo').textContent=CH.connected?`✅ Verbunden mit #${CH.channel} · ${CH.chatters} ${CH.chatters==1?'Person hat':'Leute haben'} in dieser Sitzung geschrieben`:'⏳ Verbinde mit dem Twitch-Chat …';
+ $('chRecent').innerHTML=(CH.recent||[]).map(m=>`<div style="font-size:13px;color:var(--mut)"><b style="color:var(--txt)">${esc(m.name)}:</b> ${esc(m.text)}</div>`).join('');
+ if(!window.chLoaded){window.chLoaded=1;$('chChan').value=CH.channel;$('chDc').value=CH.discord;$('chTt').value=CH.tiktok;$('chBlock').value=CH.blocklist;$('chIgn').value=CH.ignore}
  const PF=s.perf||{};$('perfPreset').value=PF.preset;$('perfAuto').checked=PF.auto;
  $('perfInfo').textContent=`Server-Auslastung: ${Math.round(PF.load/PF.cpus*100)} % (${PF.cpus} Kern${PF.cpus>1?'e':''})`+(PF.lag>1?` · ⚠ Live-Bild hinkt ${PF.lag} s hinterher`:' · Live-Bild läuft flüssig')+(PF.note?` · ${PF.note}`:'');
  const U=s.update_info||{};$('autoUpd').checked=s.auto_update;
@@ -1985,6 +2211,8 @@ $('cvFile').onchange=e=>{if(e.target.files[0])asset('cover',e.target.files[0]);e
 $('cvDel').onclick=async()=>{await api('/api/asset_delete',{kind:'cover'});refresh();showPrev()};
 async function delSong(n){if(confirm('Song löschen?')){await api('/api/asset_delete',{kind:'music',name:n});refresh()}}
 $('ckFile').onchange=e=>{if(e.target.files[0])asset('cookies',e.target.files[0]).then(()=>alert('Cookies gespeichert ✅ – jetzt den Link nochmal einfügen.'));e.target.value=''};
+$('chOn').onchange=e=>api('/api/config',{chat_on_stream:e.target.checked,chat_enabled:true});
+$('bChSave').onclick=async()=>{const j=await api('/api/config',{chat_channel:$('chChan').value,discord_link:$('chDc').value,tiktok_link:$('chTt').value,chat_blocklist:$('chBlock').value,chat_ignore:$('chIgn').value});if(j.ok)alert('Gespeichert ✅')};
 $('bMuLink').onclick=async()=>{const u=$('muLink').value.trim();if(!u)return;const j=await api('/api/music_link',{url:u});if(j.ok){$('muLink').value='';refresh()}};
 $('muSkip').onclick=async()=>{await api('/api/music_skip');setTimeout(refresh,800)};
 $('bUpd').onclick=async()=>{if(!confirm('Neueste Version installieren? Der Stream bleibt dabei online.'))return;
@@ -2170,6 +2398,13 @@ class Handler(BaseHTTPRequestHandler):
                 upd["perf_preset"] = data["perf_preset"]
             if "perf_auto" in data:
                 upd["perf_auto"] = bool(data["perf_auto"])
+            for k in ("chat_enabled", "chat_on_stream"):
+                if k in data:
+                    upd[k] = bool(data[k])
+            for k, n in (("chat_channel", 30), ("chat_blocklist", 500), ("chat_ignore", 300),
+                         ("discord_link", 80), ("tiktok_link", 80)):
+                if k in data:
+                    upd[k] = clean_text(str(data[k]))[:n]
             if "auto_update" in data:
                 upd["auto_update"] = bool(data["auto_update"])
             if "show_runtime" in data:
@@ -2509,6 +2744,12 @@ def status():
         "vod_channel": cfg["vod_channel"],
         "session_started": streamer.session_started,
         "auto_update": cfg.get("auto_update", True),
+        "chat": {"enabled": cfg.get("chat_enabled", True), "on_stream": cfg.get("chat_on_stream", True),
+                 "channel": cfg.get("chat_channel", ""), "connected": twitch_chat.connected,
+                 "chatters": len(twitch_chat.chatters), "blocklist": cfg.get("chat_blocklist", ""),
+                 "ignore": cfg.get("chat_ignore", ""), "discord": cfg.get("discord_link", ""),
+                 "tiktok": cfg.get("tiktok_link", ""),
+                 "recent": [{"name": m["name"], "text": m["text"]} for m in list(twitch_chat.msgs)[-5:]]},
         "perf": {"preset": live_preset(cfg), "auto": cfg.get("perf_auto", True), "lag": round(streamer.lag, 1),
                  "load": round(os.getloadavg()[0], 2), "cpus": os.cpu_count() or 1, "note": streamer.perf_note},
         "update_info": {"result": auto_updater.last_result, "checked": auto_updater.last_check,
@@ -2561,7 +2802,7 @@ def main():
     threading.Thread(target=lambda: _safe(build_slate_loop), daemon=True).start()
     if not load_json(VERSION_PATH, {}).get("sha"):
         _safe(lambda: save_json(VERSION_PATH, {"sha": latest_sha(), "installed": time.time()}))
-    for t in (ticker, image_feeder, audio_feeder, stats, auto_updater):
+    for t in (ticker, image_feeder, audio_feeder, stats, auto_updater, twitch_chat):
         t.start()
     # alte Einzel-Musikdatei (frühere Version) in die Playlist übernehmen
     for fn in os.listdir(CD_DIR):

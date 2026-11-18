@@ -83,6 +83,12 @@ Tipp für YouTube: In YouTube Studio bei den Stream-Einstellungen „Automatisch
 - **Im Stream:** oben rechts „● LIVE seit …“, im Panel unter Status ein- und ausschaltbar, ohne Neustart.
 - Unter Einstellungen → „Zähler zurücksetzen“ setzt du alles auf 0.
 
+## 💬 Chat im Stream
+- Der Twitch-Chat wird ohne Login mitgelesen und im Stream angezeigt, die neuesten 5 Nachrichten mit farbigem Namen.
+- „CHAT · 127 Leute zählen mit runter“ zählt alle, die in dieser Sitzung geschrieben haben.
+- `!discord` / `!tiktok` im Chat → der Link erscheint 12 Sekunden lang im Stream. Die Links trägst du im Panel ein.
+- Schutz: Links werden zu [Link], gesperrte Wörter und Bots wie Nightbot werden ausgeblendet. Gelöschte Nachrichten und gebannte Nutzer verschwinden sofort auch aus dem Stream.
+
 ## Gut zu wissen
 - **Kennzeichnung:** Markiere den Stream als Wiederholung, z. B. mit „🔁 24/7 Rerun“ im Titel. So denkt niemand, du sitzt gerade live da.
 - **Traffic:** Bei 3000 kbit/s rund um die Uhr kommst du auf ungefähr 1 TB im Monat. Bei Hetzner sind 20 TB inklusive.
