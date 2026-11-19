@@ -1519,16 +1519,24 @@ class Streamer:
         v = self.vod
         if v["url"] in urls:                             # aktuelles VOD weiterspielen
             return next(i for i in items if i["url"] == v["url"])
-        v["order"] = [u for u in v["order"] if u in urls]
-        if not v["order"]:
-            v["order"] = urls[:]
-            if cfg.get("shuffle"):
+        want = v.pop("next", None)
+        if want in urls:                                 # im Panel ausgewählt
+            url = want
+        elif cfg.get("tw_order", "list") == "random":
+            v["order"] = [u for u in v["order"] if u in urls]
+            if not v["order"]:
+                v["order"] = urls[:]
                 random.shuffle(v["order"])
-        url = v["order"].pop(0)
+            url = v["order"].pop(0)
+        else:                                            # Reihenfolge der Liste, danach wieder von vorne
+            last = v.get("last")
+            url = urls[(urls.index(last) + 1) % len(urls)] if last in urls else urls[0]
+        v["last"] = url
         item = next(i for i in items if i["url"] == url)
         v.update(url=url, title=item["title"], pos=0.0, tries=0, duration=float(item.get("duration") or 0))
-        if v["order"]:
-            prefetch_stream_url(v["order"][0])           # nächsten Link schon mal holen
+        nxt = v["order"][0] if v["order"] else urls[(urls.index(url) + 1) % len(urls)]
+        if nxt != url:
+            prefetch_stream_url(nxt)           # nächsten Link schon mal holen
         return item
 
     def _vod_done(self):
@@ -2105,6 +2113,11 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <div class="hint">Spielt VODs direkt von Twitch ab – ohne Speicher. VODs fügst du unten bei „Videos → Direkt von Twitch“ mit „▶ Abspielen“ hinzu.</div>
   <div id="twNow" style="margin-top:10px"></div>
   <div class="btns"><button id="twSkip">⏭ Nächstes VOD</button></div>
+  <label>Abspiel-Reihenfolge</label>
+  <select id="twOrder" onchange="api('/api/twpl_order',{order:this.value}).then(refresh)"><option value="list">Wie in der Liste (oben → unten)</option><option value="random">Zufällig</option></select>
+  <label>Liste sortieren</label>
+  <select id="twSort" onchange="if(this.value)api('/api/twpl_sort',{by:this.value}).then(()=>{this.value='';refresh()})"><option value="">– auswählen –</option><option value="new">Neueste zuerst</option><option value="old">Älteste zuerst</option><option value="long">Längste zuerst</option><option value="short">Kürzeste zuerst</option><option value="name">Nach Name (A–Z)</option><option value="random">Einmal durchmischen</option></select>
+  <div class="hint">Mit ▲ ▼ verschiebst du einzelne VODs. „▶ Jetzt“ spielt ein VOD sofort, „⏭ Als Nächstes“ danach.</div>
   <div id="twList" style="margin-top:8px"></div>
  </div>
  <div id="cdBox">
@@ -2269,7 +2282,8 @@ async function refresh(){
  const cd=s.mode=='countdown',tw=s.mode=='twitch';$('mCd').className=cd?'go':'';$('mTw').className=tw?'go':'';$('mVid').className=(!cd&&!tw)?'go':'';
  $('cdBox').style.display=cd?'':'none';$('twBox').style.display=tw?'':'none';
  $('twNow').innerHTML=s.tw_now?`🔴 Läuft: <b>${esc(s.tw_now.title)}</b><br><small style="color:var(--mut)">${fmt(s.tw_now.pos)}${s.tw_now.duration?' / '+fmt(s.tw_now.duration):''}</small>`:'';
- $('twList').innerHTML=s.tw_playlist.length?s.tw_playlist.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${v.duration?fmt(v.duration):''}</small></div><button onclick="twRemove(this.dataset.u)" data-u="${esc(v.url)}">Entfernen</button></div>`).join(''):'<div class="empty">Noch keine VODs in der Playlist.</div>';
+ if(document.activeElement!==$('twOrder'))$('twOrder').value=s.tw_order||'list';
+ $('twList').innerHTML=s.tw_playlist.length?s.tw_playlist.map((v,i)=>{const cur=v.url==s.tw_cur,nx=v.url==s.tw_next;return `<div class="vid"${cur?' style="border-color:#ffc400"':''}><div class="t">${i+1}. ${cur?'▶ ':''}${esc(v.title)}<br><small>${v.timestamp?new Date(v.timestamp*1000).toLocaleDateString('de-DE')+' · ':''}${v.duration?fmt(v.duration):''}${cur?' · läuft gerade':''}${nx?' · kommt als Nächstes':''}</small></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end" data-u="${esc(v.url)}"><button onclick="twMv(this,'up')" ${i?'':'disabled'}>▲</button><button onclick="twMv(this,'down')" ${i<s.tw_playlist.length-1?'':'disabled'}>▼</button>${cur?'':`<button class="go" onclick="twPlay(this,1)">▶ Jetzt</button><button onclick="twPlay(this,0)">⏭ Als Nächstes</button>`}<button onclick="twRemove(this.parentNode.dataset.u)">✕</button></div></div>`}).join(''):'<div class="empty">Noch keine VODs in der Playlist.</div>';
  $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('cvInfo').textContent=s.cd_cover?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
  $('muJobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.kind=='music'&&(j.state!='fertig'||true)).slice(-5).map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''}${j.state=='lädt Musik'?' '+j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'||j.state=='fertig'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('ckInfo').textContent=s.yt_cookies?'✅':'';
@@ -2301,6 +2315,8 @@ $('mCd').onclick=async()=>{await api('/api/config',{mode:'countdown'});refresh()
 $('mVid').onclick=async()=>{await api('/api/config',{mode:'videos'});refresh()};
 $('mTw').onclick=async()=>{await api('/api/config',{mode:'twitch'});refresh()};
 $('twSkip').onclick=async()=>{await api('/api/twpl_skip');setTimeout(refresh,800)};
+async function twMv(b,to){await api('/api/twpl_move',{url:b.parentNode.dataset.u,to});refresh()}
+async function twPlay(b,now){b.disabled=true;await api('/api/twpl_play',{url:b.parentNode.dataset.u,now:!!now});setTimeout(refresh,now?1500:200)}
 async function twRemove(u){if(confirm('VOD aus der Playlist entfernen?')){await api('/api/twpl_remove',{url:u});refresh()}}
 const CDF=['cd_theme','cd_target','cd_color','cd_badge','cd_head1','cd_hl','cd_head2','cd_sub','cd_game','cd_boxlabel','cd_title','cd_tile','cd_done'];
 function showTh(){const t=$('cd_theme').value;document.querySelectorAll('[data-th]').forEach(e=>e.style.display=e.dataset.th.split(' ').includes(t)?'':'none')}
@@ -2638,7 +2654,8 @@ class Handler(BaseHTTPRequestHandler):
                 url = str(it.get("url", ""))
                 if re.match(r"^https://(www\.|m\.)?twitch\.tv/", url) and url not in have:
                     pl.append({"url": url, "title": str(it.get("title", "Twitch-VOD"))[:80],
-                               "duration": float(it.get("duration") or 0)})
+                               "duration": float(it.get("duration") or 0),
+                               "timestamp": float(it.get("timestamp") or 0)})
                     have.add(url)
             set_cfg(tw_playlist=pl)
         elif path == "/api/twpl_remove":
@@ -2684,6 +2701,37 @@ class Handler(BaseHTTPRequestHandler):
             switch_game(g, "von Hand")
         elif path == "/api/stats_reset":
             stats.reset_all()
+        elif path == "/api/twpl_move":
+            pl = get_cfg().get("tw_playlist") or []
+            url, d = str(data.get("url", "")), str(data.get("to", ""))
+            i = next((k for k, x in enumerate(pl) if x["url"] == url), None)
+            if i is not None:
+                it = pl.pop(i)
+                j = {"top": 0, "bottom": len(pl), "up": max(0, i - 1), "down": min(len(pl), i + 1)}.get(d, i)
+                pl.insert(j, it)
+                set_cfg(tw_playlist=pl)
+        elif path == "/api/twpl_sort":
+            by = str(data.get("by", ""))
+            pl = get_cfg().get("tw_playlist") or []
+            keys = {"new": (lambda x: -x.get("timestamp", 0)), "old": (lambda x: x.get("timestamp", 0)),
+                    "long": (lambda x: -x.get("duration", 0)), "short": (lambda x: x.get("duration", 0)),
+                    "name": (lambda x: x.get("title", "").lower())}
+            if by == "random":
+                random.shuffle(pl)
+            elif by in keys:
+                pl.sort(key=keys[by])
+            set_cfg(tw_playlist=pl)
+            streamer.vod["order"] = []
+        elif path == "/api/twpl_order":
+            set_cfg(tw_order="random" if data.get("order") == "random" else "list")
+            streamer.vod["order"] = []
+        elif path == "/api/twpl_play":
+            url = str(data.get("url", ""))
+            if any(x["url"] == url for x in (get_cfg().get("tw_playlist") or [])):
+                streamer.vod["next"] = url
+                if data.get("now") and get_cfg()["mode"] == "twitch" and streamer.vod["url"] != url:
+                    streamer._vod_done()
+                    streamer._kill()                     # kurz "Neu verbinden …", dann das gewählte VOD
         elif path == "/api/twpl_skip":
             if get_cfg()["mode"] == "twitch":
                 streamer._vod_done()
@@ -2920,7 +2968,8 @@ def status():
         "show_runtime": cfg.get("show_runtime", True), "runtime_label": cfg.get("runtime_label", "LIVE seit"),
         "runtime_mode": cfg.get("runtime_mode", "start"),
         "runtime_pos": cfg.get("runtime_pos", "tr"), "runtime_positions": RUNTIME_POS,
-        "tw_playlist": cfg.get("tw_playlist") or [],
+        "tw_playlist": cfg.get("tw_playlist") or [], "tw_order": cfg.get("tw_order", "list"),
+        "tw_cur": streamer.vod["url"], "tw_next": streamer.vod.get("next"),
         "tw_now": {"title": streamer.vod["title"], "pos": streamer.vod["pos"] + (vod_progress_seconds() if streamer.source_alive() else 0),
                    "duration": streamer.vod["duration"]} if streamer.vod["url"] else None,
         "cfg": {k: v for k, v in cfg.items() if k.startswith("cd_")},
