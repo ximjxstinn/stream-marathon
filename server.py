@@ -1545,6 +1545,10 @@ class Streamer:
     def _vod_after(self, code, reason):
         """Nach Ende eines VOD-Teils: weiter an gleicher Stelle oder nächstes VOD. True = sofort weiter."""
         v = self.vod
+        if "seek" in v:                                  # im Panel vor-/zurückgespult
+            v["pos"], v["tries"] = v.pop("seek"), 0
+            log_line(f"Twitch-VOD gespult auf {int(v['pos'] // 60)} min")
+            return True
         played = vod_progress_seconds()
         v["pos"] += played
         near_end = v["duration"] and v["pos"] >= v["duration"] - 20
@@ -2112,12 +2116,16 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div id="twBox" style="display:none">
   <div class="hint">Spielt VODs direkt von Twitch ab – ohne Speicher. VODs fügst du unten bei „Videos → Direkt von Twitch“ mit „▶ Abspielen“ hinzu.</div>
   <div id="twNow" style="margin-top:10px"></div>
+  <div id="twSeek" style="display:none">
+   <div class="btns" style="flex-wrap:wrap"><button onclick="twSeek(-600)">⏪ 10 min</button><button onclick="twSeek(-60)">◀ 1 min</button><button onclick="twSeek(60)">1 min ▶</button><button onclick="twSeek(300)">5 min ▶</button><button onclick="twSeek(600)">10 min ⏩</button><button onclick="twSeek(1800)">30 min ⏩</button></div>
+   <div style="display:flex;gap:8px;margin-top:8px"><input type="text" id="twTo" placeholder="Springen zu, z. B. 1:23:45" style="flex:1"><button class="go" onclick="twJump()">Springen</button></div>
+  </div>
   <div class="btns"><button id="twSkip">⏭ Nächstes VOD</button></div>
   <label>Abspiel-Reihenfolge</label>
   <select id="twOrder" onchange="api('/api/twpl_order',{order:this.value}).then(refresh)"><option value="list">Wie in der Liste (oben → unten)</option><option value="random">Zufällig</option></select>
   <label>Liste sortieren</label>
   <select id="twSort" onchange="if(this.value)api('/api/twpl_sort',{by:this.value}).then(()=>{this.value='';refresh()})"><option value="">– auswählen –</option><option value="new">Neueste zuerst</option><option value="old">Älteste zuerst</option><option value="long">Längste zuerst</option><option value="short">Kürzeste zuerst</option><option value="name">Nach Name (A–Z)</option><option value="random">Einmal durchmischen</option></select>
-  <div class="hint">Mit ▲ ▼ verschiebst du einzelne VODs. „▶ Jetzt“ spielt ein VOD sofort, „⏭ Als Nächstes“ danach.</div>
+  <div class="hint">Mit ▲ ▼ verschiebst du einzelne VODs. ⏫ holt es ganz nach oben. „▶ Jetzt“ spielt ein VOD sofort, „⏭ Als Nächstes“ danach.</div>
   <div id="twList" style="margin-top:8px"></div>
  </div>
  <div id="cdBox">
@@ -2281,9 +2289,10 @@ async function refresh(){
  $('dests').innerHTML=Object.values(s.dest).map(d=>`<div style="display:flex;align-items:center;gap:8px;margin:4px 0"><span class="dot${d.live?' live':''}" style="width:10px;height:10px"></span><b>${d.name}</b><span style="color:var(--mut);font-size:14px">${d.live?'LIVE seit '+fmt(d.uptime):esc(d.msg)}${d.next_planned?' · geplanter Neustart in '+fmt(d.next_planned):''}${d.restarts?' · Reconnects: '+d.restarts:''}</span></div>`).join('');
  const cd=s.mode=='countdown',tw=s.mode=='twitch';$('mCd').className=cd?'go':'';$('mTw').className=tw?'go':'';$('mVid').className=(!cd&&!tw)?'go':'';
  $('cdBox').style.display=cd?'':'none';$('twBox').style.display=tw?'':'none';
+ $('twSeek').style.display=s.tw_now?'':'none';
  $('twNow').innerHTML=s.tw_now?`🔴 Läuft: <b>${esc(s.tw_now.title)}</b><br><small style="color:var(--mut)">${fmt(s.tw_now.pos)}${s.tw_now.duration?' / '+fmt(s.tw_now.duration):''}</small>`:'';
  if(document.activeElement!==$('twOrder'))$('twOrder').value=s.tw_order||'list';
- $('twList').innerHTML=s.tw_playlist.length?s.tw_playlist.map((v,i)=>{const cur=v.url==s.tw_cur,nx=v.url==s.tw_next;return `<div class="vid"${cur?' style="border-color:#ffc400"':''}><div class="t">${i+1}. ${cur?'▶ ':''}${esc(v.title)}<br><small>${v.timestamp?new Date(v.timestamp*1000).toLocaleDateString('de-DE')+' · ':''}${v.duration?fmt(v.duration):''}${cur?' · läuft gerade':''}${nx?' · kommt als Nächstes':''}</small></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end" data-u="${esc(v.url)}"><button onclick="twMv(this,'up')" ${i?'':'disabled'}>▲</button><button onclick="twMv(this,'down')" ${i<s.tw_playlist.length-1?'':'disabled'}>▼</button>${cur?'':`<button class="go" onclick="twPlay(this,1)">▶ Jetzt</button><button onclick="twPlay(this,0)">⏭ Als Nächstes</button>`}<button onclick="twRemove(this.parentNode.dataset.u)">✕</button></div></div>`}).join(''):'<div class="empty">Noch keine VODs in der Playlist.</div>';
+ $('twList').innerHTML=s.tw_playlist.length?s.tw_playlist.map((v,i)=>{const cur=v.url==s.tw_cur,nx=v.url==s.tw_next;return `<div class="vid"${cur?' style="border-color:#ffc400"':''}><div class="t">${i+1}. ${cur?'▶ ':''}${esc(v.title)}<br><small>${v.timestamp?new Date(v.timestamp*1000).toLocaleDateString('de-DE')+' · ':''}${v.duration?fmt(v.duration):''}${cur?' · läuft gerade':''}${nx?' · kommt als Nächstes':''}</small></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end" data-u="${esc(v.url)}"><button onclick="twMv(this,'top')" ${i?'':'disabled'} title="Ganz nach oben">⏫</button><button onclick="twMv(this,'up')" ${i?'':'disabled'}>▲</button><button onclick="twMv(this,'down')" ${i<s.tw_playlist.length-1?'':'disabled'}>▼</button>${cur?'':`<button class="go" onclick="twPlay(this,1)">▶ Jetzt</button><button onclick="twPlay(this,0)">⏭ Als Nächstes</button>`}<button onclick="twRemove(this.parentNode.dataset.u)">✕</button></div></div>`}).join(''):'<div class="empty">Noch keine VODs in der Playlist.</div>';
  $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('cvInfo').textContent=s.cd_cover?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
  $('muJobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.kind=='music'&&(j.state!='fertig'||true)).slice(-5).map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''}${j.state=='lädt Musik'?' '+j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'||j.state=='fertig'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('ckInfo').textContent=s.yt_cookies?'✅':'';
@@ -2315,6 +2324,9 @@ $('mCd').onclick=async()=>{await api('/api/config',{mode:'countdown'});refresh()
 $('mVid').onclick=async()=>{await api('/api/config',{mode:'videos'});refresh()};
 $('mTw').onclick=async()=>{await api('/api/config',{mode:'twitch'});refresh()};
 $('twSkip').onclick=async()=>{await api('/api/twpl_skip');setTimeout(refresh,800)};
+async function twSeek(d){const j=await api('/api/twpl_seek',{delta:d});if(j.ok)setTimeout(refresh,2500)}
+async function twJump(){const p=$('twTo').value.trim().split(':').map(Number);if(!p.length||p.some(isNaN))return alert('Zeit z. B. so eingeben: 1:23:45 oder 45:00');
+ const sec=p.reduce((a,x)=>a*60+x,0);const j=await api('/api/twpl_seek',{to:sec});if(j.ok){$('twTo').value='';setTimeout(refresh,2500)}}
 async function twMv(b,to){await api('/api/twpl_move',{url:b.parentNode.dataset.u,to});refresh()}
 async function twPlay(b,now){b.disabled=true;await api('/api/twpl_play',{url:b.parentNode.dataset.u,now:!!now});setTimeout(refresh,now?1500:200)}
 async function twRemove(u){if(confirm('VOD aus der Playlist entfernen?')){await api('/api/twpl_remove',{url:u});refresh()}}
@@ -2732,6 +2744,18 @@ class Handler(BaseHTTPRequestHandler):
                 if data.get("now") and get_cfg()["mode"] == "twitch" and streamer.vod["url"] != url:
                     streamer._vod_done()
                     streamer._kill()                     # kurz "Neu verbinden …", dann das gewählte VOD
+        elif path == "/api/twpl_seek":
+            v = streamer.vod
+            if get_cfg()["mode"] != "twitch" or not v["url"]:
+                return self._send(200, {"error": "Gerade läuft kein Twitch-VOD"})
+            cur = v["pos"] + (vod_progress_seconds() if streamer.source_alive() else 0)
+            try:
+                new = float(data["to"]) if "to" in data else cur + float(data.get("delta", 0))
+            except (TypeError, ValueError):
+                return self._send(200, {"error": "Ungültige Zeit"})
+            top = (v["duration"] - 30) if v["duration"] else new
+            v["seek"] = max(0.0, min(new, top))
+            streamer._kill()                             # kurz "Neu verbinden …", dann ab der neuen Stelle
         elif path == "/api/twpl_skip":
             if get_cfg()["mode"] == "twitch":
                 streamer._vod_done()
