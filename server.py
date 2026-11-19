@@ -1589,15 +1589,43 @@ class TitleManager(threading.Thread):
             sn = b["snippet"]
             if sn.get("title") == title[:100]:
                 continue
-            body = {"id": b["id"], "snippet": {"title": title[:100], "description": sn.get("description", ""),
-                                                "scheduledStartTime": sn.get("scheduledStartTime") or sn.get("actualStartTime")}}
-            c2, j2 = _http("PUT", "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet", body,
-                           headers=self._yt_hd())
-            if c2 != 200:
+            err = self._yt_update(b, title[:100])
+            if err:
                 ok_all = False
-                err = j2.get("error")
-                return False, err.get("message", c2) if isinstance(err, dict) else c2
+                return False, err
         return ok_all, None
+
+    def _yt_update(self, b, title):
+        """Titel eines laufenden YouTube-Livestreams ändern. Gibt None zurück, wenn es geklappt hat."""
+        sn = b["snippet"]
+        tries = []
+        if sn.get("scheduledStartTime"):
+            tries.append({"title": title, "description": sn.get("description", ""),
+                          "scheduledStartTime": sn["scheduledStartTime"]})
+        tries.append({"title": title, "description": sn.get("description", "")})
+        err = None
+        for snip in tries:
+            c, j = _http("PUT", "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet",
+                         {"id": b["id"], "snippet": snip}, headers=self._yt_hd())
+            if c == 200:
+                return None
+            e = j.get("error")
+            err = e.get("message", c) if isinstance(e, dict) else c
+        # Livestreams per Stream-Schlüssel ("Jetzt streamen") lassen sich oft nur als Video ändern
+        c, j = _http("GET", "https://www.googleapis.com/youtube/v3/videos?part=snippet&id=" + b["id"], headers=self._yt_hd())
+        items = j.get("items") or [] if c == 200 else []
+        if items:
+            vs = items[0]["snippet"]
+            body = {"id": b["id"], "snippet": {"title": title, "categoryId": vs.get("categoryId", "20"),
+                                                "description": vs.get("description", ""),
+                                                **({"tags": vs["tags"]} if vs.get("tags") else {}),
+                                                **({"defaultLanguage": vs["defaultLanguage"]} if vs.get("defaultLanguage") else {})}}
+            c2, j2 = _http("PUT", "https://www.googleapis.com/youtube/v3/videos?part=snippet", body, headers=self._yt_hd())
+            if c2 == 200:
+                return None
+            e = j2.get("error")
+            err = e.get("message", c2) if isinstance(e, dict) else c2
+        return err
 
     def run(self):
         time.sleep(15)
