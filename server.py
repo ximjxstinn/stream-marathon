@@ -101,6 +101,14 @@ DEFAULT_CFG = {
     "vod_channel": "xImJxstinn",
     "show_runtime": True,             # "● LIVE seit …" im Stream einblenden
     "auto_update": True,              # neue Versionen automatisch installieren
+    "title_auto": False,              # Stream-Titel automatisch setzen
+    "title_countdown": "{game} Countdown ⏳ 24/7 LIVE bis zum Release",
+    "title_done": "{done} 🎉 24/7 LIVE",
+    "title_vod": "(VOD) {title}",
+    "title_fallback": "Wiederholung",
+    "tw_client_id": "",
+    "yt_client_id": "",
+    "yt_client_secret": "",
     "game_auto": True,                # nach dem Release automatisch zum nächsten Spiel wechseln
     "game_done_hours": 12,            # so lange "… IST DA!" zeigen, dann nächstes Spiel
     "game_current": "gta6",
@@ -1380,6 +1388,267 @@ class GameQueue(threading.Thread):
 
 game_queue = GameQueue()
 
+
+# --------------------------------------------------------- Stream-Titel ----
+# Setzt den Titel auf Twitch und YouTube automatisch, z. B. "(VOD) <Titel>" während VODs laufen.
+# Anmeldung per Geräte-Code (wie beim Fernseher): kein Passwort im Panel, keine eigene Domain nötig.
+TOKENS_PATH = os.path.join(BASE, "tokens.json")
+TW_SCOPE = "channel:manage:broadcast"
+YT_SCOPE = "https://www.googleapis.com/auth/youtube"
+
+
+def _http(method, url, data=None, headers=None, form=False, timeout=20):
+    import urllib.request
+    import urllib.error
+    from urllib.parse import urlencode
+    body = None
+    hd = dict(headers or {})
+    if data is not None:
+        if form:
+            body = urlencode(data).encode()
+            hd["Content-Type"] = "application/x-www-form-urlencoded"
+        else:
+            body = json.dumps(data).encode()
+            hd["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=body, headers=hd, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+            return r.status, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            return e.code, json.loads(raw)
+        except Exception:  # noqa
+            return e.code, {"message": raw.decode("utf-8", "replace")[:300]}
+
+
+def title_for(cfg, vod_title=None):
+    """Welcher Titel gerade passt."""
+    mode = cfg.get("mode")
+    if mode in ("twitch", "videos"):
+        t = vod_title or cfg.get("title_fallback") or "Wiederholung"
+        return cfg.get("title_vod", "(VOD) {title}").replace("{title}", t).strip()
+    try:
+        tgt, dt = target_epoch(cfg)
+    except Exception:  # noqa
+        tgt, dt = 0, None
+    tpl = cfg.get("title_done") if time.time() >= tgt else cfg.get("title_countdown")
+    out = (tpl or "{game}").replace("{game}", cfg.get("cd_title", "")).replace("{done}", cfg.get("cd_done", ""))
+    return out.replace("{date}", dt.strftime("%d.%m.%Y") if dt else "").strip()
+
+
+class TitleManager(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.tok = load_json(TOKENS_PATH, {})
+        self.login = {}            # laufende Anmeldung je Plattform: user_code, url, ...
+        self.state = {"twitch": {}, "youtube": {}}
+        self.last = {"twitch": (None, 0), "youtube": (None, 0)}
+        self.wake = threading.Event()
+
+    def _save(self):
+        save_json(TOKENS_PATH, self.tok)
+        try:
+            os.chmod(TOKENS_PATH, 0o600)
+        except OSError:
+            pass
+
+    # --- Anmeldung -----------------------------------------------------------
+    def start_login(self, plat):
+        cfg = get_cfg()
+        if plat == "twitch":
+            cid = cfg.get("tw_client_id", "").strip()
+            if not cid:
+                return "Erst die Twitch Client-ID eintragen"
+            code, j = _http("POST", "https://id.twitch.tv/oauth2/device",
+                            {"client_id": cid, "scopes": TW_SCOPE}, form=True)
+            if code != 200:
+                return f"Twitch: {j.get('message', code)}"
+            url = j["verification_uri"]
+        else:
+            cid = cfg.get("yt_client_id", "").strip()
+            if not cid or not cfg.get("yt_client_secret", "").strip():
+                return "Erst YouTube Client-ID und Client-Secret eintragen"
+            code, j = _http("POST", "https://oauth2.googleapis.com/device/code",
+                            {"client_id": cid, "scope": YT_SCOPE}, form=True)
+            if code != 200:
+                return f"YouTube: {j.get('error_description') or j.get('error') or code}"
+            url = j.get("verification_url") or j.get("verification_uri")
+        self.login[plat] = {"user_code": j["user_code"], "url": url, "device_code": j["device_code"],
+                            "interval": int(j.get("interval", 5)), "until": time.time() + int(j.get("expires_in", 900))}
+        threading.Thread(target=self._poll_login, args=(plat,), daemon=True).start()
+        return None
+
+    def _poll_login(self, plat):
+        lg = self.login.get(plat)
+        cfg = get_cfg()
+        while lg and time.time() < lg["until"] and self.login.get(plat) is lg:
+            time.sleep(lg["interval"])
+            if plat == "twitch":
+                code, j = _http("POST", "https://id.twitch.tv/oauth2/token", {
+                    "client_id": cfg["tw_client_id"].strip(), "scopes": TW_SCOPE, "device_code": lg["device_code"],
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code"}, form=True)
+            else:
+                code, j = _http("POST", "https://oauth2.googleapis.com/token", {
+                    "client_id": cfg["yt_client_id"].strip(), "client_secret": cfg["yt_client_secret"].strip(),
+                    "device_code": lg["device_code"], "grant_type": "urn:ietf:params:oauth:grant-type:device_code"},
+                    form=True)
+            if code == 200 and j.get("access_token"):
+                self.tok[plat] = {"access": j["access_token"], "refresh": j.get("refresh_token"),
+                                  "exp": time.time() + int(j.get("expires_in", 3600)) - 120}
+                if plat == "twitch":
+                    c2, u = _http("GET", "https://api.twitch.tv/helix/users", headers=self._tw_hd())
+                    if c2 == 200 and u.get("data"):
+                        self.tok[plat]["user_id"] = u["data"][0]["id"]
+                        self.tok[plat]["name"] = u["data"][0]["display_name"]
+                else:
+                    c2, ch = _http("GET", "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
+                                   headers=self._yt_hd())
+                    if c2 == 200 and ch.get("items"):
+                        self.tok[plat]["name"] = ch["items"][0]["snippet"]["title"]
+                self._save()
+                self.login.pop(plat, None)
+                self.last[plat] = (None, 0)
+                log_line(f"Titel: mit {plat.capitalize()} verbunden ({self.tok[plat].get('name', '?')})")
+                self.wake.set()
+                return
+            err = str(j.get("message") or j.get("error") or "")
+            if "slow_down" in err:
+                lg["interval"] += 5
+            elif not any(x in err for x in ("authorization_pending", "pending")):
+                self.state[plat] = {"error": f"Anmeldung fehlgeschlagen: {err or code}"}
+                self.login.pop(plat, None)
+                return
+        if self.login.get(plat) is lg:
+            self.login.pop(plat, None)
+
+    def logout(self, plat):
+        self.tok.pop(plat, None)
+        self.login.pop(plat, None)
+        self.state[plat] = {}
+        self._save()
+
+    # --- Tokens ---------------------------------------------------------------
+    def _refresh(self, plat):
+        t = self.tok.get(plat)
+        if not t:
+            return False
+        if time.time() < t.get("exp", 0):
+            return True
+        if not t.get("refresh"):
+            return False
+        cfg = get_cfg()
+        if plat == "twitch":
+            data = {"client_id": cfg.get("tw_client_id", "").strip(), "grant_type": "refresh_token",
+                    "refresh_token": t["refresh"]}
+            code, j = _http("POST", "https://id.twitch.tv/oauth2/token", data, form=True)
+        else:
+            data = {"client_id": cfg.get("yt_client_id", "").strip(), "client_secret": cfg.get("yt_client_secret", "").strip(),
+                    "grant_type": "refresh_token", "refresh_token": t["refresh"]}
+            code, j = _http("POST", "https://oauth2.googleapis.com/token", data, form=True)
+        if code != 200 or not j.get("access_token"):
+            self.state[plat] = {"error": "Anmeldung abgelaufen – bitte neu verbinden"}
+            if code in (400, 401):
+                self.tok.pop(plat, None)
+                self._save()
+            return False
+        t["access"] = j["access_token"]
+        t["refresh"] = j.get("refresh_token") or t["refresh"]
+        t["exp"] = time.time() + int(j.get("expires_in", 3600)) - 120
+        self._save()
+        return True
+
+    def _tw_hd(self):
+        return {"Client-Id": get_cfg().get("tw_client_id", "").strip(), "Authorization": "Bearer " + self.tok["twitch"]["access"]}
+
+    def _yt_hd(self):
+        return {"Authorization": "Bearer " + self.tok["youtube"]["access"]}
+
+    # --- Titel setzen -------------------------------------------------------
+    def _set_twitch(self, title):
+        t = self.tok["twitch"]
+        code, j = _http("PATCH", "https://api.twitch.tv/helix/channels?broadcaster_id=" + t.get("user_id", ""),
+                        {"title": title[:140]}, headers=self._tw_hd())
+        if code == 401:
+            t["exp"] = 0
+        return code in (200, 204), j.get("message", code)
+
+    def _set_youtube(self, title):
+        code, j = _http("GET", "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet"
+                               "&broadcastStatus=active&broadcastType=all&maxResults=5", headers=self._yt_hd())
+        if code == 401:
+            self.tok["youtube"]["exp"] = 0
+        if code != 200:
+            return False, (j.get("error") or {}).get("message", code) if isinstance(j.get("error"), dict) else code
+        items = j.get("items") or []
+        if not items:
+            return None, "Gerade kein laufender YouTube-Livestream"
+        ok_all = True
+        for b in items:
+            sn = b["snippet"]
+            if sn.get("title") == title[:100]:
+                continue
+            body = {"id": b["id"], "snippet": {"title": title[:100], "description": sn.get("description", ""),
+                                                "scheduledStartTime": sn.get("scheduledStartTime") or sn.get("actualStartTime")}}
+            c2, j2 = _http("PUT", "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet", body,
+                           headers=self._yt_hd())
+            if c2 != 200:
+                ok_all = False
+                err = j2.get("error")
+                return False, err.get("message", c2) if isinstance(err, dict) else c2
+        return ok_all, None
+
+    def run(self):
+        time.sleep(15)
+        while True:
+            try:
+                self.tick()
+            except Exception as e:  # noqa
+                print("Titel:", e, flush=True)
+            self.wake.wait(30)
+            self.wake.clear()
+
+    def tick(self):
+        cfg = get_cfg()
+        if not cfg.get("title_auto"):
+            return
+        vt = streamer.vod["title"] if (streamer and cfg.get("mode") == "twitch" and streamer.vod["url"]) else None
+        title = title_for(cfg, vt)
+        if not title:
+            return
+        for plat, again in (("twitch", 1800), ("youtube", 600)):
+            if plat not in self.tok or not self._refresh(plat):
+                continue
+            last_title, last_t = self.last[plat]
+            if last_title == title and time.time() - last_t < again:
+                continue
+            ok, err = (self._set_twitch if plat == "twitch" else self._set_youtube)(title)
+            if ok:
+                if last_title != title:
+                    log_line(f"Titel auf {plat.capitalize()}: {title}")
+                self.last[plat] = (title, time.time())
+                self.state[plat] = {"title": title, "at": time.time()}
+            elif ok is None:      # YouTube gerade nicht live – in 2 Minuten nochmal
+                self.state[plat] = {"note": err}
+                self.last[plat] = (None, time.time() - again + 120)
+            else:
+                self.state[plat] = {"error": f"Titel konnte nicht gesetzt werden: {err}"}
+                self.last[plat] = (None, time.time() - again + 300)
+
+    def status(self):
+        cfg = get_cfg()
+        vt = streamer.vod["title"] if (streamer and cfg.get("mode") == "twitch" and streamer.vod["url"]) else None
+        out = {"auto": cfg.get("title_auto", False), "preview": title_for(cfg, vt)}
+        for plat in ("twitch", "youtube"):
+            lg = self.login.get(plat)
+            out[plat] = {"connected": plat in self.tok, "name": (self.tok.get(plat) or {}).get("name"),
+                         "login": {"code": lg["user_code"], "url": lg["url"]} if lg else None, **self.state[plat]}
+        return out
+
+
+title_mgr = TitleManager()
+
 ticker = Ticker()
 image_feeder = ImageFeeder()
 audio_feeder = AudioFeeder()
@@ -2169,6 +2438,23 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <div class="hint">Songs, Bild und Lautstärke werden live getauscht – der Stream läuft weiter. Nur lizenzfreie Musik verwenden (z. B. StreamBeats, NCS), sonst drohen DMCA-Strikes.</div>
  </div>
 </section>
+<section class="card"><h2>📝 Stream-Titel automatisch</h2>
+ <label class="chk" style="margin-top:0"><input type="checkbox" id="tiAuto" onchange="api('/api/config',{title_auto:this.checked}).then(refresh)"> Titel auf Twitch und YouTube automatisch anpassen</label>
+ <div class="hint" id="tiPrev"></div>
+ <label>Titel beim Countdown ({game} = Spiel, {date} = Datum)</label><input type="text" id="ti_countdown" maxlength="140">
+ <label>Titel nach dem Release ({done} = „… IST DA!“)</label><input type="text" id="ti_done" maxlength="140">
+ <label>Titel bei VODs ({title} = Titel des VODs)</label><input type="text" id="ti_vod" maxlength="140">
+ <label>Ersatz, wenn ein Video keinen Titel hat</label><input type="text" id="ti_fallback" maxlength="100">
+ <div class="btns"><button class="go" id="bTiSave">💾 Titel speichern</button><button id="bTiNow">↻ Jetzt setzen</button></div>
+ <h3 style="margin:16px 0 4px;font-size:15px">Twitch</h3><div id="tiTw"></div>
+ <label>Twitch Client-ID</label><input type="text" id="ti_tw_cid" placeholder="aus dev.twitch.tv/console">
+ <div class="btns"><button id="bTiTw">🔗 Mit Twitch verbinden</button></div>
+ <h3 style="margin:16px 0 4px;font-size:15px">YouTube</h3><div id="tiYt"></div>
+ <label>YouTube Client-ID</label><input type="text" id="ti_yt_cid" placeholder="…apps.googleusercontent.com">
+ <label>YouTube Client-Secret</label><input type="password" id="ti_yt_sec" placeholder="">
+ <div class="btns"><button id="bTiYt">🔗 Mit YouTube verbinden</button></div>
+ <div class="hint">Einmalige Einrichtung: siehe Anleitung, Abschnitt „Stream-Titel“. Dein Passwort gibst du dabei nur direkt bei Twitch/Google ein.</div>
+</section>
 <section class="card"><h2>🎮 Nächste Spiele</h2>
  <label style="margin-top:0">Wann soll nach dem Release gewechselt werden?</label>
  <select id="gWhen2" onchange="gSetWhen(this.value)">
@@ -2262,6 +2548,15 @@ async function refresh(){
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
  $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig'&&j.kind!='music').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${(j.state=='konvertiert'||j.state=='lädt von Twitch')?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('log').textContent=s.log||'(noch leer)';
+ const TI=s.titles||{},TC=s.title_cfg||{};$('tiAuto').checked=TI.auto;$('tiPrev').textContent='Aktueller Titel: '+(TI.preview||'–');
+ for(const[k,f]of[['ti_countdown','title_countdown'],['ti_done','title_done'],['ti_vod','title_vod'],['ti_fallback','title_fallback'],['ti_tw_cid','tw_client_id'],['ti_yt_cid','yt_client_id']])if(document.activeElement!==$(k)&&!$(k).dataset.dirty)$(k).value=TC[f]||'';
+ $('ti_yt_sec').placeholder=s.yt_secret_set?'gespeichert ✓':'GOCSPX-…';
+ for(const[p,el,b]of[['twitch','tiTw','bTiTw'],['youtube','tiYt','bTiYt']]){const x=TI[p]||{};let h='';
+  if(x.login)h=`<div class="vid" style="border-color:#ffc400"><div class="t">Öffne <a href="${esc(x.login.url)}" target="_blank" style="color:#ffc400">${esc(x.login.url)}</a><br>und gib diesen Code ein: <b style="font-size:20px;letter-spacing:2px">${esc(x.login.code)}</b></div></div>`;
+  else if(x.connected)h=`<div class="hint" style="color:#4ade80">✅ Verbunden${x.name?' als <b>'+esc(x.name)+'</b>':''}${x.title?' · Titel gesetzt':''}</div>`;
+  else h='<div class="hint">Nicht verbunden</div>';
+  if(x.error)h+=`<div class="hint" style="color:#ff6b6b">${esc(x.error)}</div>`;else if(x.note)h+=`<div class="hint">${esc(x.note)}</div>`;
+  $(el).innerHTML=h;$(b).textContent=x.connected?'✕ Trennen':'🔗 Mit '+(p=='twitch'?'Twitch':'YouTube')+' verbinden';$(b).dataset.c=x.connected?1:''}
  const G=s.games||{};
  if(document.activeElement!==$('gWhen2')){const v=!G.auto?'manual':String(G.done_hours);$('gWhen2').value=[...$('gWhen2').options].some(o=>o.value==v)?v:'custom'}
  if(document.activeElement!==$('gNext')){const up=(G.list||[]).filter(g=>!g.past&&g.id!=G.current);
@@ -2363,6 +2658,15 @@ $('cvDel').onclick=async()=>{await api('/api/asset_delete',{kind:'cover'});refre
 async function delSong(n){if(confirm('Song löschen?')){await api('/api/asset_delete',{kind:'music',name:n});refresh()}}
 $('ckFile').onchange=e=>{if(e.target.files[0])asset('cookies',e.target.files[0]).then(()=>alert('Cookies gespeichert ✅ – jetzt den Link nochmal einfügen.'));e.target.value=''};
 function gSetWhen(v){api('/api/config',v=='manual'?{game_auto:false}:{game_auto:true,game_done_hours:parseFloat(v)})}
+['ti_countdown','ti_done','ti_vod','ti_fallback','ti_tw_cid','ti_yt_cid'].forEach(k=>$(k).oninput=()=>$(k).dataset.dirty=1);
+$('bTiSave').onclick=async()=>{const b={title_countdown:$('ti_countdown').value,title_done:$('ti_done').value,title_vod:$('ti_vod').value,title_fallback:$('ti_fallback').value};
+ const j=await api('/api/config',b);if(j.ok){['ti_countdown','ti_done','ti_vod','ti_fallback'].forEach(k=>delete $(k).dataset.dirty);refresh()}};
+$('bTiNow').onclick=()=>api('/api/title_now').then(()=>setTimeout(refresh,3000));
+async function tiConnect(p,b){if(b.dataset.c){if(confirm('Verbindung trennen?'))await api('/api/title_logout',{platform:p});return refresh()}
+ const c=p=='twitch'?{tw_client_id:$('ti_tw_cid').value}:{yt_client_id:$('ti_yt_cid').value,...($('ti_yt_sec').value?{yt_client_secret:$('ti_yt_sec').value}:{})};
+ await api('/api/config',c);delete $('ti_tw_cid').dataset.dirty;delete $('ti_yt_cid').dataset.dirty;$('ti_yt_sec').value='';
+ const j=await api('/api/title_login',{platform:p});if(j.ok)refresh()}
+$('bTiTw').onclick=function(){tiConnect('twitch',this)};$('bTiYt').onclick=function(){tiConnect('youtube',this)};
 $('bGAdd').onclick=async()=>{const j=await api('/api/game_add',{name:$('gName').value,short:$('gShort').value,target:$('gWhen').value});if(j.ok){$('gName').value=$('gShort').value=$('gWhen').value='';refresh()}};
 $('chOn').onchange=e=>api('/api/config',{chat_on_stream:e.target.checked,chat_enabled:true});
 $('bChSave').onclick=async()=>{const j=await api('/api/config',{chat_channel:$('chChan').value,discord_link:$('chDc').value,tiktok_link:$('chTt').value,chat_blocklist:$('chBlock').value,chat_ignore:$('chIgn').value});if(j.ok)alert('Gespeichert ✅')};
@@ -2565,6 +2869,16 @@ class Handler(BaseHTTPRequestHandler):
                     upd["game_done_hours"] = max(0.0, min(168.0, float(data["game_done_hours"])))
                 except (TypeError, ValueError):
                     pass
+            for k, n in (("title_countdown", 140), ("title_done", 140), ("title_vod", 140), ("title_fallback", 100),
+                         ("tw_client_id", 80), ("yt_client_id", 200), ("yt_client_secret", 100)):
+                if k in data:
+                    upd[k] = (re.sub(r"\s+", " ", "".join(c for c in str(data[k]) if c.isprintable())).strip()[:n]
+                              if k.startswith("title") else str(data[k]).strip()[:n])
+            if "title_auto" in data:
+                upd["title_auto"] = bool(data["title_auto"])
+            if any(k.startswith("title") for k in data):
+                title_mgr.last = {"twitch": (None, 0), "youtube": (None, 0)}
+                title_mgr.wake.set()
             if "game_next" in data:
                 upd["game_next"] = str(data["game_next"])[:60]
             if "auto_update" in data:
@@ -2688,6 +3002,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"error": "Der Stream läuft gerade nicht"})
             streamer.session_started = ts
             streamer._save_state()
+        elif path == "/api/title_login":
+            plat = "youtube" if data.get("platform") == "youtube" else "twitch"
+            err = title_mgr.start_login(plat)
+            if err:
+                return self._send(200, {"error": err})
+        elif path == "/api/title_logout":
+            title_mgr.logout("youtube" if data.get("platform") == "youtube" else "twitch")
+        elif path == "/api/title_now":
+            title_mgr.last = {"twitch": (None, 0), "youtube": (None, 0)}
+            title_mgr.wake.set()
         elif path == "/api/game_add":
             name = clean_text(str(data.get("name", "")))[:60]
             when = str(data.get("target", ""))[:16]
@@ -2973,6 +3297,10 @@ def status():
         "vod_channel": cfg["vod_channel"],
         "session_started": streamer.session_started,
         "auto_update": cfg.get("auto_update", True),
+        "titles": title_mgr.status(),
+        "title_cfg": {k: cfg.get(k, DEFAULT_CFG[k]) for k in ("title_countdown", "title_done", "title_vod", "title_fallback",
+                                                            "tw_client_id", "yt_client_id")},
+        "yt_secret_set": bool(cfg.get("yt_client_secret")),
         "games": {"auto": cfg.get("game_auto", True), "done_hours": cfg.get("game_done_hours", 12),
                   "current": cfg.get("game_current"), "next": cfg.get("game_next", ""),
                   "list": [{**g, "custom": g["id"].startswith("c_"),
@@ -3036,7 +3364,7 @@ def main():
     threading.Thread(target=lambda: _safe(build_slate_loop), daemon=True).start()
     if not load_json(VERSION_PATH, {}).get("sha"):
         _safe(lambda: save_json(VERSION_PATH, {"sha": latest_sha(), "installed": time.time()}))
-    for t in (ticker, image_feeder, audio_feeder, stats, auto_updater, twitch_chat, game_queue):
+    for t in (ticker, image_feeder, audio_feeder, stats, auto_updater, twitch_chat, game_queue, title_mgr):
         t.start()
     # alte Einzel-Musikdatei (frühere Version) in die Playlist übernehmen
     for fn in os.listdir(CD_DIR):

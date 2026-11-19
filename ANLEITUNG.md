@@ -124,3 +124,21 @@ Nach dem Release läuft der Stream einfach weiter: Erst wird **„… IST DA!“
 - Die Liste großer Releases kommt zentral per Update (aktuell: GTA 6 → Fable 23.02.2027 → Final Fantasy VII Revelation 08.04.2027).
 - Eigene Spiele kannst du im Panel unter „🎮 Nächste Spiele“ hinzufügen, mit „Jetzt zeigen“ sofort wechseln.
 - Cover und Hintergrund werden pro Spiel gespeichert: Lade nach dem Wechsel ein Cover für das neue Spiel hoch, das GTA-Cover bleibt für später erhalten.
+
+## 📝 Stream-Titel automatisch (Twitch + YouTube)
+Der Server setzt den Titel selbst, z. B. „(VOD) <Titel des VODs>“, sobald ein VOD läuft, und beim Countdown „GTA 6 Countdown …“. Die Vorlagen änderst du im Panel.
+
+**Twitch einmalig einrichten (ca. 2 Minuten):**
+1. Auf https://dev.twitch.tv/console einloggen → „Anwendungen“ → „Deine Anwendung registrieren“.
+2. Name: z. B. `xImJxstinn 24/7`, OAuth-Redirect-URL: `http://localhost`, Kategorie: „Broadcaster Suite“, Client-Typ: **Öffentlich**.
+3. Erstellen → „Verwalten“ → **Client-ID** kopieren und im Panel eintragen → „Mit Twitch verbinden“.
+4. Im Panel erscheint ein Code: auf der angezeigten Twitch-Seite eingeben und bestätigen. Fertig.
+
+**YouTube einmalig einrichten (ca. 5 Minuten):**
+1. https://console.cloud.google.com → neues Projekt anlegen.
+2. „APIs & Dienste“ → „Bibliothek“ → **YouTube Data API v3** aktivieren.
+3. „OAuth-Zustimmungsbildschirm“: Extern, App-Name eintragen, deine E-Mail. Danach „App veröffentlichen“ (In Produktion) – sonst läuft die Anmeldung nach 7 Tagen ab.
+4. „Anmeldedaten“ → „Anmeldedaten erstellen“ → „OAuth-Client-ID“ → Typ **Fernseher und Geräte mit begrenzter Eingabe**.
+5. Client-ID und Client-Secret im Panel eintragen → „Mit YouTube verbinden“ → Code auf der Google-Seite eingeben. Google zeigt „App nicht überprüft“ – das ist normal bei deiner eigenen App: „Erweitert“ → „Weiter zu …“.
+
+YouTube startet nach jedem Neuverbinden einen neuen Livestream – der Titel wird dann innerhalb von ca. 2 Minuten wieder gesetzt.
