@@ -9,6 +9,7 @@ fortgeschrieben, damit Twitch/YouTube keinen Neustart bemerken.
 
 Dieser Dienst wird bei normalen Updates NICHT neu gestartet.
 """
+import datetime
 import io
 import json
 import os
@@ -17,6 +18,11 @@ import signal
 import subprocess
 import threading
 import time
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # noqa
+    ZoneInfo = None
 
 BASE = os.environ.get("STREAM24_DIR", "/opt/stream24")
 CFG_PATH = os.path.join(BASE, "config.json")
@@ -40,7 +46,8 @@ DESTINATIONS = {
 }
 DEFAULTS = {"tw_max_hours": 47.5, "yt_max_hours": 23.5, "tw_enabled": True, "yt_enabled": False, "stream_key": "", "yt_key": "",
             "server": "rtmp://ingest.global-contribute.live-video.net/app",
-            "yt_server": "rtmp://a.rtmp.youtube.com/live2", "quality": "720p30"}
+            "yt_server": "rtmp://a.rtmp.youtube.com/live2", "quality": "720p30",
+            "yt_daily_restart": True, "yt_daily_time": "11:55:00", "yt_daily_pause": 10}
 FONTS = ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf",
          "/usr/share/fonts/dejavu/DejaVuSans.ttf"]
 os.makedirs(RUN_DIR, exist_ok=True)
@@ -172,6 +179,8 @@ class Relay:
         self.status_msg = "Aus"
         self.kick = False
         self.planned = 0
+        self.hold_until = 0
+        self.daily_done = ""
         threading.Thread(target=self._loop, daemon=True).start()
 
     def max_hours(self):
@@ -179,6 +188,35 @@ class Relay:
             return max(0.0, float(get_cfg().get(self.d["max_hours"]) or 0))
         except (TypeError, ValueError):
             return 0.0
+
+    def daily_pause(self, cfg):
+        try:
+            return max(0.0, min(300.0, float(cfg.get("yt_daily_pause", 10))))
+        except (TypeError, ValueError):
+            return 10.0
+
+    def daily_due(self, cfg, now=None):
+        """True, genau einmal pro Tag, wenn die eingestellte Uhrzeit erreicht ist (nur YouTube)."""
+        if self.id != "youtube" or not cfg.get("yt_daily_restart"):
+            return False
+        try:
+            parts = (str(cfg.get("yt_daily_time") or "11:55:00").strip().split(":") + ["0", "0"])[:3]
+            hh, mm, ss = (int(x) for x in parts)
+            if now is None:
+                try:
+                    tz = ZoneInfo("Europe/Berlin") if ZoneInfo else None
+                except Exception:  # noqa
+                    tz = None
+                now = datetime.datetime.now(tz)
+            target = now.replace(hour=hh, minute=mm, second=ss, microsecond=0)
+        except Exception:  # noqa
+            return False
+        late = (now - target).total_seconds()
+        day = target.strftime("%Y-%m-%d")
+        if 0 <= late < 60 and self.daily_done != day and self.started_at < target.timestamp():
+            self.daily_done = day
+            return True
+        return False
 
     def sig(self, cfg):
         return (cfg.get(self.d["enabled"]), cfg.get(self.d["key"]), cfg.get(self.d["server"]))
@@ -246,6 +284,10 @@ class Relay:
                 self.status_msg = "Aus" if not cfg.get(self.d["enabled"]) else "Kein Stream-Key"
                 time.sleep(1)
                 continue
+            if time.time() < self.hold_until:
+                self.status_msg = f"Pause vor Neustart … {int(self.hold_until - time.time()) + 1} s"
+                time.sleep(0.5)
+                continue
             if time.time() - sender.last_out > 3:
                 self.status_msg = "Wartet auf Bild …"
                 time.sleep(0.5)
@@ -278,6 +320,17 @@ class Relay:
                 reason = None
                 while self.proc.poll() is None:
                     time.sleep(1)
+                    cfg_now = get_cfg()
+                    if self.daily_due(cfg_now):
+                        pause = self.daily_pause(cfg_now)
+                        reason = (f"{name}: täglicher Neustart um {cfg_now.get('yt_daily_time')} – "
+                                  f"Pause {pause:g} s, dann verbinde neu")
+                        self.status_msg = "Täglicher Neustart …"
+                        self.kick = True
+                        self.planned += 1
+                        self.hold_until = time.time() + pause
+                        self.kill()
+                        break
                     max_h = self.max_hours()
                     if max_h and time.time() - self.started_at > max_h * 3600:
                         reason = f"{name}: geplanter Neustart nach {max_h:g} h (Plattform-Limit) – verbinde sofort neu"
