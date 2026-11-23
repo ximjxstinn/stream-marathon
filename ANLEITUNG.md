@@ -142,3 +142,9 @@ Der Server setzt den Titel selbst, z. B. „(VOD) <Titel des VODs>“, sobald ei
 5. Client-ID und Client-Secret im Panel eintragen → „Mit YouTube verbinden“ → Code auf der Google-Seite eingeben. Google zeigt „App nicht überprüft“ – das ist normal bei deiner eigenen App: „Erweitert“ → „Weiter zu …“.
 
 YouTube startet nach jedem Neuverbinden einen neuen Livestream – der Titel wird dann innerhalb von ca. 2 Minuten wieder gesetzt.
+
+## 🔇 Ton bei VODs
+Unter Modus → Twitch-VODs → „Ton bei VODs“: VOD stumm + eigene Musik (Standard), VOD-Ton leise + Musik, komplett stumm oder Original-Ton. Umstellen wirkt sofort an derselben Stelle im VOD.
+
+## ⏱ YouTube alle 11:50 h neu
+YouTube speichert Livestreams nur bis 12 h. Kurz vor 11:50 h beendet der Server den YouTube-Livestream sauber (dafür muss YouTube unter „Stream-Titel“ verbunden sein) und startet sofort einen neuen – Titel und Kategorie werden danach automatisch gesetzt.

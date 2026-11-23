@@ -77,7 +77,7 @@ DEFAULT_CFG = {
     "yt_key": "",
     "yt_server": "rtmp://a.rtmp.youtube.com/live2",
     "tw_max_hours": 47.5,             # Twitch beendet Streams nach 48 h
-    "yt_max_hours": 23.5,             # YouTube beendet Streams nach ca. 24 h
+    "yt_max_hours": 11.83,            # YouTube speichert nur 12 h – vorher neuen Livestream starten
     "quality": "720p30",
     "shuffle": True,
     # Modus: "videos" (Playlist) oder "countdown" (Live-Timer)
@@ -97,7 +97,7 @@ DEFAULT_CFG = {
     "cd_boxlabel": "Kann gespielt werden in:",
     "cd_volume": 60,
     "cd_shuffle_music": True,
-    "cfg_version": 3,
+    "cfg_version": 4,
     "vod_channel": "xImJxstinn",
     "show_runtime": True,             # "● LIVE seit …" im Stream einblenden
     "auto_update": True,              # neue Versionen automatisch installieren
@@ -106,6 +106,11 @@ DEFAULT_CFG = {
     "title_done": "{done} 🎉 24/7 LIVE",
     "title_vod": "(VOD) {title}",
     "title_fallback": "Wiederholung",
+    "cat_countdown": "{game}",        # Twitch-Kategorie beim Countdown
+    "cat_vod": "Just Chatting",       # Twitch-Kategorie bei VODs
+    "yt_category": "20",              # YouTube-Kategorie (20 = Gaming)
+    "vod_audio": "music",             # Ton bei VODs: orig | mute | music | mix
+    "vod_mix_volume": 30,             # bei "mix": Lautstärke des VOD-Tons in %
     "tw_client_id": "",
     "yt_client_id": "",
     "yt_client_secret": "",
@@ -155,6 +160,11 @@ def get_cfg():
     if stored and stored.get("cfg_version", 1) < 3:
         stored["cd_theme"] = "ps5"           # Update auf Version 3: PS5-Startseite als Design
         stored["cfg_version"] = 3
+        save_json(CFG_PATH, {**cfg, **stored})
+    if stored and stored.get("cfg_version", 1) < 4:
+        if float(stored.get("yt_max_hours", 23.5) or 0) > 11.84:
+            stored["yt_max_hours"] = 11.83   # Update auf Version 4: YouTube-Limit 12 h (11:50)
+        stored["cfg_version"] = 4
         save_json(CFG_PATH, {**cfg, **stored})
     cfg.update(stored)
     return cfg
@@ -1438,6 +1448,12 @@ def title_for(cfg, vod_title=None):
     return out.replace("{date}", dt.strftime("%d.%m.%Y") if dt else "").strip()
 
 
+def category_for(cfg):
+    """Twitch-Kategorie: beim Countdown das Spiel, bei VODs die eingestellte Kategorie."""
+    tpl = cfg.get("cat_vod") if cfg.get("mode") in ("twitch", "videos") else cfg.get("cat_countdown")
+    return (tpl or "").replace("{game}", cfg.get("cd_game") or cfg.get("cd_title", "")).strip()
+
+
 class TitleManager(threading.Thread):
     def __init__(self):
         super().__init__(daemon=True)
@@ -1530,34 +1546,60 @@ class TitleManager(threading.Thread):
         self._save()
 
     # --- Tokens ---------------------------------------------------------------
-    def _refresh(self, plat):
+    def _refresh(self, plat, force=False):
         t = self.tok.get(plat)
         if not t:
             return False
-        if time.time() < t.get("exp", 0):
+        if not force and time.time() < t.get("exp", 0):
             return True
         if not t.get("refresh"):
+            self.state[plat] = {"error": "Anmeldung abgelaufen – bitte neu verbinden", "expired": True}
             return False
         cfg = get_cfg()
-        if plat == "twitch":
-            data = {"client_id": cfg.get("tw_client_id", "").strip(), "grant_type": "refresh_token",
-                    "refresh_token": t["refresh"]}
-            code, j = _http("POST", "https://id.twitch.tv/oauth2/token", data, form=True)
-        else:
-            data = {"client_id": cfg.get("yt_client_id", "").strip(), "client_secret": cfg.get("yt_client_secret", "").strip(),
-                    "grant_type": "refresh_token", "refresh_token": t["refresh"]}
-            code, j = _http("POST", "https://oauth2.googleapis.com/token", data, form=True)
-        if code != 200 or not j.get("access_token"):
-            self.state[plat] = {"error": "Anmeldung abgelaufen – bitte neu verbinden"}
-            if code in (400, 401):
-                self.tok.pop(plat, None)
-                self._save()
+        try:
+            if plat == "twitch":
+                data = {"client_id": cfg.get("tw_client_id", "").strip(), "grant_type": "refresh_token",
+                        "refresh_token": t["refresh"]}
+                code, j = _http("POST", "https://id.twitch.tv/oauth2/token", data, form=True)
+            else:
+                data = {"client_id": cfg.get("yt_client_id", "").strip(),
+                        "client_secret": cfg.get("yt_client_secret", "").strip(),
+                        "grant_type": "refresh_token", "refresh_token": t["refresh"]}
+                code, j = _http("POST", "https://oauth2.googleapis.com/token", data, form=True)
+        except Exception as e:  # noqa – Internet kurz weg: Anmeldung behalten, später nochmal
+            self.state[plat] = {"note": f"Keine Verbindung zu {plat.capitalize()} – versuche es gleich nochmal"}
+            log_line(f"Titel: Token-Erneuerung {plat} fehlgeschlagen (Netz): {e}")
             return False
-        t["access"] = j["access_token"]
-        t["refresh"] = j.get("refresh_token") or t["refresh"]
-        t["exp"] = time.time() + int(j.get("expires_in", 3600)) - 120
-        self._save()
-        return True
+        if code == 200 and j.get("access_token"):
+            t["access"] = j["access_token"]
+            t["refresh"] = j.get("refresh_token") or t["refresh"]
+            t["exp"] = time.time() + int(j.get("expires_in", 3600)) - 300
+            t.pop("dead", None)
+            self._save()
+            return True
+        why = str(j.get("error_description") or j.get("message") or j.get("error") or code)
+        log_line(f"Titel: Token-Erneuerung {plat} abgelehnt ({code}): {why}")
+        dead = code in (400, 401) and any(x in why.lower() for x in ("invalid", "expired", "revoked"))
+        if dead:
+            t["dead"] = True
+            self._save()
+            hint = (" (Google-App im Testmodus: Anmeldung hält nur 7 Tage)"
+                    if plat == "youtube" and "expired or revoked" in why.lower() else "")
+            self.state[plat] = {"error": f"Anmeldung abgelaufen – bitte neu verbinden{hint}", "expired": True}
+        else:
+            self.state[plat] = {"note": f"{plat.capitalize()} antwortet gerade nicht ({code}) – versuche es gleich nochmal"}
+        return False
+
+    def _call(self, plat, method, url, data=None):
+        """API-Aufruf mit automatischer Token-Erneuerung bei 401."""
+        for attempt in (0, 1):
+            hd = self._tw_hd() if plat == "twitch" else self._yt_hd()
+            code, j = _http(method, url, data, headers=hd)
+            if code != 401 or attempt:
+                return code, j
+            if not self._refresh(plat, force=True):
+                return code, j
+        return code, j
 
     def _tw_hd(self):
         return {"Client-Id": get_cfg().get("tw_client_id", "").strip(), "Authorization": "Bearer " + self.tok["twitch"]["access"]}
@@ -1565,112 +1607,168 @@ class TitleManager(threading.Thread):
     def _yt_hd(self):
         return {"Authorization": "Bearer " + self.tok["youtube"]["access"]}
 
-    # --- Titel setzen -------------------------------------------------------
-    def _set_twitch(self, title):
-        t = self.tok["twitch"]
-        code, j = _http("PATCH", "https://api.twitch.tv/helix/channels?broadcaster_id=" + t.get("user_id", ""),
-                        {"title": title[:140]}, headers=self._tw_hd())
-        if code == 401:
-            t["exp"] = 0
-        return code in (200, 204), j.get("message", code)
+    @staticmethod
+    def _err(j, code):
+        e = j.get("error")
+        return (e.get("message") if isinstance(e, dict) else None) or j.get("message") or e or code
 
-    def _set_youtube(self, title):
-        code, j = _http("GET", "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet"
-                               "&broadcastStatus=active&broadcastType=all&maxResults=5", headers=self._yt_hd())
-        if code == 401:
-            self.tok["youtube"]["exp"] = 0
+    # --- Titel + Kategorie setzen ------------------------------------------
+    def _tw_game_id(self, name):
+        if not name:
+            return None
+        cache = self.__dict__.setdefault("_games", {})
+        if name.lower() in cache:
+            return cache[name.lower()]
+        from urllib.parse import quote
+        gid = None
+        c, j = self._call("twitch", "GET", "https://api.twitch.tv/helix/games?name=" + quote(name))
+        if c == 200 and j.get("data"):
+            gid = j["data"][0]["id"]
+        else:
+            c, j = self._call("twitch", "GET", "https://api.twitch.tv/helix/search/categories?first=1&query=" + quote(name))
+            if c == 200 and j.get("data"):
+                gid = j["data"][0]["id"]
+        if gid:
+            cache[name.lower()] = gid
+        return gid
+
+    def _set_twitch(self, title, category):
+        t = self.tok["twitch"]
+        body = {"title": title[:140]}
+        gid = self._tw_game_id(category)
+        if gid:
+            body["game_id"] = gid
+        code, j = self._call("twitch", "PATCH", "https://api.twitch.tv/helix/channels?broadcaster_id=" + t.get("user_id", ""), body)
+        if code in (200, 204) and category and not gid:
+            return True, f"Kategorie „{category}“ gibt es auf Twitch nicht"
+        return code in (200, 204), self._err(j, code)
+
+    def _yt_live(self):
+        code, j = self._call("youtube", "GET", "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet"
+                                               "&broadcastStatus=active&broadcastType=all&maxResults=5")
+        return code, j
+
+    def _set_youtube(self, title, category):
+        code, j = self._yt_live()
         if code != 200:
-            return False, (j.get("error") or {}).get("message", code) if isinstance(j.get("error"), dict) else code
+            return False, self._err(j, code)
         items = j.get("items") or []
         if not items:
             return None, "Gerade kein laufender YouTube-Livestream"
-        ok_all = True
         for b in items:
-            sn = b["snippet"]
-            if sn.get("title") == title[:100]:
-                continue
-            err = self._yt_update(b, title[:100])
+            err = self._yt_update(b, title[:100], str(get_cfg().get("yt_category", "20")))
             if err:
-                ok_all = False
                 return False, err
-        return ok_all, None
+        return True, None
 
-    def _yt_update(self, b, title):
-        """Titel eines laufenden YouTube-Livestreams ändern. Gibt None zurück, wenn es geklappt hat."""
-        sn = b["snippet"]
-        tries = []
-        if sn.get("scheduledStartTime"):
-            tries.append({"title": title, "description": sn.get("description", ""),
-                          "scheduledStartTime": sn["scheduledStartTime"]})
-        tries.append({"title": title, "description": sn.get("description", "")})
-        err = None
-        for snip in tries:
-            c, j = _http("PUT", "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet",
-                         {"id": b["id"], "snippet": snip}, headers=self._yt_hd())
-            if c == 200:
-                return None
-            e = j.get("error")
-            err = e.get("message", c) if isinstance(e, dict) else c
-        # Livestreams per Stream-Schlüssel ("Jetzt streamen") lassen sich oft nur als Video ändern
-        c, j = _http("GET", "https://www.googleapis.com/youtube/v3/videos?part=snippet&id=" + b["id"], headers=self._yt_hd())
-        items = j.get("items") or [] if c == 200 else []
+    def _yt_update(self, b, title, cat_id):
+        """Titel + Kategorie eines laufenden YouTube-Livestreams setzen. None = hat geklappt."""
+        c, j = self._call("youtube", "GET", "https://www.googleapis.com/youtube/v3/videos?part=snippet&id=" + b["id"])
+        items = (j.get("items") or []) if c == 200 else []
         if items:
             vs = items[0]["snippet"]
-            body = {"id": b["id"], "snippet": {"title": title, "categoryId": vs.get("categoryId", "20"),
+            if vs.get("title") == title and vs.get("categoryId") == cat_id:
+                return None
+            body = {"id": b["id"], "snippet": {"title": title, "categoryId": cat_id,
                                                 "description": vs.get("description", ""),
                                                 **({"tags": vs["tags"]} if vs.get("tags") else {}),
                                                 **({"defaultLanguage": vs["defaultLanguage"]} if vs.get("defaultLanguage") else {})}}
-            c2, j2 = _http("PUT", "https://www.googleapis.com/youtube/v3/videos?part=snippet", body, headers=self._yt_hd())
+            c2, j2 = self._call("youtube", "PUT", "https://www.googleapis.com/youtube/v3/videos?part=snippet", body)
             if c2 == 200:
                 return None
-            e = j2.get("error")
-            err = e.get("message", c2) if isinstance(e, dict) else c2
-        return err
+            err = self._err(j2, c2)
+        else:
+            err = self._err(j, c)
+        sn = b["snippet"]       # Ersatzweg: nur der Titel über die Livestream-Schnittstelle
+        snip = {"title": title, "description": sn.get("description", "")}
+        if sn.get("scheduledStartTime"):
+            snip["scheduledStartTime"] = sn["scheduledStartTime"]
+        c3, j3 = self._call("youtube", "PUT", "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet",
+                            {"id": b["id"], "snippet": snip})
+        return None if c3 == 200 else err
+
+    def _yt_end_before_restart(self):
+        """Kurz vor dem geplanten Neuverbinden den YouTube-Livestream sauber beenden,
+        damit YouTube danach einen NEUEN Livestream startet (sonst läuft der alte einfach weiter)."""
+        if "youtube" not in self.tok or self.tok["youtube"].get("dead"):
+            return
+        d = (sender_status().get("dest") or {}).get("youtube") or {}
+        nxt, up = d.get("next_planned"), d.get("uptime") or 0
+        if nxt is None or nxt > 25 or up < 600:
+            return
+        key = int(time.time() - up)            # eine Session = ein Startzeitpunkt
+        if self.__dict__.get("_ended") == key or not self._refresh("youtube"):
+            return
+        self._ended = key
+        code, j = self._yt_live()
+        for b in (j.get("items") or []) if code == 200 else []:
+            c2, j2 = self._call("youtube", "POST", "https://www.googleapis.com/youtube/v3/liveBroadcasts/transition"
+                                                   f"?broadcastStatus=complete&part=status&id={b['id']}")
+            log_line("YouTube: Livestream vor dem geplanten Neuverbinden beendet – gleich startet ein neuer"
+                     if c2 == 200 else f"YouTube: Livestream ließ sich nicht beenden: {self._err(j2, c2)}")
+        self.last["youtube"] = (None, time.time() - 600 + 90)   # Titel gleich für den neuen Stream setzen
 
     def run(self):
         time.sleep(15)
         while True:
             try:
+                self._yt_end_before_restart()
+            except Exception as e:  # noqa
+                print("YouTube-Neustart:", e, flush=True)
+            try:
                 self.tick()
             except Exception as e:  # noqa
                 print("Titel:", e, flush=True)
-            self.wake.wait(30)
+            self.wake.wait(10)
             self.wake.clear()
+
+    def current(self, cfg):
+        vt = None
+        if streamer and cfg.get("mode") == "twitch":
+            vt = streamer.vod.get("title") or None     # auch zwischen zwei VODs den letzten Titel behalten
+        return title_for(cfg, vt), category_for(cfg)
 
     def tick(self):
         cfg = get_cfg()
         if not cfg.get("title_auto"):
             return
-        vt = streamer.vod["title"] if (streamer and cfg.get("mode") == "twitch" and streamer.vod["url"]) else None
-        title = title_for(cfg, vt)
+        title, cat = self.current(cfg)
         if not title:
             return
+        want = (title, cat)
         for plat, again in (("twitch", 1800), ("youtube", 600)):
-            if plat not in self.tok or not self._refresh(plat):
+            t = self.tok.get(plat)
+            if not t or t.get("dead"):
                 continue
-            last_title, last_t = self.last[plat]
-            if last_title == title and time.time() - last_t < again:
+            last, last_t = self.last[plat]
+            if last == want and time.time() - last_t < again:
                 continue
-            ok, err = (self._set_twitch if plat == "twitch" else self._set_youtube)(title)
+            if last_t and last != want and time.time() - last_t < 60 and last is not None:
+                continue                                  # höchstens 1 Änderung pro Minute
+            if not self._refresh(plat):
+                self.last[plat] = (last, time.time() - again + 60)
+                continue
+            ok, err = (self._set_twitch if plat == "twitch" else self._set_youtube)(title, cat)
             if ok:
-                if last_title != title:
-                    log_line(f"Titel auf {plat.capitalize()}: {title}")
-                self.last[plat] = (title, time.time())
-                self.state[plat] = {"title": title, "at": time.time()}
-            elif ok is None:      # YouTube gerade nicht live – in 2 Minuten nochmal
+                if last != want:
+                    log_line(f"Titel auf {plat.capitalize()}: {title} · Kategorie: {cat or '–'}")
+                self.last[plat] = (want, time.time())
+                self.state[plat] = {"title": title, "at": time.time(), **({"note": err} if err else {})}
+            elif ok is None:      # YouTube gerade nicht live – in 1 Minute nochmal
                 self.state[plat] = {"note": err}
-                self.last[plat] = (None, time.time() - again + 120)
+                self.last[plat] = (None, time.time() - again + 60)
             else:
                 self.state[plat] = {"error": f"Titel konnte nicht gesetzt werden: {err}"}
                 self.last[plat] = (None, time.time() - again + 300)
 
     def status(self):
         cfg = get_cfg()
-        vt = streamer.vod["title"] if (streamer and cfg.get("mode") == "twitch" and streamer.vod["url"]) else None
-        out = {"auto": cfg.get("title_auto", False), "preview": title_for(cfg, vt)}
+        title, cat = self.current(cfg)
+        out = {"auto": cfg.get("title_auto", False), "preview": title, "category": cat}
         for plat in ("twitch", "youtube"):
             lg = self.login.get(plat)
-            out[plat] = {"connected": plat in self.tok, "name": (self.tok.get(plat) or {}).get("name"),
+            t = self.tok.get(plat) or {}
+            out[plat] = {"connected": bool(t) and not t.get("dead"), "name": t.get("name"),
                          "login": {"code": lg["user_code"], "url": lg["url"]} if lg else None, **self.state[plat]}
         return out
 
@@ -2326,6 +2424,22 @@ def _safe(fn, *a):
 VOD_PROGRESS = os.path.join(RUN_DIR, "vod_progress.txt")
 
 
+def vod_audio_args(cfg):
+    """Ton bei VODs: Original, stumm, eigene Musik statt VOD-Ton oder VOD-Ton leise + Musik."""
+    mode = cfg.get("vod_audio", "orig")
+    if mode == "orig":
+        return ["-map", "0:v:0", "-map", "0:a:0?"]
+    music = ["-thread_queue_size", "4096", "-f", "s16le", "-ar", "44100", "-ac", "2", "-i", AUDIO_FIFO]
+    if mode == "mute":
+        return [*music, "-map", "0:v:0", "-map", "1:a", "-af", "volume=0", "-shortest"]
+    if mode == "music":
+        return [*music, "-map", "0:v:0", "-map", "1:a", "-shortest"]
+    vol = max(0, min(100, int(cfg.get("vod_mix_volume", 30)))) / 100
+    return [*music, "-filter_complex",
+            f"[0:a:0]aresample=44100,volume={vol}[a0];[a0][1:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]",
+            "-map", "0:v:0", "-map", "[aout]", "-shortest"]
+
+
 def build_vod_cmd(cfg, stream_url, start_pos, output):
     w, h, fps, vb = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
     if os.path.exists(VOD_PROGRESS):
@@ -2334,7 +2448,7 @@ def build_vod_cmd(cfg, stream_url, start_pos, output):
             "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_on_network_error", "1",
             "-reconnect_delay_max", "10", "-rw_timeout", "20000000",
             "-re", *(["-ss", f"{start_pos:.1f}"] if start_pos > 1 else []), "-i", stream_url,
-            "-map", "0:v:0", "-map", "0:a:0?",
+            *vod_audio_args(cfg),
             "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
                    f"fps={fps},format=yuv420p,setsar=1",
             "-c:v", "libx264", "-preset", live_preset(cfg), "-b:v", vb, "-maxrate", vb, "-bufsize", vb,
@@ -2418,6 +2532,14 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
    <div style="display:flex;gap:8px;margin-top:8px"><input type="text" id="twTo" placeholder="Springen zu, z. B. 1:23:45" style="flex:1"><button class="go" onclick="twJump()">Springen</button></div>
   </div>
   <div class="btns"><button id="twSkip">⏭ Nächstes VOD</button></div>
+  <label>Ton bei VODs</label>
+  <select id="twAudio" onchange="api('/api/config',{vod_audio:this.value}).then(refresh)">
+   <option value="music">VOD stumm – eigene Musik-Playlist spielen</option>
+   <option value="mix">VOD-Ton leise + eigene Musik</option>
+   <option value="mute">Komplett stumm</option>
+   <option value="orig">Original-Ton vom VOD</option>
+  </select>
+  <div id="twMixBox" style="display:none"><label>Lautstärke VOD-Ton beim Mischen (%)</label><input type="range" id="twMix" min="0" max="100" step="5" onchange="api('/api/config',{vod_mix_volume:+this.value})"></div>
   <label>Abspiel-Reihenfolge</label>
   <select id="twOrder" onchange="api('/api/twpl_order',{order:this.value}).then(refresh)"><option value="list">Wie in der Liste (oben → unten)</option><option value="random">Zufällig</option></select>
   <label>Liste sortieren</label>
@@ -2473,7 +2595,11 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <label>Titel nach dem Release ({done} = „… IST DA!“)</label><input type="text" id="ti_done" maxlength="140">
  <label>Titel bei VODs ({title} = Titel des VODs)</label><input type="text" id="ti_vod" maxlength="140">
  <label>Ersatz, wenn ein Video keinen Titel hat</label><input type="text" id="ti_fallback" maxlength="100">
- <div class="btns"><button class="go" id="bTiSave">💾 Titel speichern</button><button id="bTiNow">↻ Jetzt setzen</button></div>
+ <label>Twitch-Kategorie beim Countdown ({game} = Spiel)</label><input type="text" id="ti_cat_cd" maxlength="80" placeholder="{game}">
+ <label>Twitch-Kategorie bei VODs</label><input type="text" id="ti_cat_vod" maxlength="80" placeholder="z. B. Just Chatting, Fortnite, Grand Theft Auto V">
+ <label>YouTube-Kategorie</label><select id="ti_ytcat"><option value="20">Gaming</option><option value="24">Unterhaltung</option><option value="22">Menschen &amp; Blogs</option></select>
+ <div class="hint">Das „Spiel“-Feld bei YouTube lässt sich leider nicht automatisch setzen – YouTube bietet dafür keine Schnittstelle.</div>
+ <div class="btns"><button class="go" id="bTiSave">💾 Titel &amp; Kategorie speichern</button><button id="bTiNow">↻ Jetzt setzen</button></div>
  <h3 style="margin:16px 0 4px;font-size:15px">Twitch</h3><div id="tiTw"></div>
  <label>Twitch Client-ID</label><input type="text" id="ti_tw_cid" placeholder="aus dev.twitch.tv/console">
  <div class="btns"><button id="bTiTw">🔗 Mit Twitch verbinden</button></div>
@@ -2534,7 +2660,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <label>YouTube Stream-Schlüssel <span id="ytkeyinfo"></span></label>
  <input type="password" id="yt_key" placeholder="xxxx-xxxx-xxxx-xxxx (leer lassen = nicht ändern)">
  <label>YouTube Server</label><input type="text" id="yt_server">
- <label>Geplant neu verbinden nach (Stunden) – YouTube-Limit ca. 24 h</label><input type="text" id="yt_max_hours" inputmode="decimal">
+ <label>Geplant neu verbinden nach (Stunden) – YouTube: 11,83 = 11:50 h (YouTube speichert max. 12 h)</label><input type="text" id="yt_max_hours" inputmode="decimal">
  <div class="hint">YouTube Studio → Erstellen → Livestream starten → Stream. Den Stream-Schlüssel dort kopieren. Am besten einen dauerhaften Schlüssel nehmen. Neuen Key speichern = nur diese Plattform verbindet kurz neu.</div>
  <label>Leistung (Live-Bild)</label>
  <select id="perfPreset" onchange="api('/api/config',{perf_preset:this.value})"><option value="veryfast">Beste Qualität (braucht mehr Leistung)</option><option value="superfast">Ausgewogen</option><option value="ultrafast">Sparsam (für kleine Server)</option></select>
@@ -2576,15 +2702,15 @@ async function refresh(){
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
  $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig'&&j.kind!='music').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${(j.state=='konvertiert'||j.state=='lädt von Twitch')?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('log').textContent=s.log||'(noch leer)';
- const TI=s.titles||{},TC=s.title_cfg||{};$('tiAuto').checked=TI.auto;$('tiPrev').textContent='Aktueller Titel: '+(TI.preview||'–');
- for(const[k,f]of[['ti_countdown','title_countdown'],['ti_done','title_done'],['ti_vod','title_vod'],['ti_fallback','title_fallback'],['ti_tw_cid','tw_client_id'],['ti_yt_cid','yt_client_id']])if(document.activeElement!==$(k)&&!$(k).dataset.dirty)$(k).value=TC[f]||'';
+ const TI=s.titles||{},TC=s.title_cfg||{};$('tiAuto').checked=TI.auto;$('tiPrev').textContent='Aktueller Titel: '+(TI.preview||'–')+(TI.category?' · Kategorie: '+TI.category:'');
+ for(const[k,f]of[['ti_countdown','title_countdown'],['ti_done','title_done'],['ti_vod','title_vod'],['ti_fallback','title_fallback'],['ti_cat_cd','cat_countdown'],['ti_cat_vod','cat_vod'],['ti_ytcat','yt_category'],['ti_tw_cid','tw_client_id'],['ti_yt_cid','yt_client_id']])if(document.activeElement!==$(k)&&!$(k).dataset.dirty)$(k).value=TC[f]||'';
  $('ti_yt_sec').placeholder=s.yt_secret_set?'gespeichert ✓':'GOCSPX-…';
  for(const[p,el,b]of[['twitch','tiTw','bTiTw'],['youtube','tiYt','bTiYt']]){const x=TI[p]||{};let h='';
   if(x.login)h=`<div class="vid" style="border-color:#ffc400"><div class="t">Öffne <a href="${esc(x.login.url)}" target="_blank" style="color:#ffc400">${esc(x.login.url)}</a><br>und gib diesen Code ein: <b style="font-size:20px;letter-spacing:2px">${esc(x.login.code)}</b></div></div>`;
   else if(x.connected)h=`<div class="hint" style="color:#4ade80">✅ Verbunden${x.name?' als <b>'+esc(x.name)+'</b>':''}${x.title?' · Titel gesetzt':''}</div>`;
   else h='<div class="hint">Nicht verbunden</div>';
   if(x.error)h+=`<div class="hint" style="color:#ff6b6b">${esc(x.error)}</div>`;else if(x.note)h+=`<div class="hint">${esc(x.note)}</div>`;
-  $(el).innerHTML=h;$(b).textContent=x.connected?'✕ Trennen':'🔗 Mit '+(p=='twitch'?'Twitch':'YouTube')+' verbinden';$(b).dataset.c=x.connected?1:''}
+  $(el).innerHTML=h;$(b).textContent=x.connected?'✕ Trennen':(x.expired?'🔄 Neu verbinden':'🔗 Mit '+(p=='twitch'?'Twitch':'YouTube')+' verbinden');$(b).dataset.c=x.connected?1:''}
  const G=s.games||{};
  if(document.activeElement!==$('gWhen2')){const v=!G.auto?'manual':String(G.done_hours);$('gWhen2').value=[...$('gWhen2').options].some(o=>o.value==v)?v:'custom'}
  if(document.activeElement!==$('gNext')){const up=(G.list||[]).filter(g=>!g.past&&g.id!=G.current);
@@ -2614,6 +2740,7 @@ async function refresh(){
  $('cdBox').style.display=cd?'':'none';$('twBox').style.display=tw?'':'none';
  $('twSeek').style.display=s.tw_now?'':'none';
  $('twNow').innerHTML=s.tw_now?`🔴 Läuft: <b>${esc(s.tw_now.title)}</b><br><small style="color:var(--mut)">${fmt(s.tw_now.pos)}${s.tw_now.duration?' / '+fmt(s.tw_now.duration):''}</small>`:'';
+ if(document.activeElement!==$('twAudio'))$('twAudio').value=s.vod_audio||'orig';$('twMixBox').style.display=s.vod_audio=='mix'?'':'none';if(document.activeElement!==$('twMix'))$('twMix').value=s.vod_mix_volume;
  if(document.activeElement!==$('twOrder'))$('twOrder').value=s.tw_order||'list';
  $('twList').innerHTML=s.tw_playlist.length?s.tw_playlist.map((v,i)=>{const cur=v.url==s.tw_cur,nx=v.url==s.tw_next;return `<div class="vid"${cur?' style="border-color:#ffc400"':''}><div class="t">${i+1}. ${cur?'▶ ':''}${esc(v.title)}<br><small>${v.timestamp?new Date(v.timestamp*1000).toLocaleDateString('de-DE')+' · ':''}${v.duration?fmt(v.duration):''}${cur?' · läuft gerade':''}${nx?' · kommt als Nächstes':''}</small></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end" data-u="${esc(v.url)}"><button onclick="twMv(this,'top')" ${i?'':'disabled'} title="Ganz nach oben">⏫</button><button onclick="twMv(this,'up')" ${i?'':'disabled'}>▲</button><button onclick="twMv(this,'down')" ${i<s.tw_playlist.length-1?'':'disabled'}>▼</button>${cur?'':`<button class="go" onclick="twPlay(this,1)">▶ Jetzt</button><button onclick="twPlay(this,0)">⏭ Als Nächstes</button>`}<button onclick="twRemove(this.parentNode.dataset.u)">✕</button></div></div>`}).join(''):'<div class="empty">Noch keine VODs in der Playlist.</div>';
  $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('cvInfo').textContent=s.cd_cover?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
@@ -2686,9 +2813,9 @@ $('cvDel').onclick=async()=>{await api('/api/asset_delete',{kind:'cover'});refre
 async function delSong(n){if(confirm('Song löschen?')){await api('/api/asset_delete',{kind:'music',name:n});refresh()}}
 $('ckFile').onchange=e=>{if(e.target.files[0])asset('cookies',e.target.files[0]).then(()=>alert('Cookies gespeichert ✅ – jetzt den Link nochmal einfügen.'));e.target.value=''};
 function gSetWhen(v){api('/api/config',v=='manual'?{game_auto:false}:{game_auto:true,game_done_hours:parseFloat(v)})}
-['ti_countdown','ti_done','ti_vod','ti_fallback','ti_tw_cid','ti_yt_cid'].forEach(k=>$(k).oninput=()=>$(k).dataset.dirty=1);
-$('bTiSave').onclick=async()=>{const b={title_countdown:$('ti_countdown').value,title_done:$('ti_done').value,title_vod:$('ti_vod').value,title_fallback:$('ti_fallback').value};
- const j=await api('/api/config',b);if(j.ok){['ti_countdown','ti_done','ti_vod','ti_fallback'].forEach(k=>delete $(k).dataset.dirty);refresh()}};
+['ti_countdown','ti_done','ti_vod','ti_fallback','ti_cat_cd','ti_cat_vod','ti_ytcat','ti_tw_cid','ti_yt_cid'].forEach(k=>$(k).oninput=$(k).onchange=()=>$(k).dataset.dirty=1);
+$('bTiSave').onclick=async()=>{const b={title_countdown:$('ti_countdown').value,title_done:$('ti_done').value,title_vod:$('ti_vod').value,title_fallback:$('ti_fallback').value,cat_countdown:$('ti_cat_cd').value,cat_vod:$('ti_cat_vod').value,yt_category:$('ti_ytcat').value};
+ const j=await api('/api/config',b);if(j.ok){['ti_countdown','ti_done','ti_vod','ti_fallback','ti_cat_cd','ti_cat_vod','ti_ytcat'].forEach(k=>delete $(k).dataset.dirty);refresh()}};
 $('bTiNow').onclick=()=>api('/api/title_now').then(()=>setTimeout(refresh,3000));
 async function tiConnect(p,b){if(b.dataset.c){if(confirm('Verbindung trennen?'))await api('/api/title_logout',{platform:p});return refresh()}
  const c=p=='twitch'?{tw_client_id:$('ti_tw_cid').value}:{yt_client_id:$('ti_yt_cid').value,...($('ti_yt_sec').value?{yt_client_secret:$('ti_yt_sec').value}:{})};
@@ -2897,14 +3024,23 @@ class Handler(BaseHTTPRequestHandler):
                     upd["game_done_hours"] = max(0.0, min(168.0, float(data["game_done_hours"])))
                 except (TypeError, ValueError):
                     pass
-            for k, n in (("title_countdown", 140), ("title_done", 140), ("title_vod", 140), ("title_fallback", 100),
+            for k, n in (("cat_countdown", 80), ("cat_vod", 80), ("title_countdown", 140), ("title_done", 140), ("title_vod", 140), ("title_fallback", 100),
                          ("tw_client_id", 80), ("yt_client_id", 200), ("yt_client_secret", 100)):
                 if k in data:
                     upd[k] = (re.sub(r"\s+", " ", "".join(c for c in str(data[k]) if c.isprintable())).strip()[:n]
-                              if k.startswith("title") else str(data[k]).strip()[:n])
+                              if k.startswith(("title", "cat_")) else str(data[k]).strip()[:n])
             if "title_auto" in data:
                 upd["title_auto"] = bool(data["title_auto"])
-            if any(k.startswith("title") for k in data):
+            if "yt_category" in data and str(data["yt_category"]).isdigit():
+                upd["yt_category"] = str(data["yt_category"])
+            if data.get("vod_audio") in ("orig", "mute", "music", "mix"):
+                upd["vod_audio"] = data["vod_audio"]
+            if "vod_mix_volume" in data:
+                try:
+                    upd["vod_mix_volume"] = max(0, min(100, int(data["vod_mix_volume"])))
+                except (TypeError, ValueError):
+                    pass
+            if any(k.startswith(("title", "cat_", "yt_category")) for k in data):
                 title_mgr.last = {"twitch": (None, 0), "youtube": (None, 0)}
                 title_mgr.wake.set()
             if "game_next" in data:
@@ -2944,6 +3080,10 @@ class Handler(BaseHTTPRequestHandler):
                     rebuild_layers()
                 except Exception as e:  # noqa
                     print("Ebenen-Fehler:", e, flush=True)
+            v = streamer.vod
+            if changed & {"vod_audio", "vod_mix_volume"} and get_cfg()["mode"] == "twitch" and v["url"]:
+                v["seek"] = v["pos"] + (vod_progress_seconds() if streamer.source_alive() else 0)
+                streamer._kill()                     # gleiches VOD an gleicher Stelle, neuer Ton
             restart = bool(changed & RESTART_KEYS)
             if streamer.want and restart:
                 streamer.restart()
@@ -3326,9 +3466,10 @@ def status():
         "session_started": streamer.session_started,
         "auto_update": cfg.get("auto_update", True),
         "titles": title_mgr.status(),
-        "title_cfg": {k: cfg.get(k, DEFAULT_CFG[k]) for k in ("title_countdown", "title_done", "title_vod", "title_fallback",
+        "title_cfg": {k: cfg.get(k, DEFAULT_CFG[k]) for k in ("title_countdown", "title_done", "title_vod", "title_fallback", "cat_countdown", "cat_vod", "yt_category",
                                                             "tw_client_id", "yt_client_id")},
         "yt_secret_set": bool(cfg.get("yt_client_secret")),
+        "vod_audio": cfg.get("vod_audio", "orig"), "vod_mix_volume": cfg.get("vod_mix_volume", 30),
         "games": {"auto": cfg.get("game_auto", True), "done_hours": cfg.get("game_done_hours", 12),
                   "current": cfg.get("game_current"), "next": cfg.get("game_next", ""),
                   "list": [{**g, "custom": g["id"].startswith("c_"),
