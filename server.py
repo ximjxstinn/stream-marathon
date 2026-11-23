@@ -1687,6 +1687,21 @@ class TitleManager(threading.Thread):
         if not sid:
             self.state["youtube"] = {"error": "Stream-Schlüssel nicht in deinem YouTube-Konto gefunden – ist es der richtige Kanal?"}
             return
+        # Gibt es schon einen vorbereiteten Livestream („Stream wird vorbereitet“)? Dann den live schalten.
+        c, ju = self._call("youtube", "GET", "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=id,status,contentDetails"
+                                             "&broadcastStatus=upcoming&broadcastType=all&maxResults=20")
+        for x in (ju.get("items") or []) if c == 200 else []:
+            if (x.get("contentDetails") or {}).get("boundStreamId") != sid:
+                continue
+            life = (x.get("status") or {}).get("lifeCycleStatus")
+            if life in ("ready", "testing", "testStarting", "liveStarting"):
+                c3, j3 = self._call("youtube", "POST", "https://www.googleapis.com/youtube/v3/liveBroadcasts/transition"
+                                                       f"?broadcastStatus=live&part=status&id={x['id']}")
+                log_line("YouTube: vorbereiteten Livestream live geschaltet" if c3 == 200
+                         else f"YouTube: Live-Schalten ging nicht ({life}): {self._err(j3, c3)}")
+                if c3 == 200:
+                    self.last["youtube"] = (None, 0)
+                    return
         from datetime import datetime, timezone
         title, _ = self.current(cfg)
         body = {"snippet": {"title": (title or "24/7 LIVE")[:100],
