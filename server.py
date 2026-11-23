@@ -1626,6 +1626,8 @@ class TitleManager(threading.Thread):
             if plat == "twitch":
                 data = {"client_id": cfg.get("tw_client_id", "").strip(), "grant_type": "refresh_token",
                         "refresh_token": t["refresh"]}
+                if cfg.get("tw_client_secret", "").strip():      # App-Typ „Vertraulich“ braucht das Secret
+                    data["client_secret"] = cfg["tw_client_secret"].strip()
                 code, j = _http("POST", "https://id.twitch.tv/oauth2/token", data, form=True)
             else:
                 data = {"client_id": cfg.get("yt_client_id", "").strip(),
@@ -1641,10 +1643,19 @@ class TitleManager(threading.Thread):
             t["refresh"] = j.get("refresh_token") or t["refresh"]
             t["exp"] = time.time() + int(j.get("expires_in", 3600)) - 300
             t.pop("dead", None)
+            self.__dict__.setdefault("_last_why", {}).pop(plat, None)
             self._save()
             return True
         why = str(j.get("error_description") or j.get("message") or j.get("error") or code)
-        log_line(f"Titel: Token-Erneuerung {plat} abgelehnt ({code}): {why}")
+        if self.__dict__.setdefault("_last_why", {}).get(plat) != why:   # gleiche Meldung nicht jede Minute
+            self._last_why[plat] = why
+            log_line(f"Titel: Token-Erneuerung {plat} abgelehnt ({code}): {why}")
+        if "client secret" in why.lower():
+            self.state[plat] = {"error": "Deine Twitch-App ist „Vertraulich“ – bitte das Client-Secret im Panel eintragen",
+                                "expired": True}
+            t["dead"] = True
+            self._save()
+            return False
         dead = code in (400, 401) and any(x in why.lower() for x in ("invalid", "expired", "revoked"))
         if dead:
             t["dead"] = True
@@ -2739,6 +2750,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div class="btns"><button class="go" id="bTiSave">💾 Titel &amp; Kategorie speichern</button><button id="bTiNow">↻ Jetzt setzen</button></div>
  <h3 style="margin:16px 0 4px;font-size:15px">Twitch</h3><div id="tiTw"></div>
  <label>Twitch Client-ID</label><input type="text" id="ti_tw_cid" placeholder="aus dev.twitch.tv/console">
+ <label>Twitch Client-Secret (nur nötig, wenn deine App „Vertraulich“ ist)</label><input type="password" id="ti_tw_sec" placeholder="">
  <div class="btns"><button id="bTiTw">🔗 Mit Twitch verbinden</button></div>
  <h3 style="margin:16px 0 4px;font-size:15px">YouTube</h3><div id="tiYt"></div>
  <label>YouTube Client-ID</label><input type="text" id="ti_yt_cid" placeholder="…apps.googleusercontent.com">
@@ -2841,7 +2853,7 @@ async function refresh(){
  $('log').textContent=s.log||'(noch leer)';
  const TI=s.titles||{},TC=s.title_cfg||{};$('tiAuto').checked=TI.auto;$('tiPrev').textContent='Aktueller Titel: '+(TI.preview||'–')+(TI.category?' · Kategorie: '+TI.category:'');
  for(const[k,f]of[['ti_countdown','title_countdown'],['ti_done','title_done'],['ti_vod','title_vod'],['ti_fallback','title_fallback'],['ti_cat_cd','cat_countdown'],['ti_cat_vod','cat_vod'],['ti_ytcat','yt_category'],['ti_tw_cid','tw_client_id'],['ti_yt_cid','yt_client_id']])if(document.activeElement!==$(k)&&!$(k).dataset.dirty)$(k).value=TC[f]||'';
- $('ti_cat_auto').checked=s.cat_vod_auto!==false;$('ti_yt_sec').placeholder=s.yt_secret_set?'gespeichert ✓':'GOCSPX-…';
+ $('ti_cat_auto').checked=s.cat_vod_auto!==false;$('ti_tw_sec').placeholder=s.tw_secret_set?'gespeichert ✓':'leer lassen bei „Öffentlich“';$('ti_yt_sec').placeholder=s.yt_secret_set?'gespeichert ✓':'GOCSPX-…';
  for(const[p,el,b]of[['twitch','tiTw','bTiTw'],['youtube','tiYt','bTiYt']]){const x=TI[p]||{};let h='';
   if(x.login)h=`<div class="vid" style="border-color:#ffc400"><div class="t">Öffne <a href="${esc(x.login.url)}" target="_blank" style="color:#ffc400">${esc(x.login.url)}</a><br>und gib diesen Code ein: <b style="font-size:20px;letter-spacing:2px">${esc(x.login.code)}</b></div></div>`;
   else if(x.connected)h=`<div class="hint" style="color:#4ade80">✅ Verbunden${x.name?' als <b>'+esc(x.name)+'</b>':''}${x.title?' · Titel gesetzt':''}</div>`;
@@ -2955,8 +2967,8 @@ $('bTiSave').onclick=async()=>{const b={title_countdown:$('ti_countdown').value,
  const j=await api('/api/config',b);if(j.ok){['ti_countdown','ti_done','ti_vod','ti_fallback','ti_cat_cd','ti_cat_vod','ti_ytcat'].forEach(k=>delete $(k).dataset.dirty);refresh()}};
 $('bTiNow').onclick=()=>api('/api/title_now').then(()=>setTimeout(refresh,3000));
 async function tiConnect(p,b){if(b.dataset.c){if(confirm('Verbindung trennen?'))await api('/api/title_logout',{platform:p});return refresh()}
- const c=p=='twitch'?{tw_client_id:$('ti_tw_cid').value}:{yt_client_id:$('ti_yt_cid').value,...($('ti_yt_sec').value?{yt_client_secret:$('ti_yt_sec').value}:{})};
- await api('/api/config',c);delete $('ti_tw_cid').dataset.dirty;delete $('ti_yt_cid').dataset.dirty;$('ti_yt_sec').value='';
+ const c=p=='twitch'?{tw_client_id:$('ti_tw_cid').value,...($('ti_tw_sec').value?{tw_client_secret:$('ti_tw_sec').value}:{})}:{yt_client_id:$('ti_yt_cid').value,...($('ti_yt_sec').value?{yt_client_secret:$('ti_yt_sec').value}:{})};
+ await api('/api/config',c);delete $('ti_tw_cid').dataset.dirty;delete $('ti_yt_cid').dataset.dirty;$('ti_yt_sec').value='';$('ti_tw_sec').value='';
  const j=await api('/api/title_login',{platform:p});if(j.ok)refresh()}
 $('bTiTw').onclick=function(){tiConnect('twitch',this)};$('bTiYt').onclick=function(){tiConnect('youtube',this)};
 $('bGAdd').onclick=async()=>{const j=await api('/api/game_add',{name:$('gName').value,short:$('gShort').value,target:$('gWhen').value});if(j.ok){$('gName').value=$('gShort').value=$('gWhen').value='';refresh()}};
@@ -3162,10 +3174,16 @@ class Handler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     pass
             for k, n in (("cat_countdown", 80), ("cat_vod", 80), ("title_countdown", 140), ("title_done", 140), ("title_vod", 140), ("title_fallback", 100),
-                         ("tw_client_id", 80), ("yt_client_id", 200), ("yt_client_secret", 100)):
+                         ("tw_client_id", 80), ("tw_client_secret", 100), ("yt_client_id", 200), ("yt_client_secret", 100)):
                 if k in data:
                     upd[k] = (re.sub(r"\s+", " ", "".join(c for c in str(data[k]) if c.isprintable())).strip()[:n]
                               if k.startswith(("title", "cat_")) else str(data[k]).strip()[:n])
+            if data.get("tw_client_secret") and title_mgr.tok.get("twitch"):
+                title_mgr.tok["twitch"].pop("dead", None)     # mit Secret die alte Anmeldung nochmal versuchen
+                title_mgr.tok["twitch"]["exp"] = 0
+                title_mgr.state["twitch"] = {}
+                title_mgr.last["twitch"] = (None, 0)
+                title_mgr.wake.set()
             if "cat_vod_auto" in data:
                 upd["cat_vod_auto"] = bool(data["cat_vod_auto"])
             if "title_auto" in data:
@@ -3607,7 +3625,7 @@ def status():
         "titles": title_mgr.status(),
         "title_cfg": {k: cfg.get(k, DEFAULT_CFG[k]) for k in ("title_countdown", "title_done", "title_vod", "title_fallback", "cat_countdown", "cat_vod", "yt_category",
                                                             "tw_client_id", "yt_client_id")},
-        "yt_secret_set": bool(cfg.get("yt_client_secret")), "cat_vod_auto": cfg.get("cat_vod_auto", True),
+        "yt_secret_set": bool(cfg.get("yt_client_secret")), "tw_secret_set": bool(cfg.get("tw_client_secret")), "cat_vod_auto": cfg.get("cat_vod_auto", True),
         "vod_audio": cfg.get("vod_audio", "orig"), "vod_mix_volume": cfg.get("vod_mix_volume", 30),
         "games": {"auto": cfg.get("game_auto", True), "done_hours": cfg.get("game_done_hours", 12),
                   "current": cfg.get("game_current"), "next": cfg.get("game_next", ""),
