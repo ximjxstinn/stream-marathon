@@ -1520,6 +1520,15 @@ def category_for(cfg):
     return (tpl or "").replace("{game}", cfg.get("cd_game") or cfg.get("cd_title", "")).strip()
 
 
+def yt_safe_title(t):
+    """YouTube lehnt Titel mit < oder > ab, ebenso leere oder zu lange Titel."""
+    t = "".join(c for c in str(t) if c.isprintable()).replace("<", "‹").replace(">", "›")
+    t = re.sub(r"\s+", " ", t).strip()
+    if len(t) > 100:
+        t = t[:99].rstrip() + "…"
+    return t or "24/7 LIVE"
+
+
 class TitleManager(threading.Thread):
     def __init__(self):
         super().__init__(daemon=True)
@@ -1802,8 +1811,9 @@ class TitleManager(threading.Thread):
         items = j.get("items") or []
         if not items:
             return None, "Gerade kein laufender YouTube-Livestream"
+        title = yt_safe_title(title)
         for b in items:
-            err = self._yt_update(b, title[:100], str(get_cfg().get("yt_category", "20")))
+            err = self._yt_update(b, title, str(get_cfg().get("yt_category", "20")))
             if err:
                 return False, err
         return True, None
