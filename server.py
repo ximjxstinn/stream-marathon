@@ -459,6 +459,10 @@ class Ticker(threading.Thread):
     def run(self):
         while True:
             try:
+                self._yt_ensure_live()
+            except Exception as e:  # noqa
+                print("YouTube-Livestream:", e, flush=True)
+            try:
                 self.tick()
             except Exception as e:  # noqa
                 print("Ticker-Fehler:", e, flush=True)
@@ -1644,9 +1648,64 @@ class TitleManager(threading.Thread):
         return code in (200, 204), self._err(j, code)
 
     def _yt_live(self):
-        code, j = self._call("youtube", "GET", "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet"
+        code, j = self._call("youtube", "GET", "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,status"
                                                "&broadcastStatus=active&broadcastType=all&maxResults=5")
+        if code == 200 and j.get("items"):
+            self.yt_privacy = (j["items"][0].get("status") or {}).get("privacyStatus") or self.__dict__.get("yt_privacy")
         return code, j
+
+    def _yt_ensure_live(self):
+        """Wenn der Server an YouTube sendet, aber dort kein Livestream läuft (z. B. nach dem Beenden
+        oder weil „Automatisch starten“ aus ist): neuen Livestream anlegen und mit dem Stream-Schlüssel verknüpfen."""
+        cfg = get_cfg()
+        t = self.tok.get("youtube")
+        if not cfg.get("yt_enabled") or not cfg.get("yt_key") or not t or t.get("dead"):
+            return
+        if time.time() - self.__dict__.get("_yt_check", 0) < 60:
+            return
+        self._yt_check = time.time()
+        d = (sender_status().get("dest") or {}).get("youtube") or {}
+        if not d.get("live") or (d.get("uptime") or 0) < 45:
+            self._yt_missing = 0
+            return
+        if not self._refresh("youtube"):
+            return
+        code, j = self._yt_live()
+        if code != 200:
+            return
+        if j.get("items"):
+            self._yt_missing = 0
+            return
+        self._yt_missing = self.__dict__.get("_yt_missing", 0) + 1
+        if self._yt_missing < 2 or time.time() - self.__dict__.get("_yt_created", 0) < 600:
+            return                                        # erst nach 2 Minuten ohne Livestream eingreifen
+        self._yt_created = time.time()
+        # passenden Stream (Stream-Schlüssel) finden
+        c, js = self._call("youtube", "GET", "https://www.googleapis.com/youtube/v3/liveStreams?part=id,cdn&mine=true&maxResults=50")
+        sid = next((x["id"] for x in (js.get("items") or []) if c == 200
+                    and ((x.get("cdn") or {}).get("ingestionInfo") or {}).get("streamName") == cfg["yt_key"]), None)
+        if not sid:
+            self.state["youtube"] = {"error": "Stream-Schlüssel nicht in deinem YouTube-Konto gefunden – ist es der richtige Kanal?"}
+            return
+        from datetime import datetime, timezone
+        title, _ = self.current(cfg)
+        body = {"snippet": {"title": (title or "24/7 LIVE")[:100],
+                            "scheduledStartTime": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
+                "status": {"privacyStatus": self.__dict__.get("yt_privacy") or "public", "selfDeclaredMadeForKids": False},
+                "contentDetails": {"enableAutoStart": True, "enableAutoStop": True, "enableDvr": True,
+                                   "monitorStream": {"enableMonitorStream": False}}}
+        c, b = self._call("youtube", "POST", "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,status,contentDetails", body)
+        if c != 200:
+            self.state["youtube"] = {"error": f"Neuer YouTube-Livestream ging nicht: {self._err(b, c)}"}
+            log_line(f"YouTube: neuer Livestream ging nicht: {self._err(b, c)}")
+            return
+        c2, j2 = self._call("youtube", "POST", "https://www.googleapis.com/youtube/v3/liveBroadcasts/bind"
+                                               f"?id={b['id']}&part=id,contentDetails&streamId={sid}")
+        if c2 != 200:
+            log_line(f"YouTube: Livestream ließ sich nicht verknüpfen: {self._err(j2, c2)}")
+            return
+        log_line("YouTube: kein Livestream aktiv – neuen Livestream gestartet")
+        self.last["youtube"] = (None, 0)
 
     def _set_youtube(self, title, category):
         code, j = self._yt_live()
