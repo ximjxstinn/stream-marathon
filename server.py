@@ -1990,6 +1990,8 @@ class Streamer:
         self.lag = 0.0
         self.perf_note = ""
         self.vod = {"order": [], "url": None, "title": "", "pos": 0.0, "tries": 0, "duration": 0}
+        self._restore_vod()
+        threading.Thread(target=self._save_vod_loop, daemon=True).start()
         threading.Thread(target=self._fifo_writer, daemon=True).start()
         st = load_json(STATE_PATH, {})
         self.session_started = st.get("session_started") if st.get("want") else None
@@ -2091,6 +2093,39 @@ class Streamer:
             prefetch_stream_url(nxt)           # nächsten Link schon mal holen
         return item
 
+    # --- VOD-Stelle merken (übersteht Updates und Neustarts) ---
+    VOD_STATE = os.path.join(BASE, "vod_state.json")
+
+    def _vod_now(self):
+        v = self.vod
+        return v["pos"] + (vod_progress_seconds() if v["url"] and self.source_alive() and "seek" not in v else 0)
+
+    def _restore_vod(self):
+        st = load_json(self.VOD_STATE, {})
+        for k in ("url", "last", "title", "duration", "next"):
+            if st.get(k) is not None:
+                self.vod[k] = st[k]
+        if self.vod.get("url"):
+            self.vod["pos"] = max(0.0, float(st.get("pos") or 0) - 5)   # 5 s zurück, damit nichts fehlt
+            log_line(f"Twitch-VOD wird fortgesetzt: {self.vod['title']} ab {int(self.vod['pos'] // 60)} min")
+
+    def _save_vod_loop(self):
+        last = None
+        while True:
+            time.sleep(5)
+            try:
+                v = self.vod
+                st = {"url": v.get("url"), "last": v.get("last"), "title": v.get("title"), "duration": v.get("duration"),
+                      "next": v.get("next"), "pos": round(v["seek"] if "seek" in v else self._vod_now(), 1)}
+                if (last and st["url"] and st["url"] == last["url"] and st["pos"] < last["pos"] - 30
+                        and time.time() - v.get("seeked", 0) > 60):
+                    continue                     # Rücksprung ohne Spulen (z. B. beim Beenden) nicht speichern
+                if st != last:
+                    save_json(self.VOD_STATE, st)
+                    last = st
+            except Exception as e:  # noqa
+                print("VOD-Stelle speichern:", e, flush=True)
+
     def _vod_done(self):
         self.vod.update(url=None, pos=0.0, tries=0)
 
@@ -2098,7 +2133,7 @@ class Streamer:
         """Nach Ende eines VOD-Teils: weiter an gleicher Stelle oder nächstes VOD. True = sofort weiter."""
         v = self.vod
         if "seek" in v:                                  # im Panel vor-/zurückgespult
-            v["pos"], v["tries"] = v.pop("seek"), 0
+            v["pos"], v["tries"], v["seeked"] = v.pop("seek"), 0, time.time()
             log_line(f"Twitch-VOD gespult auf {int(v['pos'] // 60)} min")
             return True
         played = vod_progress_seconds()
