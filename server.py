@@ -107,7 +107,8 @@ DEFAULT_CFG = {
     "title_vod": "(VOD) {title}",
     "title_fallback": "Wiederholung",
     "cat_countdown": "{game}",        # Twitch-Kategorie beim Countdown
-    "cat_vod": "Just Chatting",       # Twitch-Kategorie bei VODs
+    "cat_vod": "Just Chatting",       # Twitch-Kategorie bei VODs, wenn das Spiel unbekannt ist
+    "cat_vod_auto": True,             # bei VODs automatisch das Spiel aus dem VOD nehmen
     "yt_category": "20",              # YouTube-Kategorie (20 = Gaming)
     "vod_audio": "music",             # Ton bei VODs: orig | mute | music | mix
     "vod_mix_volume": 30,             # bei "mix": Lautstärke des VOD-Tons in %
@@ -1452,9 +1453,70 @@ def title_for(cfg, vod_title=None):
     return out.replace("{date}", dt.strftime("%d.%m.%Y") if dt else "").strip()
 
 
+_vod_games = {}            # Video-ID -> {"game": Name, "chapters": [(Start s, Ende s, Name)], "t": Zeit}
+_vod_games_lock = threading.Lock()
+TW_GQL_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"   # öffentliche Client-ID der Twitch-Webseite (nutzt auch yt-dlp)
+
+
+def _fetch_vod_game(vid):
+    q = ('query{video(id:"%s"){game{displayName} moments(first:100,momentRequestType:VIDEO_CHAPTER_MARKERS)'
+         '{edges{node{positionMilliseconds durationMilliseconds details{...on GameChangeMomentDetails'
+         '{game{displayName}}}}}}}}' % vid)
+    info = {"game": None, "chapters": [], "t": time.time()}
+    try:
+        code, j = _http("POST", "https://gql.twitch.tv/gql", {"query": q}, headers={"Client-Id": TW_GQL_ID})
+        v = ((j or {}).get("data") or {}).get("video") or {} if code == 200 else {}
+        if not v and code == 200:      # falls Kapitel nicht abgefragt werden dürfen: nur das Spiel
+            code, j = _http("POST", "https://gql.twitch.tv/gql",
+                            {"query": 'query{video(id:"%s"){game{displayName}}}' % vid}, headers={"Client-Id": TW_GQL_ID})
+            v = ((j or {}).get("data") or {}).get("video") or {} if code == 200 else {}
+        info["game"] = (v.get("game") or {}).get("displayName")
+        for e in ((v.get("moments") or {}).get("edges") or []):
+            n = e.get("node") or {}
+            g = (((n.get("details") or {}).get("game")) or {}).get("displayName")
+            if g:
+                st = (n.get("positionMilliseconds") or 0) / 1000
+                info["chapters"].append((st, st + (n.get("durationMilliseconds") or 0) / 1000, g))
+    except Exception as e:  # noqa
+        print("VOD-Kategorie:", e, flush=True)
+    with _vod_games_lock:
+        _vod_games[vid] = info
+    if info["game"] or info["chapters"]:
+        log_line(f"VOD {vid}: Kategorie {info['game'] or '?'}"
+                 + (f" ({len(info['chapters'])} Kapitel)" if len(info["chapters"]) > 1 else ""))
+
+
+def vod_game(url, pos):
+    """Spiel des VODs an der aktuellen Stelle (Twitch-Kapitel) – None, solange unbekannt."""
+    m = re.search(r"/videos/(\d+)", url or "")
+    if not m:
+        return None
+    vid = m.group(1)
+    with _vod_games_lock:
+        info = _vod_games.get(vid)
+        if info is None or (not info["game"] and time.time() - info["t"] > 600):
+            _vod_games[vid] = {"game": None, "chapters": [], "t": time.time()}
+            threading.Thread(target=_fetch_vod_game, args=(vid,), daemon=True).start()
+            return None
+    for st, en, g in info["chapters"]:
+        if st <= pos < (en if en > st else st + 10 ** 9):
+            return g
+    return info["game"]
+
+
 def category_for(cfg):
-    """Twitch-Kategorie: beim Countdown das Spiel, bei VODs die eingestellte Kategorie."""
-    tpl = cfg.get("cat_vod") if cfg.get("mode") in ("twitch", "videos") else cfg.get("cat_countdown")
+    """Twitch-Kategorie: beim Countdown das Spiel, bei VODs das Spiel aus dem VOD (sonst die eingestellte)."""
+    if cfg.get("mode") in ("twitch", "videos"):
+        if cfg.get("mode") == "twitch" and cfg.get("cat_vod_auto", True) and streamer:
+            v = streamer.vod
+            url = v.get("url") or v.get("last")
+            pos = v["pos"] + (vod_progress_seconds() if v.get("url") and streamer.source_alive() else 0)
+            g = vod_game(url, pos)
+            if g:
+                return g
+        tpl = cfg.get("cat_vod")
+    else:
+        tpl = cfg.get("cat_countdown")
     return (tpl or "").replace("{game}", cfg.get("cd_game") or cfg.get("cd_title", "")).strip()
 
 
@@ -2670,7 +2732,8 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <label>Titel bei VODs ({title} = Titel des VODs)</label><input type="text" id="ti_vod" maxlength="140">
  <label>Ersatz, wenn ein Video keinen Titel hat</label><input type="text" id="ti_fallback" maxlength="100">
  <label>Twitch-Kategorie beim Countdown ({game} = Spiel)</label><input type="text" id="ti_cat_cd" maxlength="80" placeholder="{game}">
- <label>Twitch-Kategorie bei VODs</label><input type="text" id="ti_cat_vod" maxlength="80" placeholder="z. B. Just Chatting, Fortnite, Grand Theft Auto V">
+ <label class="chk"><input type="checkbox" id="ti_cat_auto" onchange="api('/api/config',{cat_vod_auto:this.checked}).then(refresh)"> Bei VODs automatisch das Spiel aus dem VOD nehmen (auch bei mehreren Spielen pro VOD)</label>
+ <label>Twitch-Kategorie bei VODs, wenn das Spiel unbekannt ist</label><input type="text" id="ti_cat_vod" maxlength="80" placeholder="z. B. Just Chatting, Fortnite, Grand Theft Auto V">
  <label>YouTube-Kategorie</label><select id="ti_ytcat"><option value="20">Gaming</option><option value="24">Unterhaltung</option><option value="22">Menschen &amp; Blogs</option></select>
  <div class="hint">Das „Spiel“-Feld bei YouTube lässt sich leider nicht automatisch setzen – YouTube bietet dafür keine Schnittstelle.</div>
  <div class="btns"><button class="go" id="bTiSave">💾 Titel &amp; Kategorie speichern</button><button id="bTiNow">↻ Jetzt setzen</button></div>
@@ -2778,7 +2841,7 @@ async function refresh(){
  $('log').textContent=s.log||'(noch leer)';
  const TI=s.titles||{},TC=s.title_cfg||{};$('tiAuto').checked=TI.auto;$('tiPrev').textContent='Aktueller Titel: '+(TI.preview||'–')+(TI.category?' · Kategorie: '+TI.category:'');
  for(const[k,f]of[['ti_countdown','title_countdown'],['ti_done','title_done'],['ti_vod','title_vod'],['ti_fallback','title_fallback'],['ti_cat_cd','cat_countdown'],['ti_cat_vod','cat_vod'],['ti_ytcat','yt_category'],['ti_tw_cid','tw_client_id'],['ti_yt_cid','yt_client_id']])if(document.activeElement!==$(k)&&!$(k).dataset.dirty)$(k).value=TC[f]||'';
- $('ti_yt_sec').placeholder=s.yt_secret_set?'gespeichert ✓':'GOCSPX-…';
+ $('ti_cat_auto').checked=s.cat_vod_auto!==false;$('ti_yt_sec').placeholder=s.yt_secret_set?'gespeichert ✓':'GOCSPX-…';
  for(const[p,el,b]of[['twitch','tiTw','bTiTw'],['youtube','tiYt','bTiYt']]){const x=TI[p]||{};let h='';
   if(x.login)h=`<div class="vid" style="border-color:#ffc400"><div class="t">Öffne <a href="${esc(x.login.url)}" target="_blank" style="color:#ffc400">${esc(x.login.url)}</a><br>und gib diesen Code ein: <b style="font-size:20px;letter-spacing:2px">${esc(x.login.code)}</b></div></div>`;
   else if(x.connected)h=`<div class="hint" style="color:#4ade80">✅ Verbunden${x.name?' als <b>'+esc(x.name)+'</b>':''}${x.title?' · Titel gesetzt':''}</div>`;
@@ -3103,6 +3166,8 @@ class Handler(BaseHTTPRequestHandler):
                 if k in data:
                     upd[k] = (re.sub(r"\s+", " ", "".join(c for c in str(data[k]) if c.isprintable())).strip()[:n]
                               if k.startswith(("title", "cat_")) else str(data[k]).strip()[:n])
+            if "cat_vod_auto" in data:
+                upd["cat_vod_auto"] = bool(data["cat_vod_auto"])
             if "title_auto" in data:
                 upd["title_auto"] = bool(data["title_auto"])
             if "yt_category" in data and str(data["yt_category"]).isdigit():
@@ -3542,7 +3607,7 @@ def status():
         "titles": title_mgr.status(),
         "title_cfg": {k: cfg.get(k, DEFAULT_CFG[k]) for k in ("title_countdown", "title_done", "title_vod", "title_fallback", "cat_countdown", "cat_vod", "yt_category",
                                                             "tw_client_id", "yt_client_id")},
-        "yt_secret_set": bool(cfg.get("yt_client_secret")),
+        "yt_secret_set": bool(cfg.get("yt_client_secret")), "cat_vod_auto": cfg.get("cat_vod_auto", True),
         "vod_audio": cfg.get("vod_audio", "orig"), "vod_mix_volume": cfg.get("vod_mix_volume", 30),
         "games": {"auto": cfg.get("game_auto", True), "done_hours": cfg.get("game_done_hours", 12),
                   "current": cfg.get("game_current"), "next": cfg.get("game_next", ""),
