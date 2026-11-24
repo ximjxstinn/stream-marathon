@@ -127,6 +127,7 @@ DEFAULT_CFG = {
     "chat_channel": "ximjxstinn",
     "chat_blocklist": "",
     "chat_ignore": "nightbot,streamelements,moobot,streamlabs,fossabot",
+    "chat_vod_pos": "tr",             # Position des Chats bei VODs
     "bot_enabled": False,             # Chat-Bot: automatische Antworten + Betrüger bannen
     "bot_greet": True,
     "bot_greet_msg": "Hey @{name}! 👋 Das hier ist ein 24/7 VOD-Kanal – hier laufen Wiederholungen meiner Streams. "
@@ -436,14 +437,17 @@ class Ticker(threading.Thread):
     def _chat_files(self, cfg):
         out = {}
         on = cfg.get("chat_enabled", True) and cfg.get("chat_on_stream", True)
-        lay = CHAT_LAYOUT.get(cfg.get("cd_theme", "ps5"), CHAT_LAYOUT["ps5"])
+        vod = cfg.get("mode") == "twitch"
+        lay = (CHAT_LAYOUT_VOD.get(cfg.get("chat_vod_pos", "tr"), CHAT_LAYOUT_VOD["tr"]) if vod
+               else CHAT_LAYOUT.get(cfg.get("cd_theme", "ps5"), CHAT_LAYOUT["ps5"]))
         lines = twitch_chat.lines(lay[3]) if on else []
         lines = lines + [("", "")] * (CHAT_LINES - len(lines))        # direkt unter der Überschrift, neueste unten
         for i, (full, name) in enumerate(lines):
             out[f"chat_{i}"] = full or " "
             out[f"chat_n_{i}"] = name or " "
         n = len(twitch_chat.chatters)
-        out["chat_head"] = (f"CHAT  ·  {n} {'Person zählt' if n == 1 else 'Leute zählen'} mit runter"
+        out["chat_head"] = ((f"CHAT  ·  {n} {'Person' if n == 1 else 'Leute'} im Chat" if vod else
+                             f"CHAT  ·  {n} {'Person zählt' if n == 1 else 'Leute zählen'} mit runter")
                             if on and twitch_chat.connected else " ")
         txt, until = twitch_chat.banner
         out["chat_banner"] = txt if on and txt and time.time() < until else " "
@@ -1774,6 +1778,38 @@ CHAT_LAYOUT = {
     "konsole": ("w*0.765", 0.17, 0.021, 26),
     "standard": ("w*0.03", 0.06, 0.024, 40),
 }
+# Chat bei VODs: Position wählbar (x, y oben, Schriftgröße, max. Zeichen pro Zeile)
+CHAT_LAYOUT_VOD = {
+    "tl": ("w*0.015", 0.10, 0.022, 42), "tr": ("w*0.705", 0.10, 0.022, 42),
+    "bl": ("w*0.015", 0.58, 0.022, 42), "br": ("w*0.705", 0.52, 0.022, 42),
+}
+CHAT_VOD_POS = {"tl": "oben links", "tr": "oben rechts", "bl": "unten links", "br": "unten rechts"}
+
+
+def vod_chat_filters(cfg, h):
+    """Twitch-Chat über dem VOD (gleiche Dateien wie beim Countdown, eigene Position)."""
+    q = lambda p: "'" + p.replace("'", "") + "'"   # noqa
+    B, R = q(font("bold")), q(font("regular"))
+    col = color_hex(cfg)
+    cx, cy, cfs, _ = CHAT_LAYOUT_VOD.get(cfg.get("chat_vod_pos", "tr"), CHAT_LAYOUT_VOD["tr"])
+    for n in ["chat_head", "chat_banner"] + [f"chat_{i}" for i in range(CHAT_LINES)] + [f"chat_n_{i}" for i in range(CHAT_LINES)]:
+        if not os.path.exists(os.path.join(RUN_DIR, n + ".txt")):
+            atomic_write(os.path.join(RUN_DIR, n + ".txt"), " ")
+
+    def T(name, fnt, size, color, x, y, extra=""):
+        return (f"drawtext=fontfile={fnt}:textfile={q(os.path.join(RUN_DIR, name + '.txt'))}:reload=1:"
+                f"expansion=none:fontsize={size}:fontcolor={color}:x={x}:y={y}{extra}")
+    lh = cfs * 1.75
+    cpad = int(h * cfs * 0.35)
+    hide = "alpha='if(lt(text_w,h*0.05),0,1)'"
+    out = [T("chat_head", B, f"h*{cfs:.3f}", "white", cx, f"h*{cy:.3f}", f":box=1:boxcolor={col}@0.85:boxborderw={cpad}:{hide}")]
+    for i in range(CHAT_LINES):
+        y = f"h*{cy + lh * (i + 1.25):.4f}"
+        out.append(T(f"chat_{i}", R, f"h*{cfs:.3f}", "white", cx, y, f":box=1:boxcolor=black@0.55:boxborderw={cpad}:{hide}"))
+        out.append(T(f"chat_n_{i}", R, f"h*{cfs:.3f}", col, cx, y, f":borderw=1:bordercolor={col}"))
+    out.append(T("chat_banner", B, f"h*{cfs * 1.3:.3f}", "white", cx, f"h*{cy + lh * (CHAT_LINES + 1.6):.4f}",
+                 f":box=1:boxcolor={col}@0.92:boxborderw={int(h * cfs * 0.6)}:alpha='if(lt(text_w,h*0.1),0,1)'"))
+    return out
 
 
 # ----------------------------------------------------- Spiele-Warteschlange ----
@@ -2519,6 +2555,21 @@ class ChatBot(threading.Thread):
     def me(self):
         return ((title_mgr.tok.get("twitch") or {}).get("name") or "").lower()
 
+    def channel_id(self):
+        """ID des Kanals, in dessen Chat der Bot arbeitet (Twitch-Kanal aus „Chat im Stream“)."""
+        t = title_mgr.tok["twitch"]
+        login = re.sub(r"[^a-z0-9_]", "", (get_cfg().get("chat_channel") or "").lower())
+        if not login or login == (t.get("name") or "").lower():
+            return t["user_id"]
+        cache = self.__dict__.setdefault("_ids", {})
+        if login not in cache:
+            c, j = title_mgr._call("twitch", "GET", "https://api.twitch.tv/helix/users?login=" + login)
+            if c == 200 and j.get("data"):
+                cache[login] = j["data"][0]["id"]
+            else:
+                return t["user_id"]
+        return cache[login]
+
     @staticmethod
     def is_scam(text, cfg):
         t = re.sub(r"\s+", " ", text.lower())
@@ -2558,7 +2609,7 @@ class ChatBot(threading.Thread):
             return
         t = title_mgr.tok["twitch"]
         c, j = title_mgr._call("twitch", "POST", "https://api.twitch.tv/helix/moderation/bans?broadcaster_id="
-                               f"{t['user_id']}&moderator_id={t['user_id']}",
+                               f"{self.channel_id()}&moderator_id={t['user_id']}",
                                {"data": {"user_id": str(user_id), "reason": "Automatisch: Spam/Betrug (Viewer/Follower-Verkauf o. Ä.)"}})
         if c == 200:
             self.banned.appendleft({"name": name, "text": text[:120], "t": time.time()})
@@ -2570,7 +2621,7 @@ class ChatBot(threading.Thread):
     def poll_followers(self):
         t = title_mgr.tok["twitch"]
         c, j = title_mgr._call("twitch", "GET", "https://api.twitch.tv/helix/channels/followers?first=50&broadcaster_id="
-                               + t["user_id"])
+                               + self.channel_id())
         if c != 200:
             return
         rows = j.get("data") or []
@@ -2590,7 +2641,7 @@ class ChatBot(threading.Thread):
     def send(self, msg):
         t = title_mgr.tok["twitch"]
         c, j = title_mgr._call("twitch", "POST", "https://api.twitch.tv/helix/chat/messages",
-                               {"broadcaster_id": t["user_id"], "sender_id": t["user_id"], "message": msg})
+                               {"broadcaster_id": self.channel_id(), "sender_id": t["user_id"], "message": msg})
         if c != 200:
             self.status = f"Nachricht ging nicht: {title_mgr._err(j, c)}"
             log_line(f"Chat-Bot: {self.status}")
@@ -3604,6 +3655,7 @@ def build_vod_cmd(cfg, stream_url, start_pos, output, progress=None, audio_path=
             *vod_audio_args(cfg, audio_path),
             "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
                    f"fps={fps},setsar=1," + ",".join(runtime_filters()).replace("boxborderw=0", f"boxborderw={int(h * 0.012)}")
+                   + "," + ",".join(vod_chat_filters(cfg, h))
 
                    + ",format=yuv420p",
             "-c:v", "libx264", "-preset", live_preset(cfg), "-b:v", vb, "-maxrate", vb, "-bufsize", vb,
@@ -3812,6 +3864,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
 </section>
 <section class="card"><h2>💬 Chat im Stream</h2>
  <label class="chk" style="margin-top:0"><input type="checkbox" id="chOn"> Twitch-Chat im Stream anzeigen</label>
+ <label>Position bei VODs</label><select id="chVodPos" onchange="api('/api/config',{chat_vod_pos:this.value})"><option value="tl">oben links</option><option value="tr">oben rechts</option><option value="bl">unten links</option><option value="br">unten rechts</option></select>
  <div class="hint" id="chInfo"></div>
  <label>Twitch-Kanal</label><input type="text" id="chChan">
  <label>Discord-Link (für !discord)</label><input type="text" id="chDc" placeholder="discord.gg/…">
@@ -3896,7 +3949,7 @@ async function refresh(){
  $('ti_cat_auto').checked=s.cat_vod_auto!==false;$('ti_tw_sec').placeholder=s.tw_secret_set?'gespeichert ✓':'leer lassen bei „Öffentlich“';$('ti_yt_sec').placeholder=s.yt_secret_set?'gespeichert ✓':'GOCSPX-…';
  for(const[p,el,b]of[['twitch','tiTw','bTiTw'],['youtube','tiYt','bTiYt']]){const x=TI[p]||{};let h='';
   if(x.login)h=`<div class="vid" style="border-color:#ffc400"><div class="t">Öffne <a href="${esc(x.login.url)}" target="_blank" style="color:#ffc400">${esc(x.login.url)}</a><br>und gib diesen Code ein: <b style="font-size:20px;letter-spacing:2px">${esc(x.login.code)}</b></div></div>`;
-  else if(x.connected)h=`<div class="hint" style="color:#4ade80">✅ Verbunden${x.name?' als <b>'+esc(x.name)+'</b>':''}${x.title?' · Titel gesetzt':''}</div>`;
+  else if(x.connected)h=`<div class="hint" style="color:#4ade80">✅ Verbunden${x.name?' als <b>'+esc(x.name)+'</b>':''}${x.title?' · Titel gesetzt':''}</div>`+(p=='twitch'&&x.name&&s.chat&&s.chat.channel&&x.name.toLowerCase()!=s.chat.channel.toLowerCase()?`<div class="hint" style="color:#ffc400">⚠ Der 24/7-Stream läuft auf <b>${esc(s.chat.channel)}</b>, verbunden ist aber <b>${esc(x.name)}</b> – Titel und Kategorie werden dann bei ${esc(x.name)} geändert. Zum Ändern: Trennen und mit dem Konto <b>${esc(s.chat.channel)}</b> verbinden (vorher bei Twitch mit diesem Konto einloggen).</div>`:'');
   else h='<div class="hint">Nicht verbunden</div>';
   if(x.error)h+=`<div class="hint" style="color:#ff6b6b">${esc(x.error)}</div>`;else if(x.note)h+=`<div class="hint">${esc(x.note)}</div>`;
   $(el).innerHTML=h;$(b).textContent=x.connected?'✕ Trennen':(x.expired?'🔄 Neu verbinden':'🔗 Mit '+(p=='twitch'?'Twitch':'YouTube')+' verbinden');$(b).dataset.c=x.connected?1:''}
@@ -3905,6 +3958,7 @@ async function refresh(){
  if(document.activeElement!==$('gNext')){const up=(G.list||[]).filter(g=>!g.past&&g.id!=G.current);
   $('gNext').innerHTML='<option value="">Automatisch: das nächste nach Datum</option>'+up.map(g=>`<option value="${g.id}">${esc(g.name)} (${new Date(g.target).toLocaleDateString('de-DE')})</option>`).join('');$('gNext').value=up.some(g=>g.id==G.next)?G.next:''}
  $('gList').innerHTML=(G.list||[]).filter(g=>!g.past||g.id==G.current).map(g=>`<div class="vid"><div class="t">${g.id==G.current?'▶ ':''}<b>${esc(g.name)}</b><br><small>${new Date(g.target).toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})} Uhr${g.id==G.current?' · läuft gerade':''}${g.custom?' · eigenes':''}</small></div><div style="display:flex;gap:6px">${g.id!=G.current&&!g.past?`<button onclick="api('/api/game_switch',{id:'${g.id}'}).then(refresh)">Jetzt zeigen</button>`:''}${g.custom?`<button onclick="api('/api/game_remove',{id:'${g.id}'}).then(refresh)">✕</button>`:''}</div></div>`).join('');
+ if(document.activeElement!==$('chVodPos'))$('chVodPos').value=s.chat_vod_pos||'tr';
  const BO=s.bot||{};$('botOn').checked=BO.bot_enabled;$('botGreet').checked=BO.bot_greet;$('botFollow').checked=BO.bot_follow;$('botBan').checked=BO.bot_ban_scam;
  for(const[k,f]of[['botGreetMsg','bot_greet_msg'],['botFollowMsg','bot_follow_msg'],['botHours','bot_greet_hours'],['botWords','bot_scam_words']])if(document.activeElement!==$(k))$(k).value=BO[f]??'';
  $('botInfo').innerHTML=!BO.bot_enabled?'Aus':!BO.connected?'<span style="color:#ff6b6b">Erst Twitch unter „📝 Stream-Titel“ verbinden</span>':!BO.scopes_ok?'<span style="color:#ffc400">Bitte Twitch unter „📝 Stream-Titel“ einmal trennen und neu verbinden – der Bot braucht zusätzliche Rechte (Chat schreiben, bannen, Follower sehen).</span>':BO.status?'<span style="color:#ff6b6b">'+esc(BO.status)+'</span>':'<span style="color:#4ade80">✅ Bot läuft</span>';
@@ -4307,6 +4361,8 @@ class Handler(BaseHTTPRequestHandler):
                     upd["bot_greet_hours"] = max(0.0, min(168.0, float(data["bot_greet_hours"])))
                 except (TypeError, ValueError):
                     pass
+            if data.get("chat_vod_pos") in CHAT_LAYOUT_VOD:
+                upd["chat_vod_pos"] = data["chat_vod_pos"]
             if "slate_vod" in data:
                 upd["slate_vod"] = bool(data["slate_vod"])
             if "pause_on" in data and bool(data["pause_on"]) != bool(get_cfg().get("pause_on")):
@@ -4357,7 +4413,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:  # noqa
                     print("Ebenen-Fehler:", e, flush=True)
             v = streamer.vod
-            if changed & {"vod_audio", "vod_mix_volume"} and get_cfg()["mode"] == "twitch" and v["url"]:
+            if changed & {"vod_audio", "vod_mix_volume", "chat_vod_pos"} and get_cfg()["mode"] == "twitch" and v["url"]:
                 cur = streamer._vod_now()
                 streamer.request_swap(lambda: v.__setitem__("seek", cur))   # gleiche Stelle, neuer Ton – nahtlos
             restart = bool(changed & RESTART_KEYS)
@@ -4752,7 +4808,7 @@ def status():
         "vod_channel": cfg["vod_channel"],
         "session_started": streamer.session_started,
         "auto_update": cfg.get("auto_update", True),
-        "titles": title_mgr.status(),
+        "titles": title_mgr.status(), "chat_vod_pos": cfg.get("chat_vod_pos", "tr"),
         "bot": {**{k: cfg.get(k, DEFAULT_CFG[k]) for k in ("bot_enabled", "bot_greet", "bot_follow", "bot_ban_scam",
                                                          "bot_greet_msg", "bot_follow_msg", "bot_greet_hours",
                                                          "bot_scam_words")},
