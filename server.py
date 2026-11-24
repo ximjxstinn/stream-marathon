@@ -138,6 +138,11 @@ DEFAULT_CFG = {
     "bot_greet_hours": 0,             # 0 = auf jede Nachricht antworten, sonst gleiche Person erst nach x Stunden
     "bot_ban_scam": True,
     "bot_scam_words": "",             # eigene Wörter, die sofort zum Bann führen (Komma-getrennt)
+    "bot_timers": [                   # Nachrichten, die der Bot regelmäßig schreibt
+        {"id": "t1", "text": "📺 Das hier ist ein 24/7 VOD-Kanal – hier laufen Wiederholungen. Folg mir, um zu sehen, "
+                             "wann ich wieder live bin! 💜", "minutes": 15, "on": True},
+        {"id": "t2", "text": "💬 Komm auf meinen Discord: {discord}", "minutes": 25, "on": True},
+    ],
     "chat_keep_min": 10,
     "discord_link": "",
     "tiktok_link": "",
@@ -2648,12 +2653,30 @@ class ChatBot(threading.Thread):
         else:
             self.status = ""
 
+    def timers(self):
+        """Regelmäßige Nachrichten (Timer) – jede mit eigenem Abstand."""
+        cfg = get_cfg()
+        last = self.__dict__.setdefault("timer_last", {})
+        now = time.time()
+        for t in cfg.get("bot_timers") or []:
+            if not t.get("on", True) or not t.get("text"):
+                continue
+            if t["id"] not in last:
+                last[t["id"]] = now            # nach dem Start erst nach Ablauf der Zeit schreiben
+                continue
+            if now - last[t["id"]] >= max(1.0, float(t.get("minutes", 15))) * 60:
+                last[t["id"]] = now
+                msg = (t["text"].replace("{discord}", cfg.get("discord_link") or "")
+                       .replace("{tiktok}", cfg.get("tiktok_link") or ""))
+                self.say(msg, "")
+
     def run(self):
         last_poll = 0
         while True:
             try:
                 if self.ready() and title_mgr._refresh("twitch"):
                     self.status = self.status if self.status.startswith("Nachricht") else ""
+                    self.timers()
                     if time.time() - last_poll > 30:
                         last_poll = time.time()
                         self.poll_followers()
@@ -3859,6 +3882,11 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <textarea id="botFollowMsg" rows="3" style="width:100%;box-sizing:border-box" onchange="api('/api/config',{bot_follow_msg:this.value})"></textarea>
  <label class="chk"><input type="checkbox" id="botBan" onchange="api('/api/config',{bot_ban_scam:this.checked})"> Betrüger automatisch bannen (z. B. „Best viewers on …“, Follower-Verkauf, Krypto-Spam)</label>
  <label>Eigene Wörter, die sofort zum Bann führen (mit Komma trennen)</label><input type="text" id="botWords" placeholder="z. B. streamboo, cheap viewers" onchange="api('/api/config',{bot_scam_words:this.value})">
+ <label>⏰ Timer – Nachrichten, die der Bot regelmäßig schreibt</label>
+ <div id="botTimers"></div>
+ <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px"><input type="text" id="tmText" placeholder="Neue Nachricht, z. B. Folgt mir auf TikTok: {tiktok}" style="flex:3;min-width:180px">
+  <input type="text" id="tmMin" inputmode="decimal" placeholder="alle … Min." style="flex:1;min-width:90px"><button class="go" id="bTmAdd">＋ Hinzufügen</button></div>
+ <div class="hint">{discord} und {tiktok} werden durch deine Links ersetzt.</div>
  <div id="botBanned" style="margin-top:8px"></div>
  <div class="hint">{name} wird durch den Namen ersetzt. Mods, VIPs und Subs werden nie gebannt. Der Bot schreibt mit deinem Twitch-Konto (Verbindung unter „📝 Stream-Titel“).</div>
 </section>
@@ -3962,6 +3990,7 @@ async function refresh(){
  const BO=s.bot||{};$('botOn').checked=BO.bot_enabled;$('botGreet').checked=BO.bot_greet;$('botFollow').checked=BO.bot_follow;$('botBan').checked=BO.bot_ban_scam;
  for(const[k,f]of[['botGreetMsg','bot_greet_msg'],['botFollowMsg','bot_follow_msg'],['botHours','bot_greet_hours'],['botWords','bot_scam_words']])if(document.activeElement!==$(k))$(k).value=BO[f]??'';
  $('botInfo').innerHTML=!BO.bot_enabled?'Aus':!BO.connected?'<span style="color:#ff6b6b">Erst Twitch unter „📝 Stream-Titel“ verbinden</span>':!BO.scopes_ok?'<span style="color:#ffc400">Bitte Twitch unter „📝 Stream-Titel“ einmal trennen und neu verbinden – der Bot braucht zusätzliche Rechte (Chat schreiben, bannen, Follower sehen).</span>':BO.status?'<span style="color:#ff6b6b">'+esc(BO.status)+'</span>':'<span style="color:#4ade80">✅ Bot läuft</span>';
+ $('botTimers').innerHTML=(BO.timers||[]).length?BO.timers.map(t=>`<div class="vid"${t.on?'':' style="opacity:.5"'}><div class="t">${esc(t.text)}<br><small>alle ${String(t.minutes).replace('.',',')} Min.${t.on?'':' · aus'}</small></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end" data-id="${t.id}"><button onclick="tmDo('now',this)" title="Jetzt senden">▶</button><button onclick="tmEdit(this)" title="Bearbeiten" data-text="${esc(t.text)}" data-min="${t.minutes}">✏</button><button onclick="tmDo('toggle',this)">${t.on?'Aus':'An'}</button><button onclick="tmDo('remove',this)">✕</button></div></div>`).join(''):'<div class="empty">Noch keine Timer.</div>';
  $('botBanned').innerHTML=(BO.banned||[]).length?'<div class="hint">Zuletzt gebannt:</div>'+BO.banned.map(b=>`<div class="vid"><div class="t"><b>${esc(b.name)}</b> · ${new Date(b.t*1000).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})}<br><small>${esc(b.text)}</small></div></div>`).join(''):'';
  const CH=s.chat||{};$('chOn').checked=CH.on_stream&&CH.enabled;
  $('chInfo').textContent=CH.connected?`✅ Verbunden mit #${CH.channel} · ${CH.chatters} ${CH.chatters==1?'Person hat':'Leute haben'} in dieser Sitzung geschrieben`:'⏳ Verbinde mit dem Twitch-Chat …';
@@ -4029,6 +4058,9 @@ async function twSeek(d){const j=await api('/api/twpl_seek',{delta:d});if(j.ok)s
 async function twJump(){const p=$('twTo').value.trim().split(':').map(Number);if(!p.length||p.some(isNaN))return alert('Zeit z. B. so eingeben: 1:23:45 oder 45:00');
  const sec=p.reduce((a,x)=>a*60+x,0);const j=await api('/api/twpl_seek',{to:sec});if(j.ok){$('twTo').value='';setTimeout(refresh,2500)}}
 function vodMix(){api('/api/config',{vod_mix_volume:+$('twMix').value,vod_music_volume:+$('twMus').value})}
+let tmEditId='';
+async function tmDo(a,b){const id=b.parentNode.dataset.id;if(a=='remove'&&!confirm('Timer löschen?'))return;await api('/api/bot_timer_'+a,{id});refresh()}
+function tmEdit(b){tmEditId=b.parentNode.dataset.id;$('tmText').value=b.dataset.text;$('tmMin').value=b.dataset.min;$('bTmAdd').textContent='💾 Speichern';$('tmText').focus()}
 async function twMv(b,to){await api('/api/twpl_move',{url:b.parentNode.dataset.u,to});refresh()}
 async function twPlay(b,now){b.disabled=true;await api('/api/twpl_play',{url:b.parentNode.dataset.u,now:!!now});setTimeout(refresh,now?1500:200)}
 async function twRemove(u){if(confirm('VOD aus der Playlist entfernen?')){await api('/api/twpl_remove',{url:u});refresh()}}
@@ -4075,6 +4107,8 @@ async function tiConnect(p,b){if(b.dataset.c){if(confirm('Verbindung trennen?'))
  await api('/api/config',c);delete $('ti_tw_cid').dataset.dirty;delete $('ti_yt_cid').dataset.dirty;$('ti_yt_sec').value='';$('ti_tw_sec').value='';
  const j=await api('/api/title_login',{platform:p});if(j.ok)refresh()}
 $('bTiTw').onclick=function(){tiConnect('twitch',this)};$('bTiYt').onclick=function(){tiConnect('youtube',this)};
+$('bTmAdd').onclick=async()=>{const j=await api('/api/bot_timer_save',{id:tmEditId,text:$('tmText').value,minutes:$('tmMin').value||15});
+ if(j.ok){tmEditId='';$('tmText').value=$('tmMin').value='';$('bTmAdd').textContent='＋ Hinzufügen';refresh()}};
 $('bGAdd').onclick=async()=>{const j=await api('/api/game_add',{name:$('gName').value,short:$('gShort').value,target:$('gWhen').value});if(j.ok){$('gName').value=$('gShort').value=$('gWhen').value='';refresh()}};
 $('chOn').onchange=e=>api('/api/config',{chat_on_stream:e.target.checked,chat_enabled:true});
 $('bChSave').onclick=async()=>{const j=await api('/api/config',{chat_channel:$('chChan').value,discord_link:$('chDc').value,tiktok_link:$('chTt').value,chat_blocklist:$('chBlock').value,chat_ignore:$('chIgn').value});if(j.ok)alert('Gespeichert ✅')};
@@ -4502,6 +4536,37 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"error": "Der Stream läuft gerade nicht"})
             streamer.session_started = ts
             streamer._save_state()
+        elif path == "/api/bot_timer_save":
+            text = re.sub(r"[\r\n]+", " ", str(data.get("text", ""))).strip()[:450]
+            if not text:
+                return self._send(200, {"error": "Text fehlt"})
+            try:
+                minutes = max(1.0, min(1440.0, float(str(data.get("minutes", 15)).replace(",", "."))))
+            except ValueError:
+                return self._send(200, {"error": "Ungültige Minuten"})
+            timers = list(get_cfg().get("bot_timers") or [])
+            tid = str(data.get("id") or "")
+            old = next((t for t in timers if t["id"] == tid), None)
+            if old:
+                old.update(text=text, minutes=minutes)
+            else:
+                timers.append({"id": "t" + secrets.token_hex(3), "text": text, "minutes": minutes, "on": True})
+            set_cfg(bot_timers=timers)
+        elif path == "/api/bot_timer_remove":
+            set_cfg(bot_timers=[t for t in (get_cfg().get("bot_timers") or []) if t["id"] != data.get("id")])
+        elif path == "/api/bot_timer_toggle":
+            timers = list(get_cfg().get("bot_timers") or [])
+            for t in timers:
+                if t["id"] == data.get("id"):
+                    t["on"] = not t.get("on", True)
+            set_cfg(bot_timers=timers)
+        elif path == "/api/bot_timer_now":
+            t = next((t for t in (get_cfg().get("bot_timers") or []) if t["id"] == data.get("id")), None)
+            if t:
+                cfg_ = get_cfg()
+                chat_bot.say(t["text"].replace("{discord}", cfg_.get("discord_link") or "")
+                             .replace("{tiktok}", cfg_.get("tiktok_link") or ""), "")
+                chat_bot.__dict__.setdefault("timer_last", {})[t["id"]] = time.time()
         elif path == "/api/title_login":
             plat = "youtube" if data.get("platform") == "youtube" else "twitch"
             err = title_mgr.start_login(plat)
@@ -4816,7 +4881,7 @@ def status():
                 "connected": bool((title_mgr.tok.get("twitch") or {}).get("user_id"))
                              and not (title_mgr.tok.get("twitch") or {}).get("dead"),
                 "scopes_ok": BOT_SCOPES.issubset(set((title_mgr.tok.get("twitch") or {}).get("scopes") or [])),
-                "banned": list(chat_bot.banned)[:5]},
+                "banned": list(chat_bot.banned)[:5], "timers": cfg.get("bot_timers") or []},
         "title_cfg": {k: cfg.get(k, DEFAULT_CFG[k]) for k in ("title_countdown", "title_done", "title_vod", "title_fallback", "cat_countdown", "cat_vod", "yt_category",
                                                             "tw_client_id", "yt_client_id")},
         "yt_secret_set": bool(cfg.get("yt_client_secret")), "tw_secret_set": bool(cfg.get("tw_client_secret")), "cat_vod_auto": cfg.get("cat_vod_auto", True),
