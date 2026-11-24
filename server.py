@@ -688,7 +688,7 @@ class AudioFeeder(threading.Thread):
 
     def _decoder(self, song, pos=0.0):
         cfg = get_cfg()
-        if cfg.get("mode") == "twitch" and cfg.get("vod_audio") in ("music", "mix"):
+        if cfg.get("mode") == "twitch" and cfg.get("vod_audio") in ("music", "mix") and not cfg.get("pause_on"):
             v = max(0, min(100, int(cfg.get("vod_music_volume", 20))))
             vol = 0 if v == 0 else 10 ** ((-40 + 40 * v / 100) / 20)   # wie ein echter Lautstärkeregler: unten richtig leise
         else:
@@ -4125,7 +4125,7 @@ class Handler(BaseHTTPRequestHandler):
             old = get_cfg()
             set_cfg(**upd)
             changed = {k for k, v in upd.items() if old.get(k) != v}
-            if changed & {"cd_volume", "vod_music_volume", "vod_audio", "mode"}:
+            if changed & {"cd_volume", "vod_music_volume", "vod_audio", "mode", "pause_on"}:
                 audio_feeder.reload = True           # Lautstärke live ändern
             if "quality" in changed:
                 threading.Thread(target=lambda: _safe(build_slate_loop), daemon=True).start()
