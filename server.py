@@ -1164,6 +1164,8 @@ class StatsTracker(threading.Thread):
         """Neue Sitzung nur für eine Plattform (von Hand neu gestartet oder geplanter neuer Livestream)."""
         self.d(k).update(session=0, session_drops=0, current=0, since=time.time())
         self.save()
+        if title_mgr:
+            title_mgr.platform_reset(k)       # alte Startzeit von Twitch/YouTube nicht mehr verwenden
 
     def reset_all(self):
         self.data = {"dest": {}, "alltime": 0}
@@ -1196,7 +1198,8 @@ class StatsTracker(threading.Thread):
                     self.data["alltime"] = self.data.get("alltime", 0) + 1   # Sekunden, in denen irgendwo live
                 for k, dd in st["dest"].items():   # echte Startzeit von Twitch/YouTube hat Vorrang
                     ps = title_mgr.platform_start.get(k)
-                    if ps and dd.get("live") and time.time() - ps[1] < 300 and 0 <= time.time() - ps[0] < 60 * 86400:
+                    if (ps and dd.get("live") and time.time() - ps[1] < 300 and 0 <= time.time() - ps[0] < 60 * 86400
+                            and ps[1] > title_mgr.reset_at.get(k, 0) and ps[0] > title_mgr.reset_at.get(k, 0) - 600):
                         x = self.d(k)
                         x["session"] = int(time.time() - ps[0])
                         x["since"] = ps[0]
@@ -1216,6 +1219,7 @@ class StatsTracker(threading.Thread):
                         x["current"] += 1
                         x["longest"] = max(x["longest"], x["current"])
                     elif self._was_live.get(k) and want:
+                        title_mgr.repoll_soon()           # vielleicht neuer Livestream -> Startzeit gleich neu holen
                         x["drops"] += 1                    # war live, ist es plötzlich nicht mehr
                         x["session_drops"] += 1
                         x["current"] = 0
@@ -1976,6 +1980,16 @@ class TitleManager(threading.Thread):
         self.last = {"twitch": (None, 0), "youtube": (None, 0)}
         self.wake = threading.Event()
         self.platform_start = {}    # Plattform -> (Startzeit des laufenden Livestreams, abgefragt um)
+        self.reset_at = {}          # Plattform -> wann von Hand neu gestartet
+
+    def platform_reset(self, k):
+        self.platform_start.pop(k, None)
+        self.reset_at[k] = time.time()
+        self.repoll_soon()
+
+    def repoll_soon(self):
+        """In ca. 30 s neu fragen (die Plattform braucht einen Moment für den neuen Livestream)."""
+        self._starts_at = time.time() - 30
 
     def _save(self):
         save_json(TOKENS_PATH, self.tok)
@@ -2183,9 +2197,12 @@ class TitleManager(threading.Thread):
     def _set_start(self, plat, iso):
         from datetime import datetime
         try:
-            self.platform_start[plat] = (datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp(), time.time())
+            t = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
         except ValueError:
-            pass
+            return
+        if t < self.reset_at.get(plat, 0) - 600:
+            return                     # noch der alte Livestream (Plattform hat den Neustart noch nicht gemeldet)
+        self.platform_start[plat] = (t, time.time())
 
     def _poll_starts(self):
         """Echte Startzeit des laufenden Livestreams von Twitch/YouTube holen (für die LIVE-Zeit im Stream)."""
