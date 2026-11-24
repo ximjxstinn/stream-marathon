@@ -715,7 +715,9 @@ class AudioFeeder(threading.Thread):
 
     def _decoder(self, song, pos=0.0):
         cfg = get_cfg()
-        if cfg.get("mode") == "twitch" and cfg.get("vod_audio") in ("music", "mix") and not cfg.get("pause_on"):
+        if cfg.get("mode") == "twitch" and cfg.get("pause_on") and cfg.get("vod_audio") not in ("music", "mix"):
+            vol = 0                     # Pause bei VODs: Musik genau wie beim VOD (dort aus -> hier aus)
+        elif cfg.get("mode") == "twitch" and cfg.get("vod_audio") in ("music", "mix"):
             v = max(0, min(100, int(cfg.get("vod_music_volume", 20))))
             vol = 0 if v == 0 else 10 ** ((-40 + 40 * v / 100) / 20)   # wie ein echter Lautstärkeregler: unten richtig leise
         else:
@@ -930,10 +932,32 @@ def pause_filters(h):
             f"x=(w-text_w)/2:y=h*0.54:box=1:boxcolor=black@0.6:boxborderw={int(h * 0.018)}:alpha='if(lt(text_w,h*0.05),0,1)'"]
 
 
+def ensure_pause_image():
+    """Ohne eigenes Pause-Bild: das Standard-Design aus dem Update-Paket verwenden.
+    Einmalig wird ein älteres Bild durch das neue "Kurze Pause"-Design ersetzt."""
+    if not get_cfg().get("pause_design_v1") and os.path.exists(PAUSE_ORIG):
+        os.replace(PAUSE_ORIG, PAUSE_ORIG + ".alt.png")
+    if not get_cfg().get("pause_design_v1"):
+        set_cfg(pause_design_v1=True)
+    if os.path.exists(PAUSE_ORIG):
+        return
+    try:
+        import urllib.request
+        with urllib.request.urlopen(RAW_BASE + "stream24/assets/pause_default.png", timeout=20) as r:
+            data = r.read()
+        if len(data) > 10000:
+            with open(PAUSE_ORIG + ".dl", "wb") as fh:
+                fh.write(data)
+            os.replace(PAUSE_ORIG + ".dl", PAUSE_ORIG)
+    except Exception as e:  # noqa
+        print("Pause-Bild:", e, flush=True)
+
+
 def pause_frame(cfg):
     """Fertiges Hintergrundbild für "Kurze Pause": eigenes Bild verschwommen als Hintergrund,
     scharf in der Mitte mit leuchtendem Rahmen. Ohne Bild: lila Verlauf."""
     w, h, _, _ = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
+    ensure_pause_image()
     out = os.path.join(RUN_DIR, f"pause_frame_{w}x{h}.png")
     src_t = os.path.getmtime(PAUSE_ORIG) if os.path.exists(PAUSE_ORIG) else 0
     meta = load_json(out + ".json", {})
@@ -3188,7 +3212,7 @@ class Streamer:
         threading.Thread(target=self._pump, args=(new,), daemon=True).start()
         threading.Thread(target=self._stderr_reader, args=(new, log), daemon=True).start()
         t0 = time.time()
-        while not ready.is_set() and new.poll() is None and time.time() - t0 < 20 and self.want:
+        while not ready.is_set() and new.poll() is None and time.time() - t0 < 10 and self.want:
             time.sleep(0.2)
         if not ready.is_set() or new.poll() is not None or not self.want:
             rc = new.poll()
@@ -3200,7 +3224,7 @@ class Streamer:
             audio_feeder.stop_tee()
             if not self.want:
                 return
-            why = f"ffmpeg beendet mit Code {rc}" if rc is not None else "kein Bild nach 20 s"
+            why = f"ffmpeg beendet mit Code {rc}" if rc is not None else "kein Bild nach 10 s"
             why += f", Ton-Pipe {'verbunden' if tee_ok else 'nicht verbunden' if tee else 'normal'}"
             if new.__dict__.get("last_err"):
                 why += f", ffmpeg: {new.last_err}"
@@ -4460,7 +4484,9 @@ class Handler(BaseHTTPRequestHandler):
             old = get_cfg()
             set_cfg(**upd)
             changed = {k for k, v in upd.items() if old.get(k) != v}
-            if changed & {"cd_volume", "vod_music_volume", "vod_audio", "mode", "pause_on"}:
+            if changed & {"cd_volume", "vod_music_volume", "vod_audio", "mode"} or (
+                    "pause_on" in changed and get_cfg().get("mode") == "twitch"
+                    and get_cfg().get("vod_audio") not in ("music", "mix")):
                 audio_feeder.reload = True           # Lautstärke live ändern
             if "quality" in changed:
                 threading.Thread(target=lambda: _safe(build_slate_loop), daemon=True).start()
@@ -5001,6 +5027,7 @@ def main():
         print("Ebenen-Fehler:", e, flush=True)
     ticker.tick()
     threading.Thread(target=lambda: _safe(build_slate_loop), daemon=True).start()
+    threading.Thread(target=lambda: _safe(pause_frame, get_cfg()), daemon=True).start()   # Pause sofort bereit
     if not load_json(VERSION_PATH, {}).get("sha"):
         _safe(lambda: save_json(VERSION_PATH, {"sha": latest_sha(), "installed": time.time()}))
     for t in (ticker, image_feeder, audio_feeder, stats, auto_updater, twitch_chat, game_queue, title_mgr, slate_keeper, chat_bot):
