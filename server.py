@@ -536,6 +536,78 @@ class Ticker(threading.Thread):
         self.n += 1
 
 
+HANDOFF_PATH = os.path.join(RUN_DIR, "handoff.json")
+_HANDOFF = {}
+try:   # nach einem Update (exec) die laufenden Pipes/Prozesse übernehmen
+    _h = load_json(HANDOFF_PATH, {})
+    if _h:
+        os.remove(HANDOFF_PATH)
+        if time.time() - _h.get("t", 0) < 60:
+            _HANDOFF = _h
+except Exception:  # noqa
+    _HANDOFF = {}
+
+
+def _handoff_file(key, mode="wb"):
+    """Datei-Objekt für eine übernommene Pipe (einmalig), sonst None."""
+    fd = _HANDOFF.pop(key, None)
+    if fd is None:
+        return None
+    try:
+        os.set_blocking(fd, True)
+        return open(fd, mode, buffering=0)
+    except OSError:
+        return None
+
+
+def big_pipe(f):
+    """Pipe-Puffer auf 1 MB – so übersteht das Bild den kurzen Moment eines Updates."""
+    try:
+        import fcntl
+        fcntl.fcntl(f.fileno(), 1031, 1 << 20)        # F_SETPIPE_SZ
+    except Exception:  # noqa
+        pass
+
+
+class Adopted:
+    """Ein ffmpeg, das die vorige Programm-Version gestartet hat und jetzt weiterläuft (verhält sich wie Popen)."""
+    def __init__(self, pid, out_fd, err_fd):
+        self.pid, self.returncode = pid, None
+        os.set_blocking(out_fd, True)
+        self.stdout = open(out_fd, "rb", buffering=0)
+        self.stderr = open(err_fd, "rb", buffering=0) if err_fd is not None else open(os.devnull, "rb")
+
+    def poll(self):
+        if self.returncode is None:
+            try:
+                pid, st = os.waitpid(self.pid, os.WNOHANG)
+                if pid:
+                    self.returncode = os.waitstatus_to_exitcode(st)
+            except ChildProcessError:
+                self.returncode = -1
+        return self.returncode
+
+    def wait(self, timeout=None):
+        t0 = time.time()
+        while self.poll() is None:
+            if timeout is not None and time.time() - t0 > timeout:
+                raise subprocess.TimeoutExpired("ffmpeg", timeout)
+            time.sleep(0.05)
+        return self.returncode
+
+    def terminate(self):
+        try:
+            os.kill(self.pid, 15)
+        except OSError:
+            pass
+
+    def kill(self):
+        try:
+            os.kill(self.pid, 9)
+        except OSError:
+            pass
+
+
 class ImageFeeder(threading.Thread):
     """Schiebt 1x pro Sekunde das aktuelle Hintergrundbild als Rohbild (RGBA) in ffmpeg.
     Rohbilder haben eine feste Größe -> ffmpeg muss nichts analysieren und startet sofort."""
@@ -564,7 +636,8 @@ class ImageFeeder(threading.Thread):
     def run(self):
         while True:
             try:
-                with open(IMAGE_FIFO, "wb", buffering=0) as fd:   # wartet, bis ffmpeg liest
+                with (_handoff_file("image_fd") or open(IMAGE_FIFO, "wb", buffering=0)) as fd:   # wartet, bis ffmpeg liest
+                    self.fd = fd
                     start, i = time.monotonic(), 0
                     while True:
                         ahead = start + i - time.monotonic()
@@ -587,7 +660,10 @@ class AudioFeeder(threading.Thread):
         self.reload = False    # Lautstärke geändert -> gleicher Song, neue Lautstärke
         self.current = None
         self.bad = {}           # Song -> Zeitpunkt, bis wann er übersprungen wird (kaputte Datei)
-        self.path = AUDIO_FIFO  # aktuelle Pipe
+        self.path = _HANDOFF.get("audio_path") or AUDIO_FIFO  # aktuelle Pipe
+        if _HANDOFF.get("song"):
+            self.resume = (_HANDOFF["song"], _HANDOFF.get("song_pos", 0))
+        self.dec, self.pos, self.fd = None, 0, None
         self.tee = None         # zweite Pipe während eines nahtlosen Wechsels (fd)
         self.tee_path = None
 
@@ -625,7 +701,8 @@ class AudioFeeder(threading.Thread):
     def run(self):
         while True:
             try:
-                with open(self.path, "wb", buffering=0) as fd:
+                with (_handoff_file("audio_fd") or open(self.path, "wb", buffering=0)) as fd:
+                    self.fd = fd
                     self._feed(fd)
             except (BrokenPipeError, OSError):
                 if self.tee is not None and self.tee_path:   # altes VOD weg -> neue Pipe wird die Haupt-Pipe
@@ -637,8 +714,13 @@ class AudioFeeder(threading.Thread):
     def _feed(self, fd):
         start, sent = time.monotonic(), 0
         dec, order, pos = None, [], 0
+        res = self.__dict__.pop("resume", None)          # nach Update: gleicher Song an gleicher Stelle
+        if res and os.path.exists(res[0]):
+            self.current, pos = res[0], int(res[1] * self.RATE) // 4 * 4
+            dec = self._decoder(self.current, res[1])
         try:
             while True:
+                self.dec, self.pos = dec, pos
                 if dec and (self.skip or self.reload):
                     dec.kill()
                     dec.wait()
@@ -1399,9 +1481,52 @@ def do_update(sha=None):
 def restart_panel():
     try:
         stats.save()
+        if _handoff_exec():
+            return
         streamer._kill()
     finally:
         os._exit(0)                                   # systemd startet das Panel neu (Stream bleibt online)
+
+
+def _handoff_exec():
+    """Update ohne Unterbrechung: neue Programm-Version im selben Prozess starten (exec) und das laufende
+    ffmpeg samt Pipes übergeben – das VOD läuft einfach weiter."""
+    s = streamer
+    try:
+        if not (s and s.want and s.source_alive() and s.proc is s.active and not s.swap_req
+                and isinstance(s.proc, (subprocess.Popen, Adopted)) and s.kind):
+            return False
+        v = s.vod
+        h = {"t": time.time(), "pid": s.proc.pid, "kind": s.kind, "progress": VOD_PROGRESS,
+             "out_fd": s.proc.stdout.fileno(), "err_fd": s.proc.stderr.fileno() if s.proc.stderr else None,
+             "retimer": {"delta": s.retimer.delta, "last_dts": s.retimer.last_dts},
+             "vod_pos": v["pos"] if v.get("url") else None, "audio_path": audio_feeder.path}
+        s._save_vod_now()
+        fds = [h["out_fd"]] + ([h["err_fd"]] if h["err_fd"] is not None else [])
+        for key, obj in (("fifo_fd", getattr(s, "fifo_fd", None)), ("audio_fd", audio_feeder.fd),
+                         ("image_fd", getattr(image_feeder, "fd", None))):
+            if obj is not None and not obj.closed:
+                h[key] = obj.fileno()
+                fds.append(h[key])
+        if audio_feeder.current and audio_feeder.dec:
+            h["song"], h["song_pos"] = audio_feeder.current, audio_feeder.pos / audio_feeder.RATE
+            try:
+                audio_feeder.dec.kill()
+            except OSError:
+                pass
+        for fd in fds:
+            os.set_inheritable(fd, True)
+        save_json(HANDOFF_PATH, h)
+        log_line("Update: Programm wird ausgetauscht – das Bild läuft weiter")
+        sys.stdout.flush()
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except Exception as e:  # noqa
+        print("Übergabe ging nicht:", e, flush=True)
+        try:
+            os.remove(HANDOFF_PATH)
+        except OSError:
+            pass
+        return False
 
 
 class AutoUpdater(threading.Thread):
@@ -2454,6 +2579,21 @@ class Streamer:
                 x["session"] = max(x["session"], int(d.get("uptime", 0)))
                 x["current"] = x["longest"] = max(x["longest"], int(d.get("uptime", 0)))
                 x["total"] = max(x["total"], x["session"])
+        h = _HANDOFF
+        if st.get("want") and h.get("pid") and h.get("out_fd") is not None:
+            try:
+                os.kill(h["pid"], 0)
+                self.adopted = Adopted(h["pid"], h["out_fd"], h.get("err_fd"))
+                self.kind = h.get("kind", "")
+                global VOD_PROGRESS
+                VOD_PROGRESS = h.get("progress") or VOD_PROGRESS
+                r = h.get("retimer") or {}
+                self.retimer.delta, self.retimer.last_dts = r.get("delta", 0), r.get("last_dts")
+                if h.get("vod_pos") is not None and self.vod.get("url"):
+                    self.vod["pos"] = h["vod_pos"]
+            except Exception as e:  # noqa
+                print("Übernahme fehlgeschlagen:", e, flush=True)
+                self.__dict__.pop("adopted", None)
         if st.get("want"):
             self.start()  # nach Neustart/Update automatisch weitermachen
 
@@ -2559,6 +2699,11 @@ class Streamer:
             self.vod["pos"] = max(0.0, float(st.get("pos") or 0) - 5)   # 5 s zurück, damit nichts fehlt
             log_line(f"Twitch-VOD wird fortgesetzt: {self.vod['title']} ab {int(self.vod['pos'] // 60)} min")
 
+    def _save_vod_now(self):
+        v = self.vod
+        save_json(self.VOD_STATE, {"url": v.get("url"), "last": v.get("last"), "title": v.get("title"),
+                                   "duration": v.get("duration"), "next": v.get("next"), "pos": round(self._vod_now(), 1)})
+
     def _save_vod_loop(self):
         last = None
         while True:
@@ -2650,7 +2795,8 @@ class Streamer:
         """Schreibt das fertige Bild in die Pipe zum Sender."""
         while True:
             try:
-                with open(INPUT_FIFO, "wb", buffering=0) as fd:   # wartet, bis der Sender liest
+                with (_handoff_file("fifo_fd") or open(INPUT_FIFO, "wb", buffering=0)) as fd:   # wartet, bis der Sender liest
+                    self.fifo_fd = fd
                     while True:
                         fd.write(self.outq.get())
             except (BrokenPipeError, OSError):
@@ -2774,64 +2920,80 @@ class Streamer:
         except OSError:
             pass
 
+    def _build(self, cfg):
+        """Befehl für die nächste Bild-Quelle. None = noch nichts zu tun (Meldung steht in status_msg)."""
+        if not any(cfg.get(d["enabled"]) and cfg.get(d["key"]) for d in DESTINATIONS.values()):
+            self.status_msg = "Kein Ziel aktiv – Stream-Key bei Twitch oder YouTube eintragen"
+            time.sleep(3)
+            return None
+        out = "pipe:1"
+        if cfg.get("pause_on") and cfg["mode"] in ("twitch", "countdown"):
+            cmd, info, self.kind = build_pause_cmd(cfg, out), "Kurze Pause", "pause"
+        elif cfg["mode"] == "countdown":
+            try:
+                cmd = build_countdown_cmd(cfg, out, fmt="mpegts")
+                self.kind = "countdown"
+            except Exception as e:  # noqa
+                self.status_msg = f"Fehler: {e}"
+                time.sleep(5)
+                return None
+            info = "Countdown"
+        elif cfg["mode"] == "twitch":
+            item = self._next_vod(cfg)
+            if not item:
+                self.status_msg = "Twitch-Playlist ist leer – im Panel VODs hinzufügen"
+                time.sleep(3)
+                return None
+            try:
+                self.status_msg = f"Hole Abspiel-Link: {item['title']} …"
+                surl = resolve_stream_url(item["url"])
+            except Exception as e:  # noqa
+                log_line(f"Twitch-VOD '{item['title']}' nicht abspielbar: {e} – nächstes")
+                _stream_url_cache.pop(item["url"], None)
+                self._vod_done()
+                time.sleep(2)
+                return None
+            cmd = build_vod_cmd(cfg, surl, self.vod["pos"], out)
+            self.kind = "vod_music" if self._uses_audio("vod", cfg) else "vod"
+            info = f"Twitch-VOD: {item['title']} ab {int(self.vod['pos'] // 60)} min"
+        else:
+            vids = [v for v in list_videos() if v["quality"] in ("", cfg["quality"])]
+            if not vids:
+                self.status_msg = "Keine fertigen Videos vorhanden"
+                time.sleep(3)
+                return None
+            self._write_playlist(vids, cfg["shuffle"])
+            self._dirty = False
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-re",
+                   "-f", "concat", "-safe", "0", "-i", PLAYLIST_PATH,
+                   "-c", "copy", "-f", "mpegts", out]
+            info = f"{len(vids)} Videos"
+        return cmd, info
+
     def _loop(self):
         while self.want:
             cfg = get_cfg()
-            if not any(cfg.get(d["enabled"]) and cfg.get(d["key"]) for d in DESTINATIONS.values()):
-                self.status_msg = "Kein Ziel aktiv – Stream-Key bei Twitch oder YouTube eintragen"
-                time.sleep(3)
-                continue
-            out = "pipe:1"
-            if cfg.get("pause_on") and cfg["mode"] in ("twitch", "countdown"):
-                cmd, info, self.kind = build_pause_cmd(cfg, out), "Kurze Pause", "pause"
-            elif cfg["mode"] == "countdown":
-                try:
-                    cmd = build_countdown_cmd(cfg, out, fmt="mpegts")
-                    self.kind = "countdown"
-                except Exception as e:  # noqa
-                    self.status_msg = f"Fehler: {e}"
-                    time.sleep(5)
+            adopted = self.__dict__.pop("adopted", None)
+            if adopted is None:
+                built = self._build(cfg)
+                if built is None:
                     continue
-                info = "Countdown"
-            elif cfg["mode"] == "twitch":
-                item = self._next_vod(cfg)
-                if not item:
-                    self.status_msg = "Twitch-Playlist ist leer – im Panel VODs hinzufügen"
-                    time.sleep(3)
-                    continue
-                try:
-                    self.status_msg = f"Hole Abspiel-Link: {item['title']} …"
-                    surl = resolve_stream_url(item["url"])
-                except Exception as e:  # noqa
-                    log_line(f"Twitch-VOD '{item['title']}' nicht abspielbar: {e} – nächstes")
-                    _stream_url_cache.pop(item["url"], None)
-                    self._vod_done()
-                    time.sleep(2)
-                    continue
-                cmd = build_vod_cmd(cfg, surl, self.vod["pos"], out)
-                self.kind = "vod_music" if self._uses_audio("vod", cfg) else "vod"
-                info = f"Twitch-VOD: {item['title']} ab {int(self.vod['pos'] // 60)} min"
-            else:
-                vids = [v for v in list_videos() if v["quality"] in ("", cfg["quality"])]
-                if not vids:
-                    self.status_msg = "Keine fertigen Videos vorhanden"
-                    time.sleep(3)
-                    continue
-                self._write_playlist(vids, cfg["shuffle"])
-                self._dirty = False
-                cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-re",
-                       "-f", "concat", "-safe", "0", "-i", PLAYLIST_PATH,
-                       "-c", "copy", "-f", "mpegts", out]
-                info = f"{len(vids)} Videos"
+                cmd, info = built
             ran = 0
             try:
-                log_line(f"Bild-Quelle startet ({info})")
                 log = open(LOG_PATH, "a", encoding="utf-8")
-                with self.swap_lock:
-                    self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                                 stderr=subprocess.PIPE, env=FF_ENV, bufsize=0)
-                    self.active = self.proc
-                    self.retimer.switch()
+                if adopted is not None:               # nach einem Update: laufende Quelle einfach weiter nutzen
+                    log_line("Update installiert – Bild läuft ohne Unterbrechung weiter")
+                    with self.swap_lock:
+                        self.proc = self.active = adopted
+                else:
+                    log_line(f"Bild-Quelle startet ({info})")
+                    with self.swap_lock:
+                        self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                                     stderr=subprocess.PIPE, env=FF_ENV, bufsize=0)
+                        self.active = self.proc
+                        self.retimer.switch()
+                    big_pipe(self.proc.stdout)
                 threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
                 self.lag = 0.0
                 threading.Thread(target=self._stderr_reader, args=(self.proc, log), daemon=True).start()
@@ -2840,7 +3002,7 @@ class Streamer:
                 reason = None
                 while self.proc.poll() is None:
                     time.sleep(1)
-                    if self.swap_req and get_cfg()["mode"] == "twitch":
+                    if self.swap_req and get_cfg()["mode"] in ("twitch", "countdown"):
                         self._do_swap(get_cfg())
                         continue
                     if time.time() - self.last_data > WATCHDOG_SECONDS:
@@ -4374,6 +4536,11 @@ def main():
     if not get_cfg()["password_hash"]:
         print("Kein Passwort gesetzt! Erst: python3 server.py --set-password DEINPASSWORT")
         sys.exit(1)
+    if _HANDOFF.get("pid"):
+        # Update ohne Unterbrechung: sofort das laufende Bild übernehmen, alles andere danach
+        audio_feeder.start()
+        image_feeder.start()
+        streamer = Streamer()
     # alte, halbfertige Uploads aufräumen
     for d in (UPLOAD_DIR, TMP_DIR):
         for fn in os.listdir(d):
@@ -4393,7 +4560,8 @@ def main():
     if not load_json(VERSION_PATH, {}).get("sha"):
         _safe(lambda: save_json(VERSION_PATH, {"sha": latest_sha(), "installed": time.time()}))
     for t in (ticker, image_feeder, audio_feeder, stats, auto_updater, twitch_chat, game_queue, title_mgr, slate_keeper):
-        t.start()
+        if t.ident is None:
+            t.start()
     # alte Einzel-Musikdatei (frühere Version) in die Playlist übernehmen
     for fn in os.listdir(CD_DIR):
         if fn.startswith("music.") and fn.lower().endswith(MUSIC_EXT):
@@ -4404,7 +4572,8 @@ def main():
                 os.remove(os.path.join(CD_DIR, fn))
             except Exception:  # noqa
                 pass
-    streamer = Streamer()
+    if streamer is None:
+        streamer = Streamer()
     import signal
 
     def _shutdown(*_):
