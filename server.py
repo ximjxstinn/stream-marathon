@@ -112,7 +112,8 @@ DEFAULT_CFG = {
     "yt_category": "20",              # YouTube-Kategorie (20 = Gaming)
     "vod_audio": "music",             # Ton bei VODs: orig | mute | music | mix
     "vod_mix_volume": 30,             # bei "mix": Lautstärke des VOD-Tons in %
-    "vod_music_volume": 20,           # Lautstärke der eigenen Musik bei VODs (0–100, wirkt wie ein dB-Regler)
+    "vod_music_volume": 20,
+    "slate_vod": True,                # "Neu verbinden …" bei VODs über dem letzten VOD-Bild           # Lautstärke der eigenen Musik bei VODs (0–100, wirkt wie ein dB-Regler)
     "tw_client_id": "",
     "yt_client_id": "",
     "yt_client_secret": "",
@@ -132,6 +133,7 @@ DEFAULT_CFG = {
     "perf_preset": "veryfast",        # Encoder-Einstellung für Live-Bild (wird bei Überlastung automatisch schneller)
     "perf_auto": True,                # bei Überlastung automatisch sparsamer werden
     "runtime_label": "LIVE seit",
+    "runtime_alltime": True,          # zusätzlich "Insgesamt" (gesamte Live-Zeit aller Streams) zeigen
     "runtime_mode": "start",          # "start" = seit Start, "detail" = Twitch · YouTube · Gesamt
     "runtime_pos": "tr",              # Position der Einblendung (tl, tc, tr, bl, bc, br)
     "tw_playlist": [],                # Twitch-VODs, die direkt (ohne Speichern) abgespielt werden
@@ -443,14 +445,14 @@ class Ticker(threading.Thread):
         if not cfg.get("show_runtime", True) or not streamer or not streamer.session_started:
             return " "
         if cfg.get("runtime_mode") == "detail":
-            parts, total = [], 0
+            parts = []
             for k, d in DESTINATIONS.items():
                 if cfg.get(d["enabled"]) and cfg.get(d["key"]):
-                    sec = stats.d(k)["session"]
-                    total += sec
-                    parts.append(f"{d['name']} {fmt_dur(sec, long=True)}")
-            if len(parts) > 1:
-                parts.append(f"Gesamt {fmt_dur(total, long=True)}")
+                    parts.append(f"{d['name']} {fmt_dur(stats.d(k)['session'], long=True)}")
+            if parts:   # Gesamt = komplette Stream-Zeit seit Start, Insgesamt = alles, was je live war
+                parts.append(f"Gesamt {fmt_dur(time.time() - streamer.session_started, long=True)}")
+                if cfg.get("runtime_alltime", True):
+                    parts.append(f"Insgesamt {fmt_dur(stats.data.get('alltime', 0), long=True)}")
             return "●  LIVE  " + "  ·  ".join(parts) if parts else " "
         return f"●  {cfg.get('runtime_label', 'LIVE seit')} {fmt_dur(time.time() - streamer.session_started, long=True)}"
 
@@ -923,6 +925,8 @@ class StatsTracker(threading.Thread):
         super().__init__(daemon=True)
         self.data = load_json(STATS_PATH, {})
         self.data.setdefault("dest", {})
+        if "alltime" not in self.data:   # Start: bisher längste Plattform-Gesamtzeit übernehmen
+            self.data["alltime"] = max((x.get("total", 0) for x in self.data["dest"].values()), default=0)
         self._was_live = {}
 
     def d(self, k):
@@ -942,7 +946,7 @@ class StatsTracker(threading.Thread):
         self.save()
 
     def reset_all(self):
-        self.data = {"dest": {}}
+        self.data = {"dest": {}, "alltime": 0}
         self.new_session()
 
     def save(self):
@@ -968,6 +972,8 @@ class StatsTracker(threading.Thread):
                             x["current"] = max(x["current"], u)
                             x["longest"] = max(x["longest"], x["current"])
                             x["total"] = max(x["total"], x["session"])
+                if want and any(dd.get("live") for dd in st["dest"].values()):
+                    self.data["alltime"] = self.data.get("alltime", 0) + 1   # Sekunden, in denen irgendwo live
                 for k, dd in st["dest"].items():
                     pl = dd.get("planned")
                     if pl is not None:
@@ -1009,12 +1015,13 @@ def slate_path(cfg):
     return os.path.join(RUN_DIR, f"slate_{w}x{h}.mp4")
 
 
-def build_slate_loop(cfg=None, force=False):
+def build_slate_loop(cfg=None, force=False, bg_image=None):
+    """Baut die "Neu verbinden …"-Schleife. Mit bg_image: letztes VOD-Bild abgedunkelt als Hintergrund."""
     cfg = cfg or get_cfg()
     w, h, fps, vb = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
     out = slate_path(cfg)
     meta_p = out + ".json"
-    if not force and os.path.exists(out) and load_json(meta_p, {}).get("design") == SLATE_DESIGN:
+    if not bg_image and not force and os.path.exists(out) and load_json(meta_p, {}).get("design") == SLATE_DESIGN:
         return out
     q = lambda p: "'" + p.replace("'", "") + "'"   # noqa
     B, R = q(font("bold")), q(font("regular"))
@@ -1043,8 +1050,13 @@ def build_slate_loop(cfg=None, force=False):
              f"geq=r=255:g=255:b=255:a='clip(28*{edge},0,255)'")
     fs = h * 0.075
     x0 = f"(w-{fs * 9.414625:.2f})/2"     # zentriert für die volle Zeile mit drei Punkten
+    fx = out + f".fx{SLATE_DESIGN}.mov"       # Animation ohne Hintergrund (durchsichtig), einmal gebaut
+    fx_only = bool(bg_image) and not os.path.exists(fx)
+    if bg_image and not fx_only:
+        return _compose_vod_slate(cfg, bg_image, fx, out, meta_p)
+    bg_in = ["-f", "lavfi", "-i", f"color=c=black@0:s={w}x{h}:r={fps}:d=3,format=rgba" if fx_only else bg]
     vf = (f"[0:v][1:v]overlay=(W-w)/2:H*0.40-h/2[a];[a][3:v]overlay=(W-w)/2:H*0.40-h/2[b];"
-          f"[b][2:v]overlay=(W-w)/2:H*0.40-h/2,format=yuv420p,"
+          f"[b][2:v]overlay=(W-w)/2:H*0.40-h/2,format={'rgba' if fx_only else 'yuv420p'},"
           f"null")
     # Punkte erscheinen nacheinander: vier Varianten der Zeile, jeweils nur in ihrem Zeitfenster sichtbar
     for i, name in enumerate(("sl_title", "sl_t1", "sl_t2", "sl_t3")):
@@ -1057,11 +1069,21 @@ def build_slate_loop(cfg=None, force=False):
            f",drawbox=x='iw*0.3+(0.5-0.5*cos(2*PI*t/3))*iw*0.32':y=ih*0.83:w=iw*0.08:h=ih*0.004:color=0xb98bff@0.95:t=fill"
            f",drawtext=fontfile={B}:textfile={tf('sl_brand')}:expansion=none:fontsize=h*0.024:fontcolor=white@0.35:"
            f"x=(w-text_w)/2:y=h*0.92[v]")
+    if fx_only:
+        tmpfx = fx + ".new.mov"
+        r = subprocess.run(["nice", "-n", "19", "ffmpeg", "-v", "error", "-y", "-threads", "1", "-filter_threads", "1",
+                            "-filter_complex_threads", "1", *bg_in, "-f", "lavfi", "-i", glow, "-f", "lavfi", "-i", spin,
+                            "-f", "lavfi", "-i", track, "-filter_complex", _opaque(vf), "-map", "[v]", "-t", "3",
+                            "-c:v", "qtrle", "-pix_fmt", "argb", tmpfx], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError("Neu-verbinden-Ebene: " + r.stderr.strip()[-300:])
+        os.replace(tmpfx, fx)
+        return _compose_vod_slate(cfg, bg_image, fx, out, meta_p)
     tmp = out + ".new.mp4"
     kbit = int(vb[:-1])
     cmd = ["nice", "-n", "19", "ffmpeg", "-v", "error", "-y", "-threads", "1", "-filter_threads", "1",
            "-filter_complex_threads", "1",
-           "-f", "lavfi", "-i", bg, "-f", "lavfi", "-i", glow, "-f", "lavfi", "-i", spin, "-f", "lavfi", "-i", track,
+           *bg_in, "-f", "lavfi", "-i", glow, "-f", "lavfi", "-i", spin, "-f", "lavfi", "-i", track,
            "-f", "lavfi", "-t", "3", "-i", "anullsrc=r=44100:cl=stereo",
            "-filter_complex", vf.replace("[b][2:v]", "[b][2:v]"), "-map", "[v]", "-map", "4:a", "-t", "3",
            "-c:v", "libx264", "-preset", "medium", "-threads", "1", "-pix_fmt", "yuv420p",
@@ -1071,9 +1093,116 @@ def build_slate_loop(cfg=None, force=False):
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError("Neu-verbinden-Animation: " + r.stderr.strip()[-300:])
+    shutil.copy(tmp, out + ".default.mp4")      # Standard-Version für später aufheben
     os.replace(tmp, out)
     save_json(meta_p, {"design": SLATE_DESIGN})
     return out
+
+
+def _opaque(vf):
+    """Auf durchsichtiger Ebene werden halbtransparente Farben dunkel – dort deckende Farben nehmen."""
+    for x, y in (("fontcolor=white@0.62", "fontcolor=0xe6e6e6"), ("fontcolor=white@0.35", "fontcolor=0xbdbdbd"),
+                 ("color=white@0.12:t=fill", "color=0x9a9a9a@1:t=fill"), ("0xb98bff@0.95", "0xb98bff@1")):
+        vf = vf.replace(x, y)
+    return vf
+
+
+def _compose_vod_slate(cfg, bg_image, fx, out, meta_p):
+    """Letztes VOD-Bild (abgedunkelt) + fertige Animation darüber – dauert nur 1–3 Sekunden."""
+    w, h, fps, vb = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
+    tmp = out + ".vod.mp4"
+    vf = (f"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
+          f"format=rgb24,colorchannelmixer=rr=0.5:gg=0.5:bb=0.55,"
+          f"drawbox=x=0:y=ih*0.52:w=iw:h=ih*0.48:color=black@0.25:t=fill[bg];"
+          f"[bg][1:v]overlay=0:0:format=auto,format=yuv420p[v]")
+    r = subprocess.run(["nice", "-n", "19", "ffmpeg", "-v", "error", "-y", "-threads", "1", "-filter_threads", "1",
+                        "-filter_complex_threads", "1", "-loop", "1", "-framerate", str(fps), "-t", "3", "-i", bg_image,
+                        "-i", fx, "-f", "lavfi", "-t", "3", "-i", "anullsrc=r=44100:cl=stereo",
+                        "-filter_complex", vf, "-map", "[v]", "-map", "2:a", "-t", "3",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-threads", "1", "-pix_fmt", "yuv420p",
+                        "-b:v", vb, "-maxrate", vb, "-bufsize", vb,
+                        "-x264-params", "nal-hrd=cbr:force-cfr=1:repeat-headers=1",
+                        "-g", str(fps * 2), "-keyint_min", str(fps * 2), "-sc_threshold", "0",
+                        "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2", "-movflags", "+faststart", tmp],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("Neu-verbinden mit VOD-Bild: " + r.stderr.strip()[-300:])
+    os.replace(tmp, out)
+    save_json(meta_p, {"design": "vod", "at": time.time()})
+    return out
+
+
+VOD_SNAP = os.path.join(RUN_DIR, "vod_snap.jpg")
+_slate_lock = threading.Lock()
+
+
+def refresh_vod_slate(max_age=20):
+    """Aktuelles VOD-Bild als Hintergrund für "Neu verbinden …" verwenden. True = hat geklappt."""
+    cfg = get_cfg()
+    if cfg.get("mode") != "twitch" or not cfg.get("slate_vod", True):
+        return False
+    try:
+        if time.time() - os.path.getmtime(VOD_SNAP) > max_age:
+            return False
+    except OSError:
+        return False
+    with _slate_lock:
+        snap = os.path.join(RUN_DIR, "vod_snap_use.jpg")
+        try:
+            shutil.copy(VOD_SNAP, snap)
+            build_slate_loop(cfg, bg_image=snap)
+            return True
+        except Exception as e:  # noqa
+            print("VOD-Slate:", e, flush=True)
+            return False
+
+
+def restore_default_slate():
+    cfg = get_cfg()
+    out = slate_path(cfg)
+    if load_json(out + ".json", {}).get("design") != "vod":
+        return
+    with _slate_lock:
+        if os.path.exists(out + ".default.mp4"):
+            shutil.copy(out + ".default.mp4", out + ".tmp.mp4")
+            os.replace(out + ".tmp.mp4", out)
+            save_json(out + ".json", {"design": SLATE_DESIGN})
+        else:
+            build_slate_loop(cfg, force=True)
+
+
+def then_restart(fn):
+    """Erst das Bild für "Neu verbinden …" mit der aktuellen VOD-Stelle bauen (VOD läuft solange weiter), dann fn()."""
+    def run():
+        meta = load_json(slate_path(get_cfg()) + ".json", {})
+        if not (meta.get("design") == "vod" and time.time() - meta.get("at", 0) < 30):
+            _safe(refresh_vod_slate)
+        fn()
+    threading.Thread(target=run, daemon=True).start()
+
+
+class SlateKeeper(threading.Thread):
+    """Hält das "Neu verbinden …"-Bild aktuell: bei VODs alle 2 Minuten mit dem aktuellen Bild."""
+    def __init__(self):
+        super().__init__(daemon=True)
+
+    def run(self):
+        time.sleep(30)
+        while True:
+            try:
+                cfg = get_cfg()
+                meta = load_json(slate_path(cfg) + ".json", {})
+                if cfg.get("mode") == "twitch" and cfg.get("slate_vod", True) and streamer and streamer.source_alive():
+                    if time.time() - meta.get("at", 0) > 120:
+                        refresh_vod_slate()
+                else:
+                    restore_default_slate()
+            except Exception as e:  # noqa
+                print("Slate:", e, flush=True)
+            time.sleep(15)
+
+
+slate_keeper = SlateKeeper()
 
 
 
@@ -2675,7 +2804,7 @@ def build_vod_cmd(cfg, stream_url, start_pos, output):
     w, h, fps, vb = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
     if os.path.exists(VOD_PROGRESS):
         os.remove(VOD_PROGRESS)
-    return ["ffmpeg", "-hide_banner", "-loglevel", "error",
+    return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_on_network_error", "1",
             "-reconnect_delay_max", "10", "-rw_timeout", "20000000",
             "-re", *(["-ss", f"{start_pos:.1f}"] if start_pos > 1 else []), "-i", stream_url,
@@ -2688,7 +2817,11 @@ def build_vod_cmd(cfg, stream_url, start_pos, output):
             "-g", str(fps * 2), "-keyint_min", str(fps * 2), "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
             "-progress", VOD_PROGRESS, "-stats_period", "2",
-            "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", output]
+            "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", output,
+            # alle 5 s ein Standbild – Hintergrund für "Neu verbinden …"
+            "-map", "0:v:0", "-vf", f"fps=1/5,scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                                    f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1",
+            "-q:v", "5", "-f", "image2", "-update", "1", VOD_SNAP]
 
 
 def vod_progress_seconds():
@@ -2777,6 +2910,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   </select>
   <div id="twMusBox" style="display:none"><label>Lautstärke eigene Musik bei VODs: <b id="twMusV"></b></label><input type="range" id="twMus" min="0" max="100" step="1" oninput="$('twMusV').textContent=this.value+' %'" onchange="api('/api/config',{vod_music_volume:+this.value})"></div>
   <div id="twMixBox" style="display:none"><label>Lautstärke VOD-Ton beim Mischen (%)</label><input type="range" id="twMix" min="0" max="100" step="5" onchange="api('/api/config',{vod_mix_volume:+this.value})"></div>
+  <label class="chk"><input type="checkbox" id="twSlate" onchange="api('/api/config',{slate_vod:this.checked})"> „Neu verbinden …“ durchsichtig über dem letzten VOD-Bild zeigen</label>
   <label>Abspiel-Reihenfolge</label>
   <select id="twOrder" onchange="api('/api/twpl_order',{order:this.value}).then(refresh)"><option value="list">Wie in der Liste (oben → unten)</option><option value="random">Zufällig</option></select>
   <label>Liste sortieren</label>
@@ -2970,11 +3104,11 @@ async function refresh(){
  const ST=s.stats||{},pct=(a,b)=>b>0?Math.min(100,a/b*100).toFixed(1).replace('.',','):'–';
  $('runtime').innerHTML=(s.session_started?`<div style="font-size:15px">⏱ <b>Läuft seit Start:</b> ${fmtL(s.session_secs)}</div><div class="hint" style="margin-top:2px">Läuft bei Abbrüchen, Updates und Neustarts weiter – beginnt erst nach ■ Stoppen neu. <a href="#" style="color:var(--acc)" onclick="setStart();return false">Startzeit ändern</a></div>`:'<div class="hint">Stream gestoppt – der Zähler startet mit ▶ Starten.</div>')+
   (()=>{const ks=Object.keys(s.dest).filter(k=>ST[k]&&(ST[k].total||ST[k].session));if(ks.length<1)return'';
-   const ses=ks.reduce((a,k)=>a+ST[k].session,0),tot=ks.reduce((a,k)=>a+ST[k].total,0);
-   return `<div style="margin-top:10px;font-size:15px">📊 <b>Gesamt ${ks.map(k=>s.dest[k].name).join(' + ')}:</b> ${fmtL(ses)} in dieser Sitzung<br><span style="color:var(--mut);font-size:14px">Insgesamt gestreamt: ${fmt(tot)}</span></div>`})()+
+   return `<div style="margin-top:10px;font-size:15px">📊 <b>Gesamt:</b> ${fmtL(s.session_secs)} komplette Stream-Zeit seit Start<br><b>Insgesamt live:</b> ${fmtL(s.alltime)} <span style="color:var(--mut);font-size:14px">(alle Streams zusammen, egal ob Twitch oder YouTube – zählt immer weiter)</span></div>`})()+
   Object.entries(s.dest).filter(([k])=>ST[k]&&(ST[k].total||ST[k].session)).map(([k,d])=>{const x=ST[k];return `<div style="margin-top:8px;font-size:14px"><b>${d.name}</b>: live ${fmtL(x.session)} in dieser Sitzung (${pct(x.session,x.since?Math.min(s.session_secs,Date.now()/1000-x.since):s.session_secs)} % online)${x.since?' · neu gestartet '+new Date(x.since*1000).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}):''} · Abbrüche: ${x.session_drops} · längste Strecke am Stück: ${fmtL(x.longest)}<br><span style="color:var(--mut)">Insgesamt gestreamt: ${fmt(x.total)}</span></div>`}).join('')+
   `<div class="btns" style="margin-top:10px;align-items:center"><label class="chk" style="margin:0"><input type="checkbox" id="showRt" ${s.show_runtime?'checked':''} onchange="api('/api/config',{show_runtime:this.checked})"> Im Stream zeigen:</label>
    <select style="width:auto" onchange="api('/api/config',{runtime_mode:this.value})"><option value="start" ${s.runtime_mode=='start'?'selected':''}>● ${esc(s.runtime_label)} …</option><option value="detail" ${s.runtime_mode=='detail'?'selected':''}>● Twitch · YouTube · Gesamt</option></select>
+   ${s.runtime_mode=='detail'?`<label class="chk" style="margin:0"><input type="checkbox" ${s.runtime_alltime?'checked':''} onchange="api('/api/config',{runtime_alltime:this.checked})"> + Insgesamt</label>`:''}
    <select style="width:auto" onchange="api('/api/config',{runtime_pos:this.value}).then(()=>setTimeout(showPrev,500))">${Object.entries(s.runtime_positions).map(([k,v])=>`<option value="${k}" ${s.runtime_pos==k?'selected':''}>📍 ${v}</option>`).join('')}</select></div>`;
  $('dests').innerHTML=Object.values(s.dest).map(d=>`<div style="display:flex;align-items:center;gap:8px;margin:4px 0"><span class="dot${d.live?' live':''}" style="width:10px;height:10px"></span><b>${d.name}</b><span style="color:var(--mut);font-size:14px">${d.live?'LIVE seit '+fmt(d.uptime):esc(d.msg)}${d.next_planned?' · geplanter Neustart in '+fmt(d.next_planned):''}${d.restarts?' · Reconnects: '+d.restarts:''}</span></div>`).join('');
  const cd=s.mode=='countdown',tw=s.mode=='twitch';$('mCd').className=cd?'go':'';$('mTw').className=tw?'go':'';$('mVid').className=(!cd&&!tw)?'go':'';
@@ -2982,6 +3116,7 @@ async function refresh(){
  $('twSeek').style.display=s.tw_now?'':'none';
  $('twNow').innerHTML=s.tw_now?`🔴 Läuft: <b>${esc(s.tw_now.title)}</b><br><small style="color:var(--mut)">${fmt(s.tw_now.pos)}${s.tw_now.duration?' / '+fmt(s.tw_now.duration):''}</small>`:'';
  if(document.activeElement!==$('twAudio'))$('twAudio').value=s.vod_audio||'orig';$('twMixBox').style.display=s.vod_audio=='mix'?'':'none';$('twMusBox').style.display=(s.vod_audio=='music'||s.vod_audio=='mix')?'':'none';if(document.activeElement!==$('twMus')){$('twMus').value=s.vod_music_volume;$('twMusV').textContent=s.vod_music_volume+' %'}if(document.activeElement!==$('twMix'))$('twMix').value=s.vod_mix_volume;
+ $('twSlate').checked=s.slate_vod!==false;
  if(document.activeElement!==$('twOrder'))$('twOrder').value=s.tw_order||'list';
  $('twList').innerHTML=s.tw_playlist.length?s.tw_playlist.map((v,i)=>{const cur=v.url==s.tw_cur,nx=v.url==s.tw_next;return `<div class="vid"${cur?' style="border-color:#ffc400"':''}><div class="t">${i+1}. ${cur?'▶ ':''}${esc(v.title)}<br><small>${v.timestamp?new Date(v.timestamp*1000).toLocaleDateString('de-DE')+' · ':''}${v.duration?fmt(v.duration):''}${cur?' · läuft gerade':''}${nx?' · kommt als Nächstes':''}</small></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end" data-u="${esc(v.url)}"><button onclick="twMv(this,'top')" ${i?'':'disabled'} title="Ganz nach oben">⏫</button><button onclick="twMv(this,'up')" ${i?'':'disabled'}>▲</button><button onclick="twMv(this,'down')" ${i<s.tw_playlist.length-1?'':'disabled'}>▼</button>${cur?'':`<button class="go" onclick="twPlay(this,1)">▶ Jetzt</button><button onclick="twPlay(this,0)">⏭ Als Nächstes</button>`}<button onclick="twRemove(this.parentNode.dataset.u)">✕</button></div></div>`}).join(''):'<div class="empty">Noch keine VODs in der Playlist.</div>';
  $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('cvInfo').textContent=s.cd_cover?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
@@ -3332,6 +3467,10 @@ class Handler(BaseHTTPRequestHandler):
                 upd["game_next"] = str(data["game_next"])[:60]
             if "auto_update" in data:
                 upd["auto_update"] = bool(data["auto_update"])
+            if "slate_vod" in data:
+                upd["slate_vod"] = bool(data["slate_vod"])
+            if "runtime_alltime" in data:
+                upd["runtime_alltime"] = bool(data["runtime_alltime"])
             if "show_runtime" in data:
                 upd["show_runtime"] = bool(data["show_runtime"])
             if data.get("runtime_pos") in RUNTIME_POS:
@@ -3367,8 +3506,10 @@ class Handler(BaseHTTPRequestHandler):
                     print("Ebenen-Fehler:", e, flush=True)
             v = streamer.vod
             if changed & {"vod_audio", "vod_mix_volume"} and get_cfg()["mode"] == "twitch" and v["url"]:
-                v["seek"] = v["pos"] + (vod_progress_seconds() if streamer.source_alive() else 0)
-                streamer._kill()                     # gleiches VOD an gleicher Stelle, neuer Ton
+                def _re_audio():
+                    v["seek"] = v["pos"] + (vod_progress_seconds() if streamer.source_alive() else 0)
+                    streamer._kill()                 # gleiches VOD an gleicher Stelle, neuer Ton
+                then_restart(_re_audio)
             restart = bool(changed & RESTART_KEYS)
             if streamer.want and restart:
                 streamer.restart()
@@ -3519,8 +3660,7 @@ class Handler(BaseHTTPRequestHandler):
             if any(x["url"] == url for x in (get_cfg().get("tw_playlist") or [])):
                 streamer.vod["next"] = url
                 if data.get("now") and get_cfg()["mode"] == "twitch" and streamer.vod["url"] != url:
-                    streamer._vod_done()
-                    streamer._kill()                     # kurz "Neu verbinden …", dann das gewählte VOD
+                    then_restart(lambda: (streamer._vod_done(), streamer._kill()))                     # kurz "Neu verbinden …", dann das gewählte VOD
         elif path == "/api/twpl_seek":
             v = streamer.vod
             if get_cfg()["mode"] != "twitch" or not v["url"]:
@@ -3531,12 +3671,13 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 return self._send(200, {"error": "Ungültige Zeit"})
             top = (v["duration"] - 30) if v["duration"] else new
-            v["seek"] = max(0.0, min(new, top))
-            streamer._kill()                             # kurz "Neu verbinden …", dann ab der neuen Stelle
+            def _go(t=max(0.0, min(new, top))):
+                v["seek"] = t
+                streamer._kill()                         # kurz "Neu verbinden …", dann ab der neuen Stelle
+            then_restart(_go)
         elif path == "/api/twpl_skip":
             if get_cfg()["mode"] == "twitch":
-                streamer._vod_done()
-                streamer._kill()
+                then_restart(lambda: (streamer._vod_done(), streamer._kill()))
         elif path == "/api/vod_import":
             try:
                 vod_importer.add(str(data.get("url", "")), str(data.get("title", "Twitch-VOD"))[:80],
@@ -3754,7 +3895,7 @@ def status():
         "title_cfg": {k: cfg.get(k, DEFAULT_CFG[k]) for k in ("title_countdown", "title_done", "title_vod", "title_fallback", "cat_countdown", "cat_vod", "yt_category",
                                                             "tw_client_id", "yt_client_id")},
         "yt_secret_set": bool(cfg.get("yt_client_secret")), "tw_secret_set": bool(cfg.get("tw_client_secret")), "cat_vod_auto": cfg.get("cat_vod_auto", True),
-        "vod_audio": cfg.get("vod_audio", "orig"), "vod_mix_volume": cfg.get("vod_mix_volume", 30), "vod_music_volume": cfg.get("vod_music_volume", 20),
+        "vod_audio": cfg.get("vod_audio", "orig"), "vod_mix_volume": cfg.get("vod_mix_volume", 30), "vod_music_volume": cfg.get("vod_music_volume", 20), "slate_vod": cfg.get("slate_vod", True),
         "games": {"auto": cfg.get("game_auto", True), "done_hours": cfg.get("game_done_hours", 12),
                   "current": cfg.get("game_current"), "next": cfg.get("game_next", ""),
                   "list": [{**g, "custom": g["id"].startswith("c_"),
@@ -3770,7 +3911,8 @@ def status():
         "update_info": {"result": auto_updater.last_result, "checked": auto_updater.last_check,
                         **{k: v for k, v in load_json(VERSION_PATH, {}).items() if k in ("sha", "installed", "sender_pending")}},
         "session_secs": time.time() - streamer.session_started if streamer.session_started else 0,
-        "stats": stats.data["dest"],
+        "stats": stats.data["dest"], "alltime": stats.data.get("alltime", 0),
+        "runtime_alltime": cfg.get("runtime_alltime", True),
         "show_runtime": cfg.get("show_runtime", True), "runtime_label": cfg.get("runtime_label", "LIVE seit"),
         "runtime_mode": cfg.get("runtime_mode", "start"),
         "runtime_pos": cfg.get("runtime_pos", "tr"), "runtime_positions": RUNTIME_POS,
@@ -3818,7 +3960,7 @@ def main():
     threading.Thread(target=lambda: _safe(build_slate_loop), daemon=True).start()
     if not load_json(VERSION_PATH, {}).get("sha"):
         _safe(lambda: save_json(VERSION_PATH, {"sha": latest_sha(), "installed": time.time()}))
-    for t in (ticker, image_feeder, audio_feeder, stats, auto_updater, twitch_chat, game_queue, title_mgr):
+    for t in (ticker, image_feeder, audio_feeder, stats, auto_updater, twitch_chat, game_queue, title_mgr, slate_keeper):
         t.start()
     # alte Einzel-Musikdatei (frühere Version) in die Playlist übernehmen
     for fn in os.listdir(CD_DIR):
