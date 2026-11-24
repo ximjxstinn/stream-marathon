@@ -3494,7 +3494,6 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   </select>
   <div id="twMusBox" style="display:none"><label>Lautstärke eigene Musik bei VODs: <b id="twMusV"></b></label><input type="range" id="twMus" min="0" max="100" step="1" oninput="$('twMusV').textContent=this.value+' %'" onchange="api('/api/config',{vod_music_volume:+this.value})"></div>
   <div id="twMixBox" style="display:none"><label>Lautstärke VOD-Ton beim Mischen (%)</label><input type="range" id="twMix" min="0" max="100" step="5" onchange="api('/api/config',{vod_mix_volume:+this.value})"></div>
-  <label class="chk"><input type="checkbox" id="twSlate" onchange="api('/api/config',{slate_vod:this.checked})"> „Neu verbinden …“ durchsichtig über dem letzten VOD-Bild zeigen</label>
   <label>Abspiel-Reihenfolge</label>
   <select id="twOrder" onchange="api('/api/twpl_order',{order:this.value}).then(refresh)"><option value="list">Wie in der Liste (oben → unten)</option><option value="random">Zufällig</option></select>
   <label>Liste sortieren</label>
@@ -3702,7 +3701,6 @@ async function refresh(){
  $('twSeek').style.display=s.tw_now?'':'none';
  $('twNow').innerHTML=s.tw_now?`🔴 Läuft: <b>${esc(s.tw_now.title)}</b><br><small style="color:var(--mut)">${fmt(s.tw_now.pos)}${s.tw_now.duration?' / '+fmt(s.tw_now.duration):''}</small>`:'';
  if(document.activeElement!==$('twAudio'))$('twAudio').value=s.vod_audio||'orig';$('twMixBox').style.display=s.vod_audio=='mix'?'':'none';$('twMusBox').style.display=(s.vod_audio=='music'||s.vod_audio=='mix')?'':'none';if(document.activeElement!==$('twMus')){$('twMus').value=s.vod_music_volume;$('twMusV').textContent=s.vod_music_volume+' %'}if(document.activeElement!==$('twMix'))$('twMix').value=s.vod_mix_volume;
- $('twSlate').checked=!!s.slate_vod;
  if(document.activeElement!==$('twOrder'))$('twOrder').value=s.tw_order||'list';
  $('twList').innerHTML=s.tw_playlist.length?s.tw_playlist.map((v,i)=>{const cur=v.url==s.tw_cur,nx=v.url==s.tw_next;return `<div class="vid"${cur?' style="border-color:#ffc400"':''}><div class="t">${i+1}. ${cur?'▶ ':''}${esc(v.title)}<br><small>${v.timestamp?new Date(v.timestamp*1000).toLocaleDateString('de-DE')+' · ':''}${v.duration?fmt(v.duration):''}${cur?' · läuft gerade':''}${nx?' · kommt als Nächstes':''}</small></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end" data-u="${esc(v.url)}"><button onclick="twMv(this,'top')" ${i?'':'disabled'} title="Ganz nach oben">⏫</button><button onclick="twMv(this,'up')" ${i?'':'disabled'}>▲</button><button onclick="twMv(this,'down')" ${i<s.tw_playlist.length-1?'':'disabled'}>▼</button>${cur?'':`<button class="go" onclick="twPlay(this,1)">▶ Jetzt</button><button onclick="twPlay(this,0)">⏭ Als Nächstes</button>`}<button onclick="twRemove(this.parentNode.dataset.u)">✕</button></div></div>`}).join(''):'<div class="empty">Noch keine VODs in der Playlist.</div>';
  $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('cvInfo').textContent=s.cd_cover?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
