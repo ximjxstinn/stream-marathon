@@ -127,6 +127,16 @@ DEFAULT_CFG = {
     "chat_channel": "ximjxstinn",
     "chat_blocklist": "",
     "chat_ignore": "nightbot,streamelements,moobot,streamlabs,fossabot",
+    "bot_enabled": False,             # Chat-Bot: automatische Antworten + Betrüger bannen
+    "bot_greet": True,
+    "bot_greet_msg": "Hey @{name}! 👋 Das hier ist ein 24/7 VOD-Kanal – hier laufen Wiederholungen meiner Streams. "
+                     "Folg mir, dann verpasst du nicht, wenn ich wieder richtig live bin! 💜",
+    "bot_follow": True,
+    "bot_follow_msg": "Danke fürs Folgen, @{name}! 💜 Gerade laufen Wiederholungen (VOD-Kanal) – "
+                      "beim nächsten echten Live bist du dabei!",
+    "bot_greet_hours": 12,            # gleiche Person frühestens nach so vielen Stunden wieder begrüßen
+    "bot_ban_scam": True,
+    "bot_scam_words": "",             # eigene Wörter, die sofort zum Bann führen (Komma-getrennt)
     "chat_keep_min": 10,
     "discord_link": "",
     "tiktok_link": "",
@@ -1698,6 +1708,11 @@ class TwitchChat(threading.Thread):
 
     def _message(self, user, tags, text):
         cfg = get_cfg()
+        try:
+            if chat_bot.on_message(user, tags, text, cfg):
+                return                                  # gebannt -> nicht im Stream zeigen
+        except Exception as e:  # noqa
+            print("Chat-Bot:", e, flush=True)
         name = clean_text(tags.get("display-name") or user) or user
         if text.startswith("\x01ACTION "):
             text = text[8:].rstrip("\x01")
@@ -1866,7 +1881,8 @@ game_queue = GameQueue()
 # Setzt den Titel auf Twitch und YouTube automatisch, z. B. "(VOD) <Titel>" während VODs laufen.
 # Anmeldung per Geräte-Code (wie beim Fernseher): kein Passwort im Panel, keine eigene Domain nötig.
 TOKENS_PATH = os.path.join(BASE, "tokens.json")
-TW_SCOPE = "channel:manage:broadcast"
+TW_SCOPE = "channel:manage:broadcast user:write:chat moderator:manage:banned_users moderator:read:followers"
+BOT_SCOPES = {"user:write:chat", "moderator:manage:banned_users", "moderator:read:followers"}
 YT_SCOPE = "https://www.googleapis.com/auth/youtube"
 
 
@@ -2056,7 +2072,8 @@ class TitleManager(threading.Thread):
                     form=True)
             if code == 200 and j.get("access_token"):
                 self.tok[plat] = {"access": j["access_token"], "refresh": j.get("refresh_token"),
-                                  "exp": time.time() + int(j.get("expires_in", 3600)) - 120}
+                                  "exp": time.time() + int(j.get("expires_in", 3600)) - 120,
+                                  "scopes": j.get("scope") or []}
                 if plat == "twitch":
                     c2, u = _http("GET", "https://api.twitch.tv/helix/users", headers=self._tw_hd())
                     if c2 == 200 and u.get("data"):
@@ -2119,6 +2136,8 @@ class TitleManager(threading.Thread):
         if code == 200 and j.get("access_token"):
             t["access"] = j["access_token"]
             t["refresh"] = j.get("refresh_token") or t["refresh"]
+            if j.get("scope"):
+                t["scopes"] = j["scope"]
             t["exp"] = time.time() + int(j.get("expires_in", 3600)) - 300
             t.pop("dead", None)
             self.__dict__.setdefault("_last_why", {}).pop(plat, None)
@@ -2456,6 +2475,144 @@ class TitleManager(threading.Thread):
 
 
 title_mgr = TitleManager()
+
+
+SCAM_PATTERNS = [re.compile(p, re.I) for p in (
+    r"\b(cheap(est)?|buy|free)\b.{0,20}\b(viewers?|followers?|views|primes?|chatters?)\b",
+    r"\b(viewers?|followers?|primes?)\b.{0,25}\b(on|at|from)\b.{0,25}(\.|\bdot\b|\(dot\)|\[dot\])\s*\w{2,}",
+    r"(wanna|want to) (become|be) famous",
+    r"(remove|delete) (the )?spaces?",
+    r"stream\s*boo|doge\s*hype|nezhna|big\s*follows|streamrise|viewer\s*labs|twitch\s*boost",
+    r"promot(e|ion|ing) (your|ur) (stream|channel)",
+    r"\b(hello|hi|hey)\b.{0,15}\b(i|we) (can|will) (help|grow|boost)\b.{0,40}\b(stream|channel|viewers|followers)",
+    r"(crypto|bitcoin|nft|airdrop).{0,30}(giveaway|free|claim|double)",
+)]
+
+
+class ChatBot(threading.Thread):
+    """Antwortet automatisch im Chat (Begrüßung, Danke fürs Folgen) und bannt typische Betrugs-Bots.
+    Schreibt mit deinem Twitch-Konto (Anmeldung unter „Stream-Titel“)."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.greeted = {}          # Name -> Zeitpunkt der letzten Begrüßung
+        self.followers = None      # bekannte Follower-IDs (None = noch nicht geladen)
+        self.queue = deque(maxlen=30)
+        self.last_sent = 0
+        self.status = ""
+        self.banned = deque(maxlen=20)
+
+    # --- Hilfen ---
+    def ready(self):
+        t = title_mgr.tok.get("twitch") or {}
+        if not get_cfg().get("bot_enabled") or not t or t.get("dead") or not t.get("user_id"):
+            return False
+        if not BOT_SCOPES.issubset(set(t.get("scopes") or [])):
+            self.status = "Für den Chat-Bot Twitch unter „Stream-Titel“ einmal neu verbinden (neue Rechte nötig)"
+            return False
+        return True
+
+    def me(self):
+        return ((title_mgr.tok.get("twitch") or {}).get("name") or "").lower()
+
+    @staticmethod
+    def is_scam(text, cfg):
+        t = re.sub(r"\s+", " ", text.lower())
+        own = [w.strip().lower() for w in (cfg.get("bot_scam_words") or "").split(",") if w.strip()]
+        if any(w in t for w in own):
+            return True
+        return any(p.search(t) for p in SCAM_PATTERNS)
+
+    # --- Chat ---
+    def on_message(self, user, tags, text, cfg):
+        """True = Nachricht nicht anzeigen (Betrüger gebannt)."""
+        if not cfg.get("bot_enabled"):
+            return False
+        u = user.lower()
+        if u == self.me() or u in [x.strip().lower() for x in (cfg.get("chat_ignore") or "").split(",") if x.strip()]:
+            return False
+        badges = tags.get("badges", "")
+        trusted = any(b in badges for b in ("broadcaster", "moderator", "vip", "subscriber"))
+        if cfg.get("bot_ban_scam", True) and not trusted and self.is_scam(text, cfg) and tags.get("user-id"):
+            threading.Thread(target=self.ban, args=(tags["user-id"], tags.get("display-name") or user, text),
+                             daemon=True).start()
+            return True
+        if cfg.get("bot_greet", True) and not text.startswith("!"):
+            hours = float(cfg.get("bot_greet_hours", 12) or 12)
+            if time.time() - self.greeted.get(u, 0) > hours * 3600:
+                self.greeted[u] = time.time()
+                self.say(cfg.get("bot_greet_msg", ""), tags.get("display-name") or user)
+        return False
+
+    def say(self, tpl, name):
+        msg = (tpl or "").replace("{name}", name).strip()
+        if msg:
+            self.queue.append(msg[:450])
+
+    def ban(self, user_id, name, text):
+        if not self.ready() or not title_mgr._refresh("twitch"):
+            return
+        t = title_mgr.tok["twitch"]
+        c, j = title_mgr._call("twitch", "POST", "https://api.twitch.tv/helix/moderation/bans?broadcaster_id="
+                               f"{t['user_id']}&moderator_id={t['user_id']}",
+                               {"data": {"user_id": str(user_id), "reason": "Automatisch: Spam/Betrug (Viewer/Follower-Verkauf o. Ä.)"}})
+        if c == 200:
+            self.banned.appendleft({"name": name, "text": text[:120], "t": time.time()})
+            log_line(f"Chat-Bot: {name} gebannt – „{text[:80]}“")
+        else:
+            log_line(f"Chat-Bot: Bann von {name} ging nicht: {title_mgr._err(j, c)}")
+
+    # --- Follower + Senden ---
+    def poll_followers(self):
+        t = title_mgr.tok["twitch"]
+        c, j = title_mgr._call("twitch", "GET", "https://api.twitch.tv/helix/channels/followers?first=50&broadcaster_id="
+                               + t["user_id"])
+        if c != 200:
+            return
+        rows = j.get("data") or []
+        ids = {r["user_id"] for r in rows}
+        if self.followers is None:          # erster Abruf: nur merken, niemanden anschreiben
+            self.followers = ids
+            return
+        new = [r for r in rows if r["user_id"] not in self.followers]
+        self.followers |= ids
+        if len(new) > 5:                    # viele auf einmal = wahrscheinlich Follow-Bots -> nicht danken
+            log_line(f"Chat-Bot: {len(new)} Follows auf einmal – sieht nach Follow-Bots aus, kein Danke")
+            return
+        if get_cfg().get("bot_follow", True):
+            for r in new:
+                self.say(get_cfg().get("bot_follow_msg", ""), r.get("user_name") or r.get("user_login"))
+
+    def send(self, msg):
+        t = title_mgr.tok["twitch"]
+        c, j = title_mgr._call("twitch", "POST", "https://api.twitch.tv/helix/chat/messages",
+                               {"broadcaster_id": t["user_id"], "sender_id": t["user_id"], "message": msg})
+        if c != 200:
+            self.status = f"Nachricht ging nicht: {title_mgr._err(j, c)}"
+            log_line(f"Chat-Bot: {self.status}")
+        else:
+            self.status = ""
+
+    def run(self):
+        last_poll = 0
+        while True:
+            try:
+                if self.ready() and title_mgr._refresh("twitch"):
+                    self.status = self.status if self.status.startswith("Nachricht") else ""
+                    if time.time() - last_poll > 30:
+                        last_poll = time.time()
+                        self.poll_followers()
+                    if self.queue and time.time() - self.last_sent > 3:   # nicht spammen
+                        self.last_sent = time.time()
+                        self.send(self.queue.popleft())
+                else:
+                    self.queue.clear()
+            except Exception as e:  # noqa
+                print("Chat-Bot:", e, flush=True)
+            time.sleep(1)
+
+
+chat_bot = ChatBot()
 
 ticker = Ticker()
 image_feeder = ImageFeeder()
@@ -3636,6 +3793,19 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div class="btns"><button class="go" id="bGAdd">＋ Hinzufügen</button></div>
  <div class="hint">Die Liste großer Releases pflege ich zentral und sie kommt automatisch per Update. Wechsel passieren live – ohne Neustart.</div>
 </section>
+<section class="card"><h2>🤖 Chat-Bot</h2>
+ <label class="chk" style="margin-top:0"><input type="checkbox" id="botOn" onchange="api('/api/config',{bot_enabled:this.checked}).then(refresh)"> Chat-Bot einschalten</label>
+ <div id="botInfo" class="hint"></div>
+ <label class="chk"><input type="checkbox" id="botGreet" onchange="api('/api/config',{bot_greet:this.checked})"> Wer im Chat schreibt, bekommt eine Antwort</label>
+ <textarea id="botGreetMsg" rows="3" style="width:100%;box-sizing:border-box" onchange="api('/api/config',{bot_greet_msg:this.value})"></textarea>
+ <label>Gleiche Person erst wieder begrüßen nach (Stunden)</label><input type="text" id="botHours" inputmode="decimal" onchange="api('/api/config',{bot_greet_hours:parseFloat(this.value.replace(',','.'))||12})">
+ <label class="chk"><input type="checkbox" id="botFollow" onchange="api('/api/config',{bot_follow:this.checked})"> Neue Follower bekommen eine Nachricht im Chat</label>
+ <textarea id="botFollowMsg" rows="3" style="width:100%;box-sizing:border-box" onchange="api('/api/config',{bot_follow_msg:this.value})"></textarea>
+ <label class="chk"><input type="checkbox" id="botBan" onchange="api('/api/config',{bot_ban_scam:this.checked})"> Betrüger automatisch bannen (z. B. „Best viewers on …“, Follower-Verkauf, Krypto-Spam)</label>
+ <label>Eigene Wörter, die sofort zum Bann führen (mit Komma trennen)</label><input type="text" id="botWords" placeholder="z. B. streamboo, cheap viewers" onchange="api('/api/config',{bot_scam_words:this.value})">
+ <div id="botBanned" style="margin-top:8px"></div>
+ <div class="hint">{name} wird durch den Namen ersetzt. Mods, VIPs und Subs werden nie gebannt. Der Bot schreibt mit deinem Twitch-Konto (Verbindung unter „📝 Stream-Titel“).</div>
+</section>
 <section class="card"><h2>💬 Chat im Stream</h2>
  <label class="chk" style="margin-top:0"><input type="checkbox" id="chOn"> Twitch-Chat im Stream anzeigen</label>
  <div class="hint" id="chInfo"></div>
@@ -3731,6 +3901,10 @@ async function refresh(){
  if(document.activeElement!==$('gNext')){const up=(G.list||[]).filter(g=>!g.past&&g.id!=G.current);
   $('gNext').innerHTML='<option value="">Automatisch: das nächste nach Datum</option>'+up.map(g=>`<option value="${g.id}">${esc(g.name)} (${new Date(g.target).toLocaleDateString('de-DE')})</option>`).join('');$('gNext').value=up.some(g=>g.id==G.next)?G.next:''}
  $('gList').innerHTML=(G.list||[]).filter(g=>!g.past||g.id==G.current).map(g=>`<div class="vid"><div class="t">${g.id==G.current?'▶ ':''}<b>${esc(g.name)}</b><br><small>${new Date(g.target).toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})} Uhr${g.id==G.current?' · läuft gerade':''}${g.custom?' · eigenes':''}</small></div><div style="display:flex;gap:6px">${g.id!=G.current&&!g.past?`<button onclick="api('/api/game_switch',{id:'${g.id}'}).then(refresh)">Jetzt zeigen</button>`:''}${g.custom?`<button onclick="api('/api/game_remove',{id:'${g.id}'}).then(refresh)">✕</button>`:''}</div></div>`).join('');
+ const BO=s.bot||{};$('botOn').checked=BO.bot_enabled;$('botGreet').checked=BO.bot_greet;$('botFollow').checked=BO.bot_follow;$('botBan').checked=BO.bot_ban_scam;
+ for(const[k,f]of[['botGreetMsg','bot_greet_msg'],['botFollowMsg','bot_follow_msg'],['botHours','bot_greet_hours'],['botWords','bot_scam_words']])if(document.activeElement!==$(k))$(k).value=BO[f]??'';
+ $('botInfo').innerHTML=!BO.bot_enabled?'Aus':!BO.connected?'<span style="color:#ff6b6b">Erst Twitch unter „📝 Stream-Titel“ verbinden</span>':!BO.scopes_ok?'<span style="color:#ffc400">Bitte Twitch unter „📝 Stream-Titel“ einmal trennen und neu verbinden – der Bot braucht zusätzliche Rechte (Chat schreiben, bannen, Follower sehen).</span>':BO.status?'<span style="color:#ff6b6b">'+esc(BO.status)+'</span>':'<span style="color:#4ade80">✅ Bot läuft</span>';
+ $('botBanned').innerHTML=(BO.banned||[]).length?'<div class="hint">Zuletzt gebannt:</div>'+BO.banned.map(b=>`<div class="vid"><div class="t"><b>${esc(b.name)}</b> · ${new Date(b.t*1000).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})}<br><small>${esc(b.text)}</small></div></div>`).join(''):'';
  const CH=s.chat||{};$('chOn').checked=CH.on_stream&&CH.enabled;
  $('chInfo').textContent=CH.connected?`✅ Verbunden mit #${CH.channel} · ${CH.chatters} ${CH.chatters==1?'Person hat':'Leute haben'} in dieser Sitzung geschrieben`:'⏳ Verbinde mit dem Twitch-Chat …';
  $('chRecent').innerHTML=(CH.recent||[]).map(m=>`<div style="font-size:13px;color:var(--mut)"><b style="color:var(--txt)">${esc(m.name)}:</b> ${esc(m.text)}</div>`).join('');
@@ -4118,6 +4292,17 @@ class Handler(BaseHTTPRequestHandler):
                 upd["game_next"] = str(data["game_next"])[:60]
             if "auto_update" in data:
                 upd["auto_update"] = bool(data["auto_update"])
+            for k in ("bot_enabled", "bot_greet", "bot_follow", "bot_ban_scam"):
+                if k in data:
+                    upd[k] = bool(data[k])
+            for k, n in (("bot_greet_msg", 450), ("bot_follow_msg", 450), ("bot_scam_words", 500)):
+                if k in data:
+                    upd[k] = re.sub(r"[\r\n]+", " ", str(data[k])).strip()[:n]
+            if "bot_greet_hours" in data:
+                try:
+                    upd["bot_greet_hours"] = max(0.1, min(168.0, float(data["bot_greet_hours"])))
+                except (TypeError, ValueError):
+                    pass
             if "slate_vod" in data:
                 upd["slate_vod"] = bool(data["slate_vod"])
             if "pause_on" in data and bool(data["pause_on"]) != bool(get_cfg().get("pause_on")):
@@ -4564,6 +4749,14 @@ def status():
         "session_started": streamer.session_started,
         "auto_update": cfg.get("auto_update", True),
         "titles": title_mgr.status(),
+        "bot": {**{k: cfg.get(k, DEFAULT_CFG[k]) for k in ("bot_enabled", "bot_greet", "bot_follow", "bot_ban_scam",
+                                                         "bot_greet_msg", "bot_follow_msg", "bot_greet_hours",
+                                                         "bot_scam_words")},
+                "status": chat_bot.status if cfg.get("bot_enabled") else "",
+                "connected": bool((title_mgr.tok.get("twitch") or {}).get("user_id"))
+                             and not (title_mgr.tok.get("twitch") or {}).get("dead"),
+                "scopes_ok": BOT_SCOPES.issubset(set((title_mgr.tok.get("twitch") or {}).get("scopes") or [])),
+                "banned": list(chat_bot.banned)[:5]},
         "title_cfg": {k: cfg.get(k, DEFAULT_CFG[k]) for k in ("title_countdown", "title_done", "title_vod", "title_fallback", "cat_countdown", "cat_vod", "yt_category",
                                                             "tw_client_id", "yt_client_id")},
         "yt_secret_set": bool(cfg.get("yt_client_secret")), "tw_secret_set": bool(cfg.get("tw_client_secret")), "cat_vod_auto": cfg.get("cat_vod_auto", True),
@@ -4638,7 +4831,7 @@ def main():
     threading.Thread(target=lambda: _safe(build_slate_loop), daemon=True).start()
     if not load_json(VERSION_PATH, {}).get("sha"):
         _safe(lambda: save_json(VERSION_PATH, {"sha": latest_sha(), "installed": time.time()}))
-    for t in (ticker, image_feeder, audio_feeder, stats, auto_updater, twitch_chat, game_queue, title_mgr, slate_keeper):
+    for t in (ticker, image_feeder, audio_feeder, stats, auto_updater, twitch_chat, game_queue, title_mgr, slate_keeper, chat_bot):
         if t.ident is None:
             t.start()
     # alte Einzel-Musikdatei (frühere Version) in die Playlist übernehmen
