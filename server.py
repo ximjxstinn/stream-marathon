@@ -1047,6 +1047,13 @@ class StatsTracker(threading.Thread):
                             x["total"] = max(x["total"], x["session"])
                 if want and any(dd.get("live") for dd in st["dest"].values()):
                     self.data["alltime"] = self.data.get("alltime", 0) + 1   # Sekunden, in denen irgendwo live
+                for k, dd in st["dest"].items():   # echte Startzeit von Twitch/YouTube hat Vorrang
+                    ps = title_mgr.platform_start.get(k)
+                    if ps and dd.get("live") and time.time() - ps[1] < 300 and 0 <= time.time() - ps[0] < 60 * 86400:
+                        x = self.d(k)
+                        x["session"] = int(time.time() - ps[0])
+                        x["since"] = ps[0]
+                        x["current"] = min(x["current"], x["session"])
                 for k, dd in st["dest"].items():
                     pl = dd.get("planned")
                     if pl is not None:
@@ -1778,6 +1785,7 @@ class TitleManager(threading.Thread):
         self.state = {"twitch": {}, "youtube": {}}
         self.last = {"twitch": (None, 0), "youtube": (None, 0)}
         self.wake = threading.Event()
+        self.platform_start = {}    # Plattform -> (Startzeit des laufenden Livestreams, abgefragt um)
 
     def _save(self):
         save_json(TOKENS_PATH, self.tok)
@@ -1975,7 +1983,37 @@ class TitleManager(threading.Thread):
                                                "&broadcastStatus=active&broadcastType=all&maxResults=5")
         if code == 200 and j.get("items"):
             self.yt_privacy = (j["items"][0].get("status") or {}).get("privacyStatus") or self.__dict__.get("yt_privacy")
+            st = (j["items"][0].get("snippet") or {}).get("actualStartTime")
+            if st:
+                self._set_start("youtube", st)
+        elif code == 200:
+            self.platform_start.pop("youtube", None)
         return code, j
+
+    def _set_start(self, plat, iso):
+        from datetime import datetime
+        try:
+            self.platform_start[plat] = (datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp(), time.time())
+        except ValueError:
+            pass
+
+    def _poll_starts(self):
+        """Echte Startzeit des laufenden Livestreams von Twitch/YouTube holen (für die LIVE-Zeit im Stream)."""
+        if time.time() - self.__dict__.get("_starts_at", 0) < 60:
+            return
+        self._starts_at = time.time()
+        t = self.tok.get("twitch")
+        if t and not t.get("dead") and t.get("user_id") and self._refresh("twitch"):
+            c, j = self._call("twitch", "GET", "https://api.twitch.tv/helix/streams?user_id=" + t["user_id"])
+            if c == 200:
+                if j.get("data"):
+                    self._set_start("twitch", j["data"][0]["started_at"])
+                else:
+                    self.platform_start.pop("twitch", None)
+        y = self.tok.get("youtube")
+        if y and not y.get("dead") and get_cfg().get("yt_enabled") and self._refresh("youtube"):
+            if time.time() - self.__dict__.get("_yt_check", 0) > 55:   # sonst hat _yt_ensure_live gerade gefragt
+                self._yt_live()
 
     def _yt_ensure_live(self):
         """Wenn der Server an YouTube sendet, aber dort kein Livestream läuft (z. B. nach dem Beenden
@@ -2117,6 +2155,10 @@ class TitleManager(threading.Thread):
                 self._yt_ensure_live()
             except Exception as e:  # noqa
                 print("YouTube-Livestream:", e, flush=True)
+            try:
+                self._poll_starts()
+            except Exception as e:  # noqa
+                print("Startzeiten:", e, flush=True)
             try:
                 self.tick()
             except Exception as e:  # noqa
