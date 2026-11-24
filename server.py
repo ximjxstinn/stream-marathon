@@ -2193,12 +2193,27 @@ class TitleManager(threading.Thread):
             return
         self._starts_at = time.time()
         t = self.tok.get("twitch")
+        cfg = get_cfg()
+        done = False
         if t and not t.get("dead") and t.get("user_id") and self._refresh("twitch"):
             c, j = self._call("twitch", "GET", "https://api.twitch.tv/helix/streams?user_id=" + t["user_id"])
             if c == 200:
+                done = True
                 if j.get("data"):
                     self._set_start("twitch", j["data"][0]["started_at"])
                 else:
+                    self.platform_start.pop("twitch", None)
+        login = ((t or {}).get("name") or cfg.get("vod_channel") or "").strip().lower()
+        if not done and cfg.get("tw_enabled") and login:
+            # ohne Anmeldung: öffentliche Twitch-Abfrage (wie die Twitch-Webseite) – "live seit"
+            c, j = _http("POST", "https://gql.twitch.tv/gql",
+                         {"query": 'query{user(login:"%s"){stream{createdAt}}}' % re.sub(r"[^a-z0-9_]", "", login)},
+                         headers={"Client-Id": TW_GQL_ID})
+            if c == 200:
+                stream = (((j or {}).get("data") or {}).get("user") or {}).get("stream")
+                if stream and stream.get("createdAt"):
+                    self._set_start("twitch", stream["createdAt"])
+                elif (j or {}).get("data"):
                     self.platform_start.pop("twitch", None)
         y = self.tok.get("youtube")
         if y and not y.get("dead") and get_cfg().get("yt_enabled") and self._refresh("youtube"):
