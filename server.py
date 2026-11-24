@@ -3422,7 +3422,8 @@ def vod_audio_args(cfg, audio_path=None):
         return [*music, "-map", "0:v:0", "-map", "1:a", "-af", "volume=0", "-shortest"]
     if mode == "music":
         return [*music, "-map", "0:v:0", "-map", "1:a", "-shortest"]
-    vol = max(0, min(100, int(cfg.get("vod_mix_volume", 30)))) / 100
+    v = max(0, min(100, int(cfg.get("vod_mix_volume", 30))))
+    vol = 0 if v == 0 else round(10 ** ((-40 + 40 * v / 100) / 20), 4)    # unten richtig leise, oben voll
     return [*music, "-filter_complex",
             f"[0:a:0]aresample=44100,volume={vol}[a0];[a0][1:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]",
             "-map", "0:v:0", "-map", "[aout]", "-shortest"]
@@ -3509,6 +3510,8 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
 .chk{display:flex;align-items:center;gap:8px;margin-top:14px;color:var(--txt);font-size:15px}
 pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max-height:220px;overflow:auto;white-space:pre-wrap;margin:0}
 .hint{color:var(--mut);font-size:13px;margin-top:8px}.empty{color:var(--mut)}
+.mixer{background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin-top:6px}
+.mxrow{display:flex;align-items:center;gap:8px;margin:6px 0}.mxrow input{flex:1}.mxl{min-width:78px;font-weight:600}
 </style></head><body>
 <header><h1>📺 24/7 Stream</h1><a href="/logout">Logout</a></header>
 <main>
@@ -3538,13 +3541,11 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   </div>
   <div class="btns"><button id="twSkip">⏭ Nächstes VOD</button></div>
   <label>Ton bei VODs</label>
-  <select id="twAudio" onchange="api('/api/config',{vod_audio:this.value}).then(refresh)">
-   <option value="music">VOD stumm – eigene Musik-Playlist spielen</option>
-   <option value="mix">VOD-Ton leise + eigene Musik</option>
-   <option value="mute">Komplett stumm</option>
-   <option value="orig">Original-Ton vom VOD</option>
-  </select>
-  <div id="twMixBox" style="display:none"><label>Lautstärke VOD-Ton beim Mischen (%)</label><input type="range" id="twMix" min="0" max="100" step="5" onchange="api('/api/config',{vod_mix_volume:+this.value})"></div>
+  <div class="mixer">
+   <div class="mxrow"><span class="mxl">🎮 VOD</span><span>🔇</span><input type="range" id="twMix" min="0" max="100" step="1" onchange="vodMix()"><span>🔊</span></div>
+   <div class="mxrow"><span class="mxl">🎵 Musik</span><span>🔇</span><input type="range" id="twMus" min="0" max="100" step="1" onchange="vodMix()"><span>🔊</span></div>
+  </div>
+  <div class="hint">Ganz links = aus. VOD und Musik kannst du frei mischen – Änderungen kommen ohne Unterbrechung nach 2–3 Sekunden.</div>
   <label>Abspiel-Reihenfolge</label>
   <select id="twOrder" onchange="api('/api/twpl_order',{order:this.value}).then(refresh)"><option value="list">Wie in der Liste (oben → unten)</option><option value="random">Zufällig</option></select>
   <label>Liste sortieren</label>
@@ -3591,9 +3592,8 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
    <div class="btns"><label class="filebtn">cookies.txt wählen<input type="file" id="ckFile" accept=".txt,text/plain"></label><button onclick="api('/api/cookies_delete').then(refresh)">Entfernen</button></div>
   </details>
   <div id="muList" style="margin-top:8px"></div>
-  <label>Lautstärke beim Countdown und in der Pause: <span id="volV"></span> %</label><input type="range" id="cd_volume" min="0" max="100" style="width:100%">
-  <label>Lautstärke bei VODs: <b id="twMusV"></b></label><input type="range" id="twMus" min="0" max="100" step="1" style="width:100%" oninput="$('twMusV').textContent=this.value+' %'" onchange="api('/api/config',{vod_music_volume:+this.value})">
-  <div class="hint">Bei VODs spielt die Musik nur, wenn unter Modus → Twitch-VODs → „Ton bei VODs“ Musik ausgewählt ist.</div>
+  <label>Lautstärke beim Countdown und in der Pause</label><input type="range" id="cd_volume" min="0" max="100" style="width:100%">
+  <div class="hint">Wie laut die Musik bei VODs ist, stellst du unter Modus → Twitch-VODs → „Ton bei VODs“ ein.</div>
   <label class="chk"><input type="checkbox" id="cd_shuffle_music" onchange="api('/api/config',{cd_shuffle_music:this.checked})"> Songs zufällig mischen</label>
   <div class="hint">Songs, Bild und Lautstärke werden live getauscht – der Stream läuft weiter. Nur lizenzfreie Musik verwenden (z. B. StreamBeats, NCS), sonst drohen DMCA-Strikes.</div>
 </section>
@@ -3755,7 +3755,8 @@ async function refresh(){
  $('cdBox').style.display=cd?'':'none';$('twBox').style.display=tw?'':'none';
  $('twSeek').style.display=s.tw_now?'':'none';
  $('twNow').innerHTML=s.tw_now?`🔴 Läuft: <b>${esc(s.tw_now.title)}</b><br><small style="color:var(--mut)">${fmt(s.tw_now.pos)}${s.tw_now.duration?' / '+fmt(s.tw_now.duration):''}</small>`:'';
- if(document.activeElement!==$('twAudio'))$('twAudio').value=s.vod_audio||'orig';$('twMixBox').style.display=s.vod_audio=='mix'?'':'none';if(document.activeElement!==$('twMus')){$('twMus').value=s.vod_music_volume;$('twMusV').textContent=s.vod_music_volume+' %'}if(document.activeElement!==$('twMix'))$('twMix').value=s.vod_mix_volume;
+ if(document.activeElement!==$('twMix'))$('twMix').value={orig:100,music:0,mute:0}[s.vod_audio]??s.vod_mix_volume;
+ if(document.activeElement!==$('twMus'))$('twMus').value=(s.vod_audio=='orig'||s.vod_audio=='mute')?0:s.vod_music_volume;
  if(document.activeElement!==$('twOrder'))$('twOrder').value=s.tw_order||'list';
  $('twList').innerHTML=s.tw_playlist.length?s.tw_playlist.map((v,i)=>{const cur=v.url==s.tw_cur,nx=v.url==s.tw_next;return `<div class="vid"${cur?' style="border-color:#ffc400"':''}><div class="t">${i+1}. ${cur?'▶ ':''}${esc(v.title)}<br><small>${v.timestamp?new Date(v.timestamp*1000).toLocaleDateString('de-DE')+' · ':''}${v.duration?fmt(v.duration):''}${cur?' · läuft gerade':''}${nx?' · kommt als Nächstes':''}</small></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end" data-u="${esc(v.url)}"><button onclick="twMv(this,'top')" ${i?'':'disabled'} title="Ganz nach oben">⏫</button><button onclick="twMv(this,'up')" ${i?'':'disabled'}>▲</button><button onclick="twMv(this,'down')" ${i<s.tw_playlist.length-1?'':'disabled'}>▼</button>${cur?'':`<button class="go" onclick="twPlay(this,1)">▶ Jetzt</button><button onclick="twPlay(this,0)">⏭ Als Nächstes</button>`}<button onclick="twRemove(this.parentNode.dataset.u)">✕</button></div></div>`}).join(''):'<div class="empty">Noch keine VODs in der Playlist.</div>';
  $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('cvInfo').textContent=s.cd_cover?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
@@ -3795,6 +3796,7 @@ $('twSkip').onclick=async()=>{await api('/api/twpl_skip');setTimeout(refresh,800
 async function twSeek(d){const j=await api('/api/twpl_seek',{delta:d});if(j.ok)setTimeout(refresh,2500)}
 async function twJump(){const p=$('twTo').value.trim().split(':').map(Number);if(!p.length||p.some(isNaN))return alert('Zeit z. B. so eingeben: 1:23:45 oder 45:00');
  const sec=p.reduce((a,x)=>a*60+x,0);const j=await api('/api/twpl_seek',{to:sec});if(j.ok){$('twTo').value='';setTimeout(refresh,2500)}}
+function vodMix(){api('/api/config',{vod_mix_volume:+$('twMix').value,vod_music_volume:+$('twMus').value})}
 async function twMv(b,to){await api('/api/twpl_move',{url:b.parentNode.dataset.u,to});refresh()}
 async function twPlay(b,now){b.disabled=true;await api('/api/twpl_play',{url:b.parentNode.dataset.u,now:!!now});setTimeout(refresh,now?1500:200)}
 async function twRemove(u){if(confirm('VOD aus der Playlist entfernen?')){await api('/api/twpl_remove',{url:u});refresh()}}
@@ -4090,6 +4092,15 @@ class Handler(BaseHTTPRequestHandler):
                 upd["yt_category"] = str(data["yt_category"])
             if data.get("vod_audio") in ("orig", "mute", "music", "mix"):
                 upd["vod_audio"] = data["vod_audio"]
+            if "vod_mix_volume" in data or "vod_music_volume" in data:
+                cur = get_cfg()
+                try:
+                    vv_ = max(0, min(100, int(data.get("vod_mix_volume", cur.get("vod_mix_volume", 30)))))
+                    mm_ = max(0, min(100, int(data.get("vod_music_volume", cur.get("vod_music_volume", 20)))))
+                    upd["vod_audio"] = ("orig" if vv_ >= 100 and mm_ == 0 else "mute" if vv_ == 0 and mm_ == 0
+                                        else "music" if vv_ == 0 else "mix")
+                except (TypeError, ValueError):
+                    pass
             if "vod_music_volume" in data:
                 try:
                     upd["vod_music_volume"] = max(0, min(100, int(data["vod_music_volume"])))
