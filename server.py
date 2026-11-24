@@ -97,7 +97,7 @@ DEFAULT_CFG = {
     "cd_boxlabel": "Kann gespielt werden in:",
     "cd_volume": 60,
     "cd_shuffle_music": True,
-    "cfg_version": 5,
+    "cfg_version": 6,
     "vod_channel": "xImJxstinn",
     "show_runtime": True,             # "● LIVE seit …" im Stream einblenden
     "auto_update": True,              # neue Versionen automatisch installieren
@@ -134,7 +134,7 @@ DEFAULT_CFG = {
     "bot_follow": True,
     "bot_follow_msg": "Danke fürs Folgen, @{name}! 💜 Gerade laufen Wiederholungen (VOD-Kanal) – "
                       "beim nächsten echten Live bist du dabei!",
-    "bot_greet_hours": 12,            # gleiche Person frühestens nach so vielen Stunden wieder begrüßen
+    "bot_greet_hours": 0,             # 0 = auf jede Nachricht antworten, sonst gleiche Person erst nach x Stunden
     "bot_ban_scam": True,
     "bot_scam_words": "",             # eigene Wörter, die sofort zum Bann führen (Komma-getrennt)
     "chat_keep_min": 10,
@@ -182,6 +182,10 @@ def get_cfg():
         if float(stored.get("yt_max_hours", 23.5) or 0) > 11.84:
             stored["yt_max_hours"] = 11.83   # Update auf Version 4: YouTube-Limit 12 h (11:50)
         stored["cfg_version"] = 4
+        save_json(CFG_PATH, {**cfg, **stored})
+    if stored and stored.get("cfg_version", 1) < 6 and stored.get("cfg_version", 1) >= 5:
+        stored["bot_greet_hours"] = 0         # Update auf Version 6: Bot antwortet immer
+        stored["cfg_version"] = 6
         save_json(CFG_PATH, {**cfg, **stored})
     if stored and stored.get("cfg_version", 1) < 5:
         stored["slate_vod"] = False          # Update auf Version 5: VOD-Wechsel jetzt nahtlos, Standbild aus
@@ -2538,8 +2542,8 @@ class ChatBot(threading.Thread):
                              daemon=True).start()
             return True
         if cfg.get("bot_greet", True) and not text.startswith("!"):
-            hours = float(cfg.get("bot_greet_hours", 12) or 12)
-            if time.time() - self.greeted.get(u, 0) > hours * 3600:
+            hours = float(cfg.get("bot_greet_hours", 0) or 0)
+            if hours <= 0 or time.time() - self.greeted.get(u, 0) > hours * 3600:
                 self.greeted[u] = time.time()
                 self.say(cfg.get("bot_greet_msg", ""), tags.get("display-name") or user)
         return False
@@ -3798,7 +3802,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div id="botInfo" class="hint"></div>
  <label class="chk"><input type="checkbox" id="botGreet" onchange="api('/api/config',{bot_greet:this.checked})"> Wer im Chat schreibt, bekommt eine Antwort</label>
  <textarea id="botGreetMsg" rows="3" style="width:100%;box-sizing:border-box" onchange="api('/api/config',{bot_greet_msg:this.value})"></textarea>
- <label>Gleiche Person erst wieder begrüßen nach (Stunden)</label><input type="text" id="botHours" inputmode="decimal" onchange="api('/api/config',{bot_greet_hours:parseFloat(this.value.replace(',','.'))||12})">
+ <label>Gleiche Person erst wieder begrüßen nach (Stunden) – 0 = auf jede Nachricht antworten</label><input type="text" id="botHours" inputmode="decimal" onchange="api('/api/config',{bot_greet_hours:parseFloat(this.value.replace(',','.'))||0})">
  <label class="chk"><input type="checkbox" id="botFollow" onchange="api('/api/config',{bot_follow:this.checked})"> Neue Follower bekommen eine Nachricht im Chat</label>
  <textarea id="botFollowMsg" rows="3" style="width:100%;box-sizing:border-box" onchange="api('/api/config',{bot_follow_msg:this.value})"></textarea>
  <label class="chk"><input type="checkbox" id="botBan" onchange="api('/api/config',{bot_ban_scam:this.checked})"> Betrüger automatisch bannen (z. B. „Best viewers on …“, Follower-Verkauf, Krypto-Spam)</label>
@@ -4300,7 +4304,7 @@ class Handler(BaseHTTPRequestHandler):
                     upd[k] = re.sub(r"[\r\n]+", " ", str(data[k])).strip()[:n]
             if "bot_greet_hours" in data:
                 try:
-                    upd["bot_greet_hours"] = max(0.1, min(168.0, float(data["bot_greet_hours"])))
+                    upd["bot_greet_hours"] = max(0.0, min(168.0, float(data["bot_greet_hours"])))
                 except (TypeError, ValueError):
                     pass
             if "slate_vod" in data:
