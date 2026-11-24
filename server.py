@@ -2834,6 +2834,7 @@ class Streamer:
                         last_note = time.time()
                     continue
                 if line:
+                    proc.__dict__["last_err"] = line[-200:]
                     log.write(line + "\n")
                     log.flush()
         except (OSError, ValueError):
@@ -2943,6 +2944,7 @@ class Streamer:
             time.sleep(0.2)
         if not ready.is_set() or new.poll() is not None or not self.want:
             rc = new.poll()
+            tee_ok = audio_feeder.tee is not None
             try:
                 new.kill()
             except OSError:
@@ -2951,6 +2953,9 @@ class Streamer:
             if not self.want:
                 return
             why = f"ffmpeg beendet mit Code {rc}" if rc is not None else "kein Bild nach 20 s"
+            why += f", Ton-Pipe {'verbunden' if tee_ok else 'nicht verbunden' if tee else 'normal'}"
+            if new.__dict__.get("last_err"):
+                why += f", ffmpeg: {new.last_err}"
             log_line(f"Nahtloser Wechsel ging nicht ({why}) – starte stattdessen normal neu")
             self.kind = ""            # alte Quelle nicht als "VOD zu Ende" werten, die neue Stelle ist schon gesetzt
             self._kill()
@@ -3539,7 +3544,6 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
    <option value="mute">Komplett stumm</option>
    <option value="orig">Original-Ton vom VOD</option>
   </select>
-  <div id="twMusBox" style="display:none"><label>Lautstärke eigene Musik bei VODs: <b id="twMusV"></b></label><input type="range" id="twMus" min="0" max="100" step="1" oninput="$('twMusV').textContent=this.value+' %'" onchange="api('/api/config',{vod_music_volume:+this.value})"></div>
   <div id="twMixBox" style="display:none"><label>Lautstärke VOD-Ton beim Mischen (%)</label><input type="range" id="twMix" min="0" max="100" step="5" onchange="api('/api/config',{vod_mix_volume:+this.value})"></div>
   <label>Abspiel-Reihenfolge</label>
   <select id="twOrder" onchange="api('/api/twpl_order',{order:this.value}).then(refresh)"><option value="list">Wie in der Liste (oben → unten)</option><option value="random">Zufällig</option></select>
@@ -3573,7 +3577,10 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <div class="btns" style="margin-top:0"><label class="filebtn">Bild wählen<input type="file" id="bgFile" accept="image/png,image/jpeg,image/webp"></label><button id="bgDel">Entfernen</button></div>
   <div data-th="ps5 release konsole"><label>Cover (quadratisch) <span id="cvInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">Cover wählen<input type="file" id="cvFile" accept="image/png,image/jpeg,image/webp"></label><button onclick="api('/api/default_cover').then(j=>{refresh();if(j.ok)showPrev()})">🎨 Vice-City-Cover verwenden</button><button id="cvDel">Entfernen</button></div></div>
-  <label>Musik-Playlist <span id="muInfo"></span></label>
+ </div>
+</section>
+<section class="card"><h2>🎵 Musik</h2>
+  <label style="margin-top:0">Musik-Playlist <span id="muInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">＋ Songs hinzufügen<input type="file" id="muFile" accept="audio/*,video/*,.mp3,.m4a,.mp4,.webm,.mkv" multiple></label><button id="muSkip">⏭ Nächster Song</button></div>
   <div style="display:flex;gap:8px;margin-top:8px"><input type="text" id="muLink" placeholder="Link einfügen (YouTube, SoundCloud, Playlist bis 200 Songs)" style="flex:1"><button class="go" id="bMuLink">＋ Per Link</button></div>
   <div id="muJobs"></div>
@@ -3584,10 +3591,11 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
    <div class="btns"><label class="filebtn">cookies.txt wählen<input type="file" id="ckFile" accept=".txt,text/plain"></label><button onclick="api('/api/cookies_delete').then(refresh)">Entfernen</button></div>
   </details>
   <div id="muList" style="margin-top:8px"></div>
-  <label>Lautstärke: <span id="volV"></span> %</label><input type="range" id="cd_volume" min="0" max="100" style="width:100%">
-  <label class="chk"><input type="checkbox" id="cd_shuffle_music"> Songs zufällig mischen</label>
+  <label>Lautstärke beim Countdown und in der Pause: <span id="volV"></span> %</label><input type="range" id="cd_volume" min="0" max="100" style="width:100%">
+  <label>Lautstärke bei VODs: <b id="twMusV"></b></label><input type="range" id="twMus" min="0" max="100" step="1" style="width:100%" oninput="$('twMusV').textContent=this.value+' %'" onchange="api('/api/config',{vod_music_volume:+this.value})">
+  <div class="hint">Bei VODs spielt die Musik nur, wenn unter Modus → Twitch-VODs → „Ton bei VODs“ Musik ausgewählt ist.</div>
+  <label class="chk"><input type="checkbox" id="cd_shuffle_music" onchange="api('/api/config',{cd_shuffle_music:this.checked})"> Songs zufällig mischen</label>
   <div class="hint">Songs, Bild und Lautstärke werden live getauscht – der Stream läuft weiter. Nur lizenzfreie Musik verwenden (z. B. StreamBeats, NCS), sonst drohen DMCA-Strikes.</div>
- </div>
 </section>
 <section class="card"><h2>📝 Stream-Titel automatisch</h2>
  <label class="chk" style="margin-top:0"><input type="checkbox" id="tiAuto" onchange="api('/api/config',{title_auto:this.checked}).then(refresh)"> Titel auf Twitch und YouTube automatisch anpassen</label>
@@ -3747,7 +3755,7 @@ async function refresh(){
  $('cdBox').style.display=cd?'':'none';$('twBox').style.display=tw?'':'none';
  $('twSeek').style.display=s.tw_now?'':'none';
  $('twNow').innerHTML=s.tw_now?`🔴 Läuft: <b>${esc(s.tw_now.title)}</b><br><small style="color:var(--mut)">${fmt(s.tw_now.pos)}${s.tw_now.duration?' / '+fmt(s.tw_now.duration):''}</small>`:'';
- if(document.activeElement!==$('twAudio'))$('twAudio').value=s.vod_audio||'orig';$('twMixBox').style.display=s.vod_audio=='mix'?'':'none';$('twMusBox').style.display=(s.vod_audio=='music'||s.vod_audio=='mix')?'':'none';if(document.activeElement!==$('twMus')){$('twMus').value=s.vod_music_volume;$('twMusV').textContent=s.vod_music_volume+' %'}if(document.activeElement!==$('twMix'))$('twMix').value=s.vod_mix_volume;
+ if(document.activeElement!==$('twAudio'))$('twAudio').value=s.vod_audio||'orig';$('twMixBox').style.display=s.vod_audio=='mix'?'':'none';if(document.activeElement!==$('twMus')){$('twMus').value=s.vod_music_volume;$('twMusV').textContent=s.vod_music_volume+' %'}if(document.activeElement!==$('twMix'))$('twMix').value=s.vod_mix_volume;
  if(document.activeElement!==$('twOrder'))$('twOrder').value=s.tw_order||'list';
  $('twList').innerHTML=s.tw_playlist.length?s.tw_playlist.map((v,i)=>{const cur=v.url==s.tw_cur,nx=v.url==s.tw_next;return `<div class="vid"${cur?' style="border-color:#ffc400"':''}><div class="t">${i+1}. ${cur?'▶ ':''}${esc(v.title)}<br><small>${v.timestamp?new Date(v.timestamp*1000).toLocaleDateString('de-DE')+' · ':''}${v.duration?fmt(v.duration):''}${cur?' · läuft gerade':''}${nx?' · kommt als Nächstes':''}</small></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end" data-u="${esc(v.url)}"><button onclick="twMv(this,'top')" ${i?'':'disabled'} title="Ganz nach oben">⏫</button><button onclick="twMv(this,'up')" ${i?'':'disabled'}>▲</button><button onclick="twMv(this,'down')" ${i<s.tw_playlist.length-1?'':'disabled'}>▼</button>${cur?'':`<button class="go" onclick="twPlay(this,1)">▶ Jetzt</button><button onclick="twPlay(this,0)">⏭ Als Nächstes</button>`}<button onclick="twRemove(this.parentNode.dataset.u)">✕</button></div></div>`}).join(''):'<div class="empty">Noch keine VODs in der Playlist.</div>';
  $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('cvInfo').textContent=s.cd_cover?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
