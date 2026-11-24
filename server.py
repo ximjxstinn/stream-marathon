@@ -138,6 +138,10 @@ DEFAULT_CFG = {
     "bot_greet_hours": 0,             # 0 = auf jede Nachricht antworten, sonst gleiche Person erst nach x Stunden
     "bot_ban_scam": True,
     "bot_scam_words": "",             # eigene Wörter, die sofort zum Bann führen (Komma-getrennt)
+    "bot_commands": [                 # Befehle im Chat -> Antwort im Twitch-Chat
+        {"id": "c1", "cmd": "!discord", "text": "💬 Mein Discord: {discord}", "on": True},
+        {"id": "c2", "cmd": "!tiktok", "text": "📱 Mein TikTok: {tiktok}", "on": True},
+    ],
     "bot_timers": [                   # Nachrichten, die der Bot regelmäßig schreibt
         {"id": "t1", "text": "📺 Das hier ist ein 24/7 VOD-Kanal – hier laufen Wiederholungen. Folg mir, um zu sehen, "
                              "wann ich wieder live bin! 💜", "minutes": 15, "on": True},
@@ -1731,12 +1735,6 @@ class TwitchChat(threading.Thread):
             text = text[8:].rstrip("\x01")
         low = text.lower().strip()
         # Befehle
-        if low.startswith("!discord") and cfg.get("discord_link"):
-            self.banner = (f"Discord:  {cfg['discord_link']}", time.time() + 12)
-            return
-        if low.startswith("!tiktok") and cfg.get("tiktok_link"):
-            self.banner = (f"TikTok:  {cfg['tiktok_link']}", time.time() + 12)
-            return
         if user.lower() in [u.strip().lower() for u in (cfg.get("chat_ignore") or "").split(",") if u.strip()]:
             return                                      # z. B. Bots wie Nightbot ausblenden
         if low.startswith("!"):
@@ -2597,12 +2595,29 @@ class ChatBot(threading.Thread):
             threading.Thread(target=self.ban, args=(tags["user-id"], tags.get("display-name") or user, text),
                              daemon=True).start()
             return True
-        if cfg.get("bot_greet", True) and not text.startswith("!"):
+        if text.strip().startswith("!"):
+            self.command(text.strip().split()[0].lower(), cfg)
+            return False
+        if cfg.get("bot_greet", True):
             hours = float(cfg.get("bot_greet_hours", 0) or 0)
             if hours <= 0 or time.time() - self.greeted.get(u, 0) > hours * 3600:
                 self.greeted[u] = time.time()
                 self.say(cfg.get("bot_greet_msg", ""), tags.get("display-name") or user)
         return False
+
+    def fill(self, tpl, cfg):
+        return (tpl or "").replace("{discord}", cfg.get("discord_link") or "").replace("{tiktok}", cfg.get("tiktok_link") or "")
+
+    def command(self, cmd, cfg):
+        """!befehl -> Antwort im Twitch-Chat (gleicher Befehl höchstens alle 15 s)."""
+        for c in cfg.get("bot_commands") or []:
+            if c.get("on", True) and (c.get("cmd") or "").lower() == cmd:
+                last = self.__dict__.setdefault("cmd_last", {})
+                if time.time() - last.get(cmd, 0) < 15:
+                    return
+                last[cmd] = time.time()
+                self.say(self.fill(c.get("text"), cfg), "")
+                return
 
     def say(self, tpl, name):
         msg = (tpl or "").replace("{name}", name).strip()
@@ -2666,9 +2681,7 @@ class ChatBot(threading.Thread):
                 continue
             if now - last[t["id"]] >= max(1.0, float(t.get("minutes", 15))) * 60:
                 last[t["id"]] = now
-                msg = (t["text"].replace("{discord}", cfg.get("discord_link") or "")
-                       .replace("{tiktok}", cfg.get("tiktok_link") or ""))
-                self.say(msg, "")
+                self.say(self.fill(t["text"], cfg), "")
 
     def run(self):
         last_poll = 0
@@ -3882,6 +3895,12 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <textarea id="botFollowMsg" rows="3" style="width:100%;box-sizing:border-box" onchange="api('/api/config',{bot_follow_msg:this.value})"></textarea>
  <label class="chk"><input type="checkbox" id="botBan" onchange="api('/api/config',{bot_ban_scam:this.checked})"> Betrüger automatisch bannen (z. B. „Best viewers on …“, Follower-Verkauf, Krypto-Spam)</label>
  <label>Eigene Wörter, die sofort zum Bann führen (mit Komma trennen)</label><input type="text" id="botWords" placeholder="z. B. streamboo, cheap viewers" onchange="api('/api/config',{bot_scam_words:this.value})">
+ <label>❗ Befehle – wer z. B. !discord schreibt, bekommt die Antwort im Twitch-Chat</label>
+ <div id="botCmds"></div>
+ <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px"><input type="text" id="cmName" placeholder="!befehl" style="flex:1;min-width:90px">
+  <input type="text" id="cmText" placeholder="Antwort, z. B. Mein Instagram: …" style="flex:3;min-width:180px"><button class="go" id="bCmAdd">＋ Hinzufügen</button></div>
+ <label>Discord-Link ({discord})</label><input type="text" id="botDiscord" onchange="api('/api/config',{discord_link:this.value})">
+ <label>TikTok-Link ({tiktok})</label><input type="text" id="botTiktok" onchange="api('/api/config',{tiktok_link:this.value})">
  <label>⏰ Timer – Nachrichten, die der Bot regelmäßig schreibt</label>
  <div id="botTimers"></div>
  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px"><input type="text" id="tmText" placeholder="Neue Nachricht, z. B. Folgt mir auf TikTok: {tiktok}" style="flex:3;min-width:180px">
@@ -3895,8 +3914,6 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <label>Position bei VODs</label><select id="chVodPos" onchange="api('/api/config',{chat_vod_pos:this.value})"><option value="tl">oben links</option><option value="tr">oben rechts</option><option value="bl">unten links</option><option value="br">unten rechts</option></select>
  <div class="hint" id="chInfo"></div>
  <label>Twitch-Kanal</label><input type="text" id="chChan">
- <label>Discord-Link (für !discord)</label><input type="text" id="chDc" placeholder="discord.gg/…">
- <label>TikTok-Link (für !tiktok)</label><input type="text" id="chTt" placeholder="tiktok.com/@…">
  <label>Gesperrte Wörter (mit Komma getrennt) – solche Nachrichten erscheinen nicht im Stream</label><input type="text" id="chBlock">
  <label>Nutzer ausblenden (z. B. Bots)</label><input type="text" id="chIgn">
  <div class="btns"><button class="go" id="bChSave">Speichern (live)</button></div>
@@ -3990,12 +4007,14 @@ async function refresh(){
  const BO=s.bot||{};$('botOn').checked=BO.bot_enabled;$('botGreet').checked=BO.bot_greet;$('botFollow').checked=BO.bot_follow;$('botBan').checked=BO.bot_ban_scam;
  for(const[k,f]of[['botGreetMsg','bot_greet_msg'],['botFollowMsg','bot_follow_msg'],['botHours','bot_greet_hours'],['botWords','bot_scam_words']])if(document.activeElement!==$(k))$(k).value=BO[f]??'';
  $('botInfo').innerHTML=!BO.bot_enabled?'Aus':!BO.connected?'<span style="color:#ff6b6b">Erst Twitch unter „📝 Stream-Titel“ verbinden</span>':!BO.scopes_ok?'<span style="color:#ffc400">Bitte Twitch unter „📝 Stream-Titel“ einmal trennen und neu verbinden – der Bot braucht zusätzliche Rechte (Chat schreiben, bannen, Follower sehen).</span>':BO.status?'<span style="color:#ff6b6b">'+esc(BO.status)+'</span>':'<span style="color:#4ade80">✅ Bot läuft</span>';
+ $('botCmds').innerHTML=(BO.commands||[]).length?BO.commands.map(c=>`<div class="vid"${c.on?'':' style="opacity:.5"'}><div class="t"><b>${esc(c.cmd)}</b>${c.on?'':' · aus'}<br><small>${esc(c.text)}</small></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end" data-id="${c.id}"><button onclick="cmEdit(this)" data-cmd="${esc(c.cmd)}" data-text="${esc(c.text)}">✏</button><button onclick="cmDo('toggle',this)">${c.on?'Aus':'An'}</button><button onclick="cmDo('remove',this)">✕</button></div></div>`).join(''):'<div class="empty">Noch keine Befehle.</div>';
+ for(const[k,f]of[['botDiscord','discord'],['botTiktok','tiktok']])if(document.activeElement!==$(k))$(k).value=BO[f]||'';
  $('botTimers').innerHTML=(BO.timers||[]).length?BO.timers.map(t=>`<div class="vid"${t.on?'':' style="opacity:.5"'}><div class="t">${esc(t.text)}<br><small>alle ${String(t.minutes).replace('.',',')} Min.${t.on?'':' · aus'}</small></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end" data-id="${t.id}"><button onclick="tmDo('now',this)" title="Jetzt senden">▶</button><button onclick="tmEdit(this)" title="Bearbeiten" data-text="${esc(t.text)}" data-min="${t.minutes}">✏</button><button onclick="tmDo('toggle',this)">${t.on?'Aus':'An'}</button><button onclick="tmDo('remove',this)">✕</button></div></div>`).join(''):'<div class="empty">Noch keine Timer.</div>';
  $('botBanned').innerHTML=(BO.banned||[]).length?'<div class="hint">Zuletzt gebannt:</div>'+BO.banned.map(b=>`<div class="vid"><div class="t"><b>${esc(b.name)}</b> · ${new Date(b.t*1000).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})}<br><small>${esc(b.text)}</small></div></div>`).join(''):'';
  const CH=s.chat||{};$('chOn').checked=CH.on_stream&&CH.enabled;
  $('chInfo').textContent=CH.connected?`✅ Verbunden mit #${CH.channel} · ${CH.chatters} ${CH.chatters==1?'Person hat':'Leute haben'} in dieser Sitzung geschrieben`:'⏳ Verbinde mit dem Twitch-Chat …';
  $('chRecent').innerHTML=(CH.recent||[]).map(m=>`<div style="font-size:13px;color:var(--mut)"><b style="color:var(--txt)">${esc(m.name)}:</b> ${esc(m.text)}</div>`).join('');
- if(!window.chLoaded){window.chLoaded=1;$('chChan').value=CH.channel;$('chDc').value=CH.discord;$('chTt').value=CH.tiktok;$('chBlock').value=CH.blocklist;$('chIgn').value=CH.ignore}
+ if(!window.chLoaded){window.chLoaded=1;$('chChan').value=CH.channel;$('chBlock').value=CH.blocklist;$('chIgn').value=CH.ignore}
  const PF=s.perf||{};$('perfPreset').value=PF.preset;$('perfAuto').checked=PF.auto;
  $('perfInfo').textContent=`Server-Auslastung: ${Math.round(PF.load/PF.cpus*100)} % (${PF.cpus} Kern${PF.cpus>1?'e':''})`+(PF.lag>1?` · ⚠ Live-Bild hinkt ${PF.lag} s hinterher`:' · Live-Bild läuft flüssig')+(PF.note?` · ${PF.note}`:'');
  const U=s.update_info||{};$('autoUpd').checked=s.auto_update;
@@ -4058,7 +4077,9 @@ async function twSeek(d){const j=await api('/api/twpl_seek',{delta:d});if(j.ok)s
 async function twJump(){const p=$('twTo').value.trim().split(':').map(Number);if(!p.length||p.some(isNaN))return alert('Zeit z. B. so eingeben: 1:23:45 oder 45:00');
  const sec=p.reduce((a,x)=>a*60+x,0);const j=await api('/api/twpl_seek',{to:sec});if(j.ok){$('twTo').value='';setTimeout(refresh,2500)}}
 function vodMix(){api('/api/config',{vod_mix_volume:+$('twMix').value,vod_music_volume:+$('twMus').value})}
-let tmEditId='';
+let tmEditId='',cmEditId='';
+async function cmDo(a,b){if(a=='remove'&&!confirm('Befehl löschen?'))return;await api('/api/bot_cmd_'+a,{id:b.parentNode.dataset.id});refresh()}
+function cmEdit(b){cmEditId=b.parentNode.dataset.id;$('cmName').value=b.dataset.cmd;$('cmText').value=b.dataset.text;$('bCmAdd').textContent='💾 Speichern';$('cmText').focus()}
 async function tmDo(a,b){const id=b.parentNode.dataset.id;if(a=='remove'&&!confirm('Timer löschen?'))return;await api('/api/bot_timer_'+a,{id});refresh()}
 function tmEdit(b){tmEditId=b.parentNode.dataset.id;$('tmText').value=b.dataset.text;$('tmMin').value=b.dataset.min;$('bTmAdd').textContent='💾 Speichern';$('tmText').focus()}
 async function twMv(b,to){await api('/api/twpl_move',{url:b.parentNode.dataset.u,to});refresh()}
@@ -4107,11 +4128,13 @@ async function tiConnect(p,b){if(b.dataset.c){if(confirm('Verbindung trennen?'))
  await api('/api/config',c);delete $('ti_tw_cid').dataset.dirty;delete $('ti_yt_cid').dataset.dirty;$('ti_yt_sec').value='';$('ti_tw_sec').value='';
  const j=await api('/api/title_login',{platform:p});if(j.ok)refresh()}
 $('bTiTw').onclick=function(){tiConnect('twitch',this)};$('bTiYt').onclick=function(){tiConnect('youtube',this)};
+$('bCmAdd').onclick=async()=>{const j=await api('/api/bot_cmd_save',{id:cmEditId,cmd:$('cmName').value,text:$('cmText').value});
+ if(j.ok){cmEditId='';$('cmName').value=$('cmText').value='';$('bCmAdd').textContent='＋ Hinzufügen';refresh()}};
 $('bTmAdd').onclick=async()=>{const j=await api('/api/bot_timer_save',{id:tmEditId,text:$('tmText').value,minutes:$('tmMin').value||15});
  if(j.ok){tmEditId='';$('tmText').value=$('tmMin').value='';$('bTmAdd').textContent='＋ Hinzufügen';refresh()}};
 $('bGAdd').onclick=async()=>{const j=await api('/api/game_add',{name:$('gName').value,short:$('gShort').value,target:$('gWhen').value});if(j.ok){$('gName').value=$('gShort').value=$('gWhen').value='';refresh()}};
 $('chOn').onchange=e=>api('/api/config',{chat_on_stream:e.target.checked,chat_enabled:true});
-$('bChSave').onclick=async()=>{const j=await api('/api/config',{chat_channel:$('chChan').value,discord_link:$('chDc').value,tiktok_link:$('chTt').value,chat_blocklist:$('chBlock').value,chat_ignore:$('chIgn').value});if(j.ok)alert('Gespeichert ✅')};
+$('bChSave').onclick=async()=>{const j=await api('/api/config',{chat_channel:$('chChan').value,chat_blocklist:$('chBlock').value,chat_ignore:$('chIgn').value});if(j.ok)alert('Gespeichert ✅')};
 $('bMuLink').onclick=async()=>{const u=$('muLink').value.trim();if(!u)return;const j=await api('/api/music_link',{url:u});if(j.ok){$('muLink').value='';refresh()}};
 $('muSkip').onclick=async()=>{await api('/api/music_skip');setTimeout(refresh,800)};
 $('bUpd').onclick=async()=>{if(!confirm('Neueste Version installieren? Der Stream bleibt dabei online.'))return;
@@ -4536,6 +4559,29 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"error": "Der Stream läuft gerade nicht"})
             streamer.session_started = ts
             streamer._save_state()
+        elif path == "/api/bot_cmd_save":
+            cmd = "!" + re.sub(r"[^a-z0-9äöüß_-]", "", str(data.get("cmd", "")).lower().lstrip("!"))[:25]
+            text = re.sub(r"[\r\n]+", " ", str(data.get("text", ""))).strip()[:450]
+            if cmd == "!" or not text:
+                return self._send(200, {"error": "Befehl und Antwort eintragen"})
+            cmds = list(get_cfg().get("bot_commands") or [])
+            cid = str(data.get("id") or "")
+            if any(c["cmd"] == cmd and c["id"] != cid for c in cmds):
+                return self._send(200, {"error": f"{cmd} gibt es schon"})
+            old = next((c for c in cmds if c["id"] == cid), None)
+            if old:
+                old.update(cmd=cmd, text=text)
+            else:
+                cmds.append({"id": "c" + secrets.token_hex(3), "cmd": cmd, "text": text, "on": True})
+            set_cfg(bot_commands=cmds)
+        elif path == "/api/bot_cmd_remove":
+            set_cfg(bot_commands=[c for c in (get_cfg().get("bot_commands") or []) if c["id"] != data.get("id")])
+        elif path == "/api/bot_cmd_toggle":
+            cmds = list(get_cfg().get("bot_commands") or [])
+            for c in cmds:
+                if c["id"] == data.get("id"):
+                    c["on"] = not c.get("on", True)
+            set_cfg(bot_commands=cmds)
         elif path == "/api/bot_timer_save":
             text = re.sub(r"[\r\n]+", " ", str(data.get("text", ""))).strip()[:450]
             if not text:
@@ -4881,7 +4927,8 @@ def status():
                 "connected": bool((title_mgr.tok.get("twitch") or {}).get("user_id"))
                              and not (title_mgr.tok.get("twitch") or {}).get("dead"),
                 "scopes_ok": BOT_SCOPES.issubset(set((title_mgr.tok.get("twitch") or {}).get("scopes") or [])),
-                "banned": list(chat_bot.banned)[:5], "timers": cfg.get("bot_timers") or []},
+                "banned": list(chat_bot.banned)[:5], "timers": cfg.get("bot_timers") or [], "commands": cfg.get("bot_commands") or [],
+                "discord": cfg.get("discord_link", ""), "tiktok": cfg.get("tiktok_link", "")},
         "title_cfg": {k: cfg.get(k, DEFAULT_CFG[k]) for k in ("title_countdown", "title_done", "title_vod", "title_fallback", "cat_countdown", "cat_vod", "yt_category",
                                                             "tw_client_id", "yt_client_id")},
         "yt_secret_set": bool(cfg.get("yt_client_secret")), "tw_secret_set": bool(cfg.get("tw_client_secret")), "cat_vod_auto": cfg.get("cat_vod_auto", True),
