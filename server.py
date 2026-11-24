@@ -2939,17 +2939,21 @@ class Streamer:
         threading.Thread(target=self._pump, args=(new,), daemon=True).start()
         threading.Thread(target=self._stderr_reader, args=(new, log), daemon=True).start()
         t0 = time.time()
-        while not ready.is_set() and new.poll() is None and time.time() - t0 < 30 and self.want:
+        while not ready.is_set() and new.poll() is None and time.time() - t0 < 20 and self.want:
             time.sleep(0.2)
         if not ready.is_set() or new.poll() is not None or not self.want:
-            log_line("Nahtloser Wechsel hat nicht geklappt – das alte Bild läuft weiter")
+            rc = new.poll()
             try:
                 new.kill()
             except OSError:
                 pass
             audio_feeder.stop_tee()
-            v.clear()
-            v.update(backup)
+            if not self.want:
+                return
+            why = f"ffmpeg beendet mit Code {rc}" if rc is not None else "kein Bild nach 20 s"
+            log_line(f"Nahtloser Wechsel ging nicht ({why}) – starte stattdessen normal neu")
+            self.kind = ""            # alte Quelle nicht als "VOD zu Ende" werten, die neue Stelle ist schon gesetzt
+            self._kill()
             return
         old = self.proc
         with self.swap_lock:
@@ -3075,6 +3079,14 @@ class Streamer:
                 ran = time.time() - self.started_at
                 log_line(reason or f"Bild-Quelle beendet (Code {self.proc.returncode})")
                 log.close()
+                if self.kind == "pause" and ran < 10 and self.want:
+                    self.pause_fails = self.__dict__.get("pause_fails", 0) + 1
+                    if self.pause_fails >= 2:      # Pause-Bildschirm startet nicht -> Pause aus, damit der Stream läuft
+                        set_cfg(pause_on=False)
+                        self.pause_fails = 0
+                        log_line("Kurze Pause ließ sich nicht starten – Pause wieder ausgeschaltet")
+                elif self.kind == "pause":
+                    self.pause_fails = 0
                 if cfg["mode"] == "twitch" and self.want and self.vod["url"] and self.kind.startswith("vod"):
                     if self._vod_after(self.proc.returncode, reason):
                         continue                      # direkt weiter mit dem nächsten VOD
