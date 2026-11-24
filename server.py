@@ -721,6 +721,27 @@ def convert_bg(src, cfg):
     rebuild_layers(cfg)
 
 
+def runtime_filters(top="h*0.04"):
+    """Live-Zeit-Einblendung (an allen 6 Positionen vorbereitet, nur die gewählte bekommt Text)."""
+    q = lambda p: "'" + p.replace("'", "") + "'"   # noqa
+    B = q(font("bold"))
+
+    def T(name, color, x, y, extra=""):
+        return (f"drawtext=fontfile={B}:textfile={q(os.path.join(RUN_DIR, name + '.txt'))}:reload=1:"
+                f"expansion=none:fontsize=h*0.026:fontcolor={color}:x={x}:y={y}{extra}")
+    by = "h*0.955-h*0.026*1.25"
+    pos_xy = {"tl": ("w*0.035", top), "tc": ("(w-text_w)/2", top), "tr": ("w*0.965-text_w", top),
+              "bl": ("w*0.035", by), "bc": ("(w-text_w)/2", by), "br": ("w*0.965-text_w", by)}
+    pre = "h*0.026*1.56884"
+    rest_x = {"l": f"w*0.035+{pre}", "c": f"(w-text_w)/2+{pre}/2", "r": "w*0.965-text_w"}
+    out = []
+    for p, (x, y) in pos_xy.items():
+        out.append(T(f"runtime_{p}", "0xff3b3b", x, y,
+                     ":box=1:boxcolor=black@0.45:boxborderw=%d:alpha='if(lt(text_w,h*0.05),0,1)'" % 0))
+        out.append(T(f"runtime_rest_{p}", "white", rest_x[p[1]], y))
+    return out
+
+
 def theme_filters(cfg, w, h):
     q = lambda p: "'" + p.replace("'", "") + "'"   # noqa
     B, R, L, M = (q(font(k)) for k in ("bold", "regular", "light", "mono"))
@@ -2648,7 +2669,8 @@ def build_vod_cmd(cfg, stream_url, start_pos, output):
             "-re", *(["-ss", f"{start_pos:.1f}"] if start_pos > 1 else []), "-i", stream_url,
             *vod_audio_args(cfg),
             "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
-                   f"fps={fps},format=yuv420p,setsar=1",
+                   f"fps={fps},setsar=1," + ",".join(runtime_filters()).replace("boxborderw=0", f"boxborderw={int(h * 0.012)}")
+                   + ",format=yuv420p",
             "-c:v", "libx264", "-preset", live_preset(cfg), "-b:v", vb, "-maxrate", vb, "-bufsize", vb,
             "-x264-params", "nal-hrd=cbr:force-cfr=1:repeat-headers=1",
             "-g", str(fps * 2), "-keyint_min", str(fps * 2), "-sc_threshold", "0",
