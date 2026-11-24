@@ -1924,7 +1924,7 @@ class GameQueue(threading.Thread):
         time.sleep(20)
         while True:
             try:
-                if time.time() - self.last_fetch > 6 * 3600:
+                if time.time() - self.last_fetch > 3600:
                     self.fetch()
                 self.check()
             except Exception as e:  # noqa
