@@ -36,7 +36,7 @@ PORT = int(os.environ.get("STREAM24_PORT", "8090"))
 QUALITIES = {
     "720p30": (1280, 720, 30, "3000k"),
     "720p60": (1280, 720, 60, "4500k"),
-    "1080p30": (1920, 1080, 30, "4500k"),
+    "1080p30": (1920, 1080, 30, "6000k"),
     "1080p60": (1920, 1080, 60, "6000k"),
 }
 VIDEO_EXT = (".mp4", ".mkv", ".mov", ".webm", ".flv", ".avi", ".ts", ".m4v")
@@ -564,6 +564,7 @@ class Ticker(threading.Thread):
 
 
 HANDOFF_PATH = os.path.join(RUN_DIR, "handoff.json")
+SOURCE_VERSION = 2   # erhöhen, wenn sich das Bild (Qualität, Einblendungen) ändert -> nach Update nahtlos neu laden
 _HANDOFF = {}
 try:   # nach einem Update (exec) die laufenden Pipes/Prozesse übernehmen
     _h = load_json(HANDOFF_PATH, {})
@@ -573,6 +574,9 @@ try:   # nach einem Update (exec) die laufenden Pipes/Prozesse übernehmen
             _HANDOFF = _h
 except Exception:  # noqa
     _HANDOFF = {}
+
+
+_HANDOFF_SRCV = _HANDOFF.get("srcv")
 
 
 def _handoff_file(key, mode="wb"):
@@ -1569,6 +1573,7 @@ def _handoff_exec():
             return False
         v = s.vod
         h = {"t": time.time(), "pid": s.proc.pid, "kind": s.kind, "progress": VOD_PROGRESS,
+             "srcv": s.__dict__.get("srcv"),
              "out_fd": s.proc.stdout.fileno(), "err_fd": s.proc.stderr.fileno() if s.proc.stderr else None,
              "retimer": {"delta": s.retimer.delta, "last_dts": s.retimer.last_dts},
              "vod_pos": v["pos"] if v.get("url") else None, "audio_path": audio_feeder.path}
@@ -2911,6 +2916,12 @@ class Streamer:
                 self.retimer.delta, self.retimer.last_dts = r.get("delta", 0), r.get("last_dts")
                 if h.get("vod_pos") is not None and self.vod.get("url"):
                     self.vod["pos"] = h["vod_pos"]
+                if h.get("srcv") != SOURCE_VERSION and self.kind.startswith("vod"):
+                    def _refresh_source():          # neue Bild-Einstellungen gleich übernehmen (nahtlos)
+                        time.sleep(8)
+                        cur = self._vod_now()
+                        self.request_swap(lambda: self.vod.__setitem__("seek", cur))
+                    threading.Thread(target=_refresh_source, daemon=True).start()
             except Exception as e:  # noqa
                 print("Übernahme fehlgeschlagen:", e, flush=True)
                 self.__dict__.pop("adopted", None)
@@ -3059,7 +3070,7 @@ class Streamer:
             self._vod_done()
             return True
         v["tries"] = 0 if played > 60 else v["tries"] + 1
-        _stream_url_cache.pop(v["url"], None)           # beim nächsten Versuch frischen Link holen
+        drop_stream_url(v["url"])                       # beim nächsten Versuch frischen Link holen
         if v["tries"] >= 4:
             log_line(f"Twitch-VOD '{v['title']}' bricht immer wieder ab – überspringe")
             self._vod_done()
@@ -3236,6 +3247,7 @@ class Streamer:
         with self.swap_lock:
             self.retimer.switch()
             self.proc = self.active = new
+            self.srcv = SOURCE_VERSION
             self.kind = kind if not (kind == "vod" and self._uses_audio("vod", cfg)) else "vod_music"
             VOD_PROGRESS = new_prog
             self.started_at = self.last_data = time.time()
@@ -3279,7 +3291,7 @@ class Streamer:
                 surl = resolve_stream_url(item["url"])
             except Exception as e:  # noqa
                 log_line(f"Twitch-VOD '{item['title']}' nicht abspielbar: {e} – nächstes")
-                _stream_url_cache.pop(item["url"], None)
+                drop_stream_url(item["url"])
                 self._vod_done()
                 time.sleep(2)
                 return None
@@ -3312,6 +3324,7 @@ class Streamer:
             ran = 0
             try:
                 log = open(LOG_PATH, "a", encoding="utf-8")
+                self.srcv = SOURCE_VERSION if adopted is None else _HANDOFF_SRCV
                 if adopted is not None:               # nach einem Update: laufende Quelle einfach weiter nutzen
                     log_line("Update installiert – Bild läuft ohne Unterbrechung weiter")
                     with self.swap_lock:
@@ -3654,17 +3667,25 @@ _stream_url_cache = {}
 
 
 def resolve_stream_url(url):
-    """Holt einen frischen Abspiel-Link für ein Twitch-VOD (Links laufen nach einiger Zeit ab)."""
-    hit = _stream_url_cache.get(url)
+    """Holt einen frischen Abspiel-Link für ein Twitch-VOD (Links laufen nach einiger Zeit ab).
+    Qualität passend zur Stream-Auflösung (bei 1080p also das 1080p-VOD, nicht hochskaliertes 720p)."""
+    _, h, fps, _ = QUALITIES.get(get_cfg()["quality"], QUALITIES["720p30"])
+    key = f"{url}|{h}"
+    hit = _stream_url_cache.get(key)
     if hit and time.time() - hit[0] < 1800:
         return hit[1]
-    r = subprocess.run(ytdlp("-g", "-f", "best[height<=720][fps<=30]/best[height<=720]/best", url),
+    r = subprocess.run(ytdlp("-g", "-f", f"best[height<={h}][fps<={fps}]/best[height<={h}]/best", url),
                        capture_output=True, text=True, timeout=120)
     lines = [l for l in r.stdout.splitlines() if l.startswith("http")]
     if r.returncode != 0 or not lines:
         raise RuntimeError((r.stderr.strip().splitlines() or ["kein Abspiel-Link"])[-1][:200])
-    _stream_url_cache[url] = (time.time(), lines[0])
+    _stream_url_cache[key] = (time.time(), lines[0])
     return lines[0]
+
+
+def drop_stream_url(url):
+    for k in [k for k in _stream_url_cache if k.split("|")[0] == url]:
+        _stream_url_cache.pop(k, None)
 
 
 def prefetch_stream_url(url):
