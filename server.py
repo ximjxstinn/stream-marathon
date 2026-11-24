@@ -332,6 +332,7 @@ BG_LAYER = os.path.join(CD_DIR, "bg_layer.png")
 BG_RAW = os.path.join(CD_DIR, "bg_layer.rgba")
 BG_ORIG = os.path.join(CD_DIR, "bg_orig.png")        # hochgeladenes Hintergrundbild (unverändert)
 COVER_ORIG = os.path.join(CD_DIR, "cover_orig.png")  # hochgeladenes Cover (quadratisch)
+PAUSE_ORIG = os.path.join(CD_DIR, "pause_orig.png")  # Bild für den "Kurze Pause"-Bildschirm
 EMPTY_LAYER = os.path.join(RUN_DIR, "empty.png")
 AUDIO_FIFO = os.path.join(RUN_DIR, "audio.pcm")
 AUDIO_FIFO_B = os.path.join(RUN_DIR, "audio_b.pcm")
@@ -453,12 +454,15 @@ class Ticker(threading.Thread):
         if not cfg.get("show_runtime", True) or not streamer or not streamer.session_started:
             return " "
         if cfg.get("runtime_mode") == "detail":
-            parts = []
+            parts, total = [], 0
             for k, d in DESTINATIONS.items():
                 if cfg.get(d["enabled"]) and cfg.get(d["key"]):
-                    parts.append(f"{d['name']} {fmt_dur(stats.d(k)['session'], long=True)}")
-            if parts:   # Gesamt = komplette Stream-Zeit seit Start, Insgesamt = alles, was je live war
-                parts.append(f"Gesamt {fmt_dur(time.time() - streamer.session_started, long=True)}")
+                    sec = stats.d(k)["session"]
+                    total += sec
+                    parts.append(f"{d['name']} {fmt_dur(sec, long=True)}")
+            if parts:   # Gesamt = alle Plattformen zusammengerechnet, Insgesamt = alles, was je live war
+                if len(parts) > 1:
+                    parts.append(f"Gesamt {fmt_dur(total, long=True)}")
                 if cfg.get("runtime_alltime", True):
                     parts.append(f"Insgesamt {fmt_dur(stats.data.get('alltime', 0), long=True)}")
             return "●  LIVE  " + "  ·  ".join(parts) if parts else " "
@@ -817,6 +821,67 @@ def pause_filters(h):
             f"x=(w-text_w)/2:y=h*0.54:box=1:boxcolor=black@0.6:boxborderw={int(h * 0.018)}:alpha='if(lt(text_w,h*0.05),0,1)'"]
 
 
+def pause_frame(cfg):
+    """Fertiges Hintergrundbild für "Kurze Pause": eigenes Bild verschwommen als Hintergrund,
+    scharf in der Mitte mit leuchtendem Rahmen. Ohne Bild: lila Verlauf."""
+    w, h, _, _ = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
+    out = os.path.join(RUN_DIR, f"pause_frame_{w}x{h}.png")
+    src_t = os.path.getmtime(PAUSE_ORIG) if os.path.exists(PAUSE_ORIG) else 0
+    meta = load_json(out + ".json", {})
+    if os.path.exists(out) and meta.get("src") == src_t and meta.get("v") == 1:
+        return out
+    S = int(h * 0.50) // 2 * 2
+    b = max(4, int(h * 0.006)) // 2 * 2
+    if src_t:
+        fc = (f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},boxblur=24:3,"
+              f"eq=brightness=-0.18:saturation=1.25,format=rgb24[bg];"
+              f"[0:v]scale={S}:{S}:force_original_aspect_ratio=increase,crop={S}:{S},"
+              f"pad={S + 2 * b}:{S + 2 * b}:{b}:{b}:color=0xc77dff,format=rgb24[fg];"
+              f"[bg][fg]overlay=(W-w)/2:H*0.07,"
+              f"drawbox=x=0:y=ih*0.62:w=iw:h=ih*0.38:color=black@0.35:t=fill[v]")
+        cmd = ["ffmpeg", "-v", "error", "-y", "-i", PAUSE_ORIG, "-filter_complex", fc, "-map", "[v]"]
+    else:
+        g = "exp(-((X-W/2)^2+(Y-H*0.4)^2)/(2*(H*0.45)^2))"
+        cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c=black:s={w}x{h}", "-vf",
+               f"geq=r='clip(14+90*{g},0,255)':g='clip(6+20*{g},0,255)':b='clip(30+150*{g},0,255)'"]
+    tmp = out + ".new.png"
+    r = subprocess.run(cmd + ["-frames:v", "1", "-update", "1", tmp], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("Pause-Bild: " + r.stderr.strip()[-200:])
+    os.replace(tmp, out)
+    save_json(out + ".json", {"src": src_t, "v": 1})
+    return out
+
+
+def build_pause_cmd(cfg, output, audio_path=None):
+    """Eigene Bild-Quelle "Kurze Pause": Bild + Text + Musik. Läuft, bis die Pause ausgeschaltet wird."""
+    w, h, fps, vb = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
+    frame = pause_frame(cfg)
+    q = lambda p: "'" + p.replace("'", "") + "'"   # noqa
+    B, R = q(font("bold")), q(font("regular"))
+    for n in ("pause", "pause_sub"):
+        if not os.path.exists(os.path.join(RUN_DIR, n + ".txt")):
+            atomic_write(os.path.join(RUN_DIR, n + ".txt"), " ")
+    tf = lambda n: q(os.path.join(RUN_DIR, n + ".txt"))   # noqa
+    top = 0.66 if os.path.exists(PAUSE_ORIG) else 0.40
+    vf = (f"drawtext=fontfile={B}:textfile={tf('pause')}:reload=1:expansion=none:fontsize=h*0.085:fontcolor=white:"
+          f"x=(w-text_w)/2:y=h*{top}:shadowcolor=0x7b2cbf@0.9:shadowx=0:shadowy=0:borderw=2:bordercolor=0xc77dff@0.6,"
+          f"drawtext=fontfile={R}:textfile={tf('pause_sub')}:reload=1:expansion=none:fontsize=h*0.04:fontcolor=white@0.92:"
+          f"x=(w-text_w)/2:y=h*{top + 0.115:.3f},"
+          + ",".join(runtime_filters()).replace("boxborderw=0", f"boxborderw={int(h * 0.012)}")
+          + ",format=yuv420p")
+    apath = audio_path or (audio_feeder.path if audio_feeder else AUDIO_FIFO)
+    return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-re", "-loop", "1", "-framerate", str(fps), "-i", frame,
+            "-thread_queue_size", "4096", "-f", "s16le", "-ar", "44100", "-ac", "2", "-i", apath,
+            "-map", "0:v", "-map", "1:a", "-vf", vf,
+            "-c:v", "libx264", "-preset", live_preset(cfg), "-tune", "stillimage", "-b:v", vb, "-maxrate", vb,
+            "-bufsize", vb, "-x264-params", "nal-hrd=cbr:force-cfr=1:repeat-headers=1",
+            "-g", str(fps * 2), "-keyint_min", str(fps * 2), "-sc_threshold", "0",
+            "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
+            "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", output]
+
+
 def theme_filters(cfg, w, h):
     q = lambda p: "'" + p.replace("'", "") + "'"   # noqa
     B, R, L, M = (q(font(k)) for k in ("bold", "regular", "light", "mono"))
@@ -930,10 +995,10 @@ def theme_filters(cfg, w, h):
     bx_, by_ = CHAT_BANNER.get(theme) or (cx, f"h*{cy + lh * (CHAT_LINES + 1.6):.4f}")
     chat.append(T("chat_banner", B, f"h*{max(cfs, 0.024) * 1.35:.3f}", "white", bx_, by_,
                   f":box=1:boxcolor={col}@0.92:boxborderw={int(h * cfs * 0.6)}:alpha='if(lt(text_w,h*0.1),0,1)'"))
-    return f + runtime + chat + pause_filters(h)
+    return f + runtime + chat
 
 
-def build_countdown_cmd(cfg, output, preview=False, fmt="flv"):
+def build_countdown_cmd(cfg, output, preview=False, fmt="flv", audio_path=None):
     """Baut den ffmpeg-Befehl, der den Countdown live rendert."""
     w, h, fps, vb = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
     make_empty_layer()
@@ -966,7 +1031,7 @@ def build_countdown_cmd(cfg, output, preview=False, fmt="flv"):
     if preview:
         return cmd + ["-filter_complex_script", script, "-map", "[v]", "-frames:v", "1", "-update", "1", output]
     # Eingang 2: Musik (live austauschbar)
-    cmd += ["-thread_queue_size", "4096", "-f", "s16le", "-ar", "44100", "-ac", "2", "-i", audio_feeder.path if audio_feeder else AUDIO_FIFO]
+    cmd += ["-thread_queue_size", "4096", "-f", "s16le", "-ar", "44100", "-ac", "2", "-i", audio_path or (audio_feeder.path if audio_feeder else AUDIO_FIFO)]
     cmd += ["-filter_complex_script", script, "-map", "[v]", "-map", "2:a:0",
             "-c:v", "libx264", "-preset", live_preset(cfg), "-pix_fmt", "yuv420p",
             "-b:v", vb, "-maxrate", vb, "-bufsize", vb, "-x264-params", "nal-hrd=cbr:force-cfr=1:repeat-headers=1",
@@ -2371,6 +2436,7 @@ class Streamer:
         self.active = None            # Prozess, dessen Bild gerade gesendet wird
         self.swap_req = None          # nahtloser Wechsel (Spulen, anderes VOD …) angefordert
         self.swap_lock = threading.Lock()
+        self.kind = ""                # pause | countdown | vod | vod_music
         self.lag = 0.0
         self.perf_note = ""
         self.vod = {"order": [], "url": None, "title": "", "pos": 0.0, "tries": 0, "duration": 0}
@@ -2614,12 +2680,33 @@ class Streamer:
             pass
 
     def request_swap(self, fn):
-        """VOD nahtlos wechseln: das alte läuft weiter, bis das neue Bild da ist – dann wird umgeschaltet."""
-        if get_cfg()["mode"] == "twitch" and self.source_alive():
+        """Nahtlos wechseln: das alte Bild läuft weiter, bis das neue da ist – dann wird umgeschaltet."""
+        if get_cfg()["mode"] in ("twitch", "countdown") and self.source_alive():
             self.swap_req = fn
         else:
             fn()
             self._kill()
+
+    def _source_cmd(self, cfg, progress=None, audio_path=None):
+        """Befehl für die passende Bild-Quelle: Pause-Bildschirm, Twitch-VOD oder Countdown.
+        Gibt (cmd, Art, Info) zurück oder wirft einen Fehler."""
+        if cfg.get("pause_on"):
+            return build_pause_cmd(cfg, "pipe:1", audio_path), "pause", "Kurze Pause"
+        if cfg["mode"] == "twitch":
+            v = self.vod
+            item = self._next_vod(cfg)
+            if not item:
+                raise RuntimeError("Twitch-Playlist ist leer – im Panel VODs hinzufügen")
+            surl = resolve_stream_url(item["url"])
+            return (build_vod_cmd(cfg, surl, v["pos"], "pipe:1", progress=progress, audio_path=audio_path), "vod",
+                    f"Twitch-VOD: {item['title']} ab {int(v['pos'] // 60)} min")
+        if cfg["mode"] == "countdown":
+            return build_countdown_cmd(cfg, "pipe:1", fmt="mpegts", audio_path=audio_path), "countdown", "Countdown"
+        raise RuntimeError("Dieser Modus kann nicht nahtlos wechseln")
+
+    @staticmethod
+    def _uses_audio(kind, cfg):
+        return kind in ("pause", "countdown") or (kind == "vod" and cfg.get("vod_audio", "orig") != "orig")
 
     def _do_swap(self, cfg):
         global VOD_PROGRESS
@@ -2627,27 +2714,30 @@ class Streamer:
         v = self.vod
         backup = dict(v)
         fn()
+        cfg = get_cfg()
         if "seek" in v:
             v["pos"], v["seeked"] = v.pop("seek"), time.time()
-        item = self._next_vod(cfg)
+        new_prog = VOD_PROGRESS_B if VOD_PROGRESS == VOD_PROGRESS_A else VOD_PROGRESS_A
+        if os.path.exists(new_prog):
+            os.remove(new_prog)
+        kind_new = "pause" if cfg.get("pause_on") else ("vod" if cfg["mode"] == "twitch" else "countdown")
+        apath = None
+        # Ton nur über eine zweite Pipe, wenn die alte Quelle selbst Musik liest (sonst einfach die normale Pipe)
+        tee = self._uses_audio(kind_new, cfg) and self.kind in ("pause", "countdown", "vod_music")
+        if tee:
+            apath = AUDIO_FIFO_B if audio_feeder.path == AUDIO_FIFO else AUDIO_FIFO
+            if not os.path.exists(apath):
+                os.mkfifo(apath)
         try:
-            if not item:
-                raise RuntimeError("Playlist leer")
-            surl = resolve_stream_url(item["url"])
+            cmd, kind, info = self._source_cmd(cfg, progress=new_prog, audio_path=apath)
         except Exception as e:  # noqa
             log_line(f"Wechsel nicht möglich: {e}")
             v.clear()
             v.update(backup)
             return
-        new_prog = VOD_PROGRESS_B if VOD_PROGRESS == VOD_PROGRESS_A else VOD_PROGRESS_A
-        apath = None
-        if cfg.get("vod_audio", "orig") != "orig":
-            apath = AUDIO_FIFO_B if audio_feeder.path == AUDIO_FIFO else AUDIO_FIFO
-            if not os.path.exists(apath):
-                os.mkfifo(apath)
+        if tee:
             audio_feeder.start_tee(apath)
-        cmd = build_vod_cmd(cfg, surl, v["pos"], "pipe:1", progress=new_prog, audio_path=apath)
-        log_line(f"Nahtloser Wechsel: {item['title']} ab {int(v['pos'] // 60)} min")
+        log_line(f"Nahtloser Wechsel: {info}")
         log = open(LOG_PATH, "a", encoding="utf-8")
         new = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                env=FF_ENV, bufsize=0)
@@ -2658,7 +2748,7 @@ class Streamer:
         while not ready.is_set() and new.poll() is None and time.time() - t0 < 30 and self.want:
             time.sleep(0.2)
         if not ready.is_set() or new.poll() is not None or not self.want:
-            log_line("Nahtloser Wechsel hat nicht geklappt – altes VOD läuft weiter")
+            log_line("Nahtloser Wechsel hat nicht geklappt – das alte Bild läuft weiter")
             try:
                 new.kill()
             except OSError:
@@ -2671,6 +2761,7 @@ class Streamer:
         with self.swap_lock:
             self.retimer.switch()
             self.proc = self.active = new
+            self.kind = kind if not (kind == "vod" and self._uses_audio("vod", cfg)) else "vod_music"
             VOD_PROGRESS = new_prog
             self.started_at = self.last_data = time.time()
             for chunk in new.__dict__.pop("pending", []):
@@ -2691,9 +2782,12 @@ class Streamer:
                 time.sleep(3)
                 continue
             out = "pipe:1"
-            if cfg["mode"] == "countdown":
+            if cfg.get("pause_on") and cfg["mode"] in ("twitch", "countdown"):
+                cmd, info, self.kind = build_pause_cmd(cfg, out), "Kurze Pause", "pause"
+            elif cfg["mode"] == "countdown":
                 try:
                     cmd = build_countdown_cmd(cfg, out, fmt="mpegts")
+                    self.kind = "countdown"
                 except Exception as e:  # noqa
                     self.status_msg = f"Fehler: {e}"
                     time.sleep(5)
@@ -2715,6 +2809,7 @@ class Streamer:
                     time.sleep(2)
                     continue
                 cmd = build_vod_cmd(cfg, surl, self.vod["pos"], out)
+                self.kind = "vod_music" if self._uses_audio("vod", cfg) else "vod"
                 info = f"Twitch-VOD: {item['title']} ab {int(self.vod['pos'] // 60)} min"
             else:
                 vids = [v for v in list_videos() if v["quality"] in ("", cfg["quality"])]
@@ -2769,7 +2864,7 @@ class Streamer:
                 ran = time.time() - self.started_at
                 log_line(reason or f"Bild-Quelle beendet (Code {self.proc.returncode})")
                 log.close()
-                if cfg["mode"] == "twitch" and self.want and self.vod["url"]:
+                if cfg["mode"] == "twitch" and self.want and self.vod["url"] and self.kind.startswith("vod"):
                     if self._vod_after(self.proc.returncode, reason):
                         continue                      # direkt weiter mit dem nächsten VOD
             except Exception as e:  # noqa
@@ -3118,7 +3213,7 @@ def build_vod_cmd(cfg, stream_url, start_pos, output, progress=None, audio_path=
             *vod_audio_args(cfg, audio_path),
             "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
                    f"fps={fps},setsar=1," + ",".join(runtime_filters()).replace("boxborderw=0", f"boxborderw={int(h * 0.012)}")
-                   + "," + ",".join(pause_filters(h))
+
                    + ",format=yuv420p",
             "-c:v", "libx264", "-preset", live_preset(cfg), "-b:v", vb, "-maxrate", vb, "-bufsize", vb,
             "-x264-params", "nal-hrd=cbr:force-cfr=1:repeat-headers=1",
@@ -3196,6 +3291,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div class="btns"><button class="go" id="bStart">▶ Starten</button><button class="stop" id="bStop">■ Stoppen</button><button id="bRe">↻ Neu starten</button></div>
  <div class="btns"><button id="bPause" onclick="api('/api/config',{pause_on:!this.dataset.on}).then(refresh)">☕ Kurze Pause einblenden</button>
   <input type="text" id="pauseText" maxlength="60" placeholder="☕ Kurze Pause" style="flex:1;min-width:140px" onchange="api('/api/config',{pause_text:this.value})">
+  <label class="filebtn">🖼 Pause-Bild<input type="file" id="pauseFile" accept="image/png,image/jpeg,image/webp"></label>
   <input type="text" id="pauseSub" maxlength="60" placeholder="Gleich geht's weiter!" style="flex:1;min-width:140px" onchange="api('/api/config',{pause_sub:this.value})"></div>
  <div id="platBtns" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
   <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"><b style="min-width:80px">Twitch</b><button class="go" id="pTwStart" onclick="plat('twitch','start')">▶ Start</button><button class="stop" id="pTwStop" onclick="plat('twitch','stop')">■ Stop</button><button id="pTwRe" onclick="plat('twitch','restart')">↻ Neu</button></div>
@@ -3417,7 +3513,7 @@ async function refresh(){
  const ST=s.stats||{},pct=(a,b)=>b>0?Math.min(100,a/b*100).toFixed(1).replace('.',','):'–';
  $('runtime').innerHTML=(s.session_started?`<div style="font-size:15px">⏱ <b>Läuft seit Start:</b> ${fmtL(s.session_secs)}</div><div class="hint" style="margin-top:2px">Läuft bei Abbrüchen, Updates und Neustarts weiter – beginnt erst nach ■ Stoppen neu. <a href="#" style="color:var(--acc)" onclick="setStart();return false">Startzeit ändern</a></div>`:'<div class="hint">Stream gestoppt – der Zähler startet mit ▶ Starten.</div>')+
   (()=>{const ks=Object.keys(s.dest).filter(k=>ST[k]&&(ST[k].total||ST[k].session));if(ks.length<1)return'';
-   return `<div style="margin-top:10px;font-size:15px">📊 <b>Gesamt:</b> ${fmtL(s.session_secs)} komplette Stream-Zeit seit Start<br><b>Insgesamt live:</b> ${fmtL(s.alltime)} <span style="color:var(--mut);font-size:14px">(alle Streams zusammen, egal ob Twitch oder YouTube – zählt immer weiter)</span></div>`})()+
+   return `<div style="margin-top:10px;font-size:15px">📊 <b>Gesamt:</b> ${fmtL(ks.reduce((a,k)=>a+ST[k].session,0))} (${ks.map(k=>s.dest[k].name).join(' + ')} zusammengerechnet)<br><b>Insgesamt live:</b> ${fmtL(s.alltime)} <span style="color:var(--mut);font-size:14px">(alle Streams zusammen, egal ob Twitch oder YouTube – zählt immer weiter)</span></div>`})()+
   Object.entries(s.dest).filter(([k])=>ST[k]&&(ST[k].total||ST[k].session)).map(([k,d])=>{const x=ST[k];return `<div style="margin-top:8px;font-size:14px"><b>${d.name}</b>: live ${fmtL(x.session)} in dieser Sitzung (${pct(x.session,x.since?Math.min(s.session_secs,Date.now()/1000-x.since):s.session_secs)} % online)${x.since?' · neu gestartet '+new Date(x.since*1000).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}):''} · Abbrüche: ${x.session_drops} · längste Strecke am Stück: ${fmtL(x.longest)}<br><span style="color:var(--mut)">Insgesamt gestreamt: ${fmt(x.total)}</span></div>`}).join('')+
   `<div class="btns" style="margin-top:10px;align-items:center"><label class="chk" style="margin:0"><input type="checkbox" id="showRt" ${s.show_runtime?'checked':''} onchange="api('/api/config',{show_runtime:this.checked})"> Im Stream zeigen:</label>
    <select style="width:auto" onchange="api('/api/config',{runtime_mode:this.value})"><option value="start" ${s.runtime_mode=='start'?'selected':''}>● ${esc(s.runtime_label)} …</option><option value="detail" ${s.runtime_mode=='detail'?'selected':''}>● Twitch · YouTube · Gesamt</option></select>
@@ -3500,6 +3596,7 @@ async function asset(kind,f){
 $('bgFile').onchange=e=>{if(e.target.files[0])asset('bg',e.target.files[0]);e.target.value=''};
 $('muFile').onchange=async e=>{const fs=[...e.target.files];e.target.value='';$('muInfo').textContent='(lädt hoch …)';for(const f of fs)await asset('music',f)};
 $('bgDel').onclick=async()=>{await api('/api/asset_delete',{kind:'bg'});refresh();showPrev()};
+$('pauseFile').onchange=e=>{if(e.target.files[0])asset('pause',e.target.files[0]).then(()=>alert('Pause-Bild gespeichert ✅'));e.target.value=''};
 $('cvFile').onchange=e=>{if(e.target.files[0])asset('cover',e.target.files[0]);e.target.value=''};
 $('cvDel').onclick=async()=>{await api('/api/asset_delete',{kind:'cover'});refresh();showPrev()};
 async function delSong(n){if(confirm('Song löschen?')){await api('/api/asset_delete',{kind:'music',name:n});refresh()}}
@@ -3782,9 +3879,15 @@ class Handler(BaseHTTPRequestHandler):
                 upd["auto_update"] = bool(data["auto_update"])
             if "slate_vod" in data:
                 upd["slate_vod"] = bool(data["slate_vod"])
-            if "pause_on" in data:
+            if "pause_on" in data and bool(data["pause_on"]) != bool(get_cfg().get("pause_on")):
                 upd["pause_on"] = bool(data["pause_on"])
                 log_line("Kurze Pause eingeblendet" if upd["pause_on"] else "Kurze Pause ausgeblendet")
+                vv = streamer.vod
+                if get_cfg()["mode"] == "twitch" and upd["pause_on"] and streamer.kind.startswith("vod"):
+                    cur = streamer._vod_now()          # VOD-Stelle merken – nach der Pause geht es genau hier weiter
+                    threading.Timer(0.3, lambda: streamer.request_swap(lambda: vv.__setitem__("seek", cur))).start()
+                else:
+                    threading.Timer(0.3, lambda: streamer.request_swap(lambda: None)).start()
             for k in ("pause_text", "pause_sub"):
                 if k in data:
                     upd[k] = re.sub(r"\s+", " ", "".join(c for c in str(data[k]) if c.isprintable())).strip()[:60]
@@ -4051,6 +4154,7 @@ class Handler(BaseHTTPRequestHandler):
         name = os.path.basename(unquote((qs.get("name") or [""])[0]))
         ext = os.path.splitext(name)[1].lower()
         allowed = {"bg": (".png", ".jpg", ".jpeg", ".webp"), "cover": (".png", ".jpg", ".jpeg", ".webp"),
+                   "pause": (".png", ".jpg", ".jpeg", ".webp"),
                    "music": MUSIC_EXT}
         if kind not in allowed or ext not in allowed[kind]:
             return self._send(400, {"error": "Dateityp nicht erlaubt"})
@@ -4148,6 +4252,18 @@ class Handler(BaseHTTPRequestHandler):
             save_upload_image(tmp, kind)
             rebuild_layers()                         # wird live ausgetauscht
             os.remove(tmp)
+            return
+        if kind == "pause":
+            r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", tmp, "-vf",
+                                "scale='min(1600,iw)':-2,format=rgb24", "-frames:v", "1", "-update", "1",
+                                PAUSE_ORIG + ".new.png"], capture_output=True, text=True)
+            os.remove(tmp)
+            if r.returncode != 0:
+                raise RuntimeError("Bild konnte nicht gelesen werden")
+            os.replace(PAUSE_ORIG + ".new.png", PAUSE_ORIG)
+            pause_frame(get_cfg())
+            if get_cfg().get("pause_on"):
+                streamer.request_swap(lambda: None)  # neues Bild sofort zeigen
             return
         base = re.sub(r"[^\w .()&-]+", "_", os.path.splitext(name)[0]).strip() or "song"
         _, has_video, has_audio = probe(tmp)
