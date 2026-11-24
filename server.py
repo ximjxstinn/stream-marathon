@@ -112,6 +112,7 @@ DEFAULT_CFG = {
     "yt_category": "20",              # YouTube-Kategorie (20 = Gaming)
     "vod_audio": "music",             # Ton bei VODs: orig | mute | music | mix
     "vod_mix_volume": 30,             # bei "mix": Lautstärke des VOD-Tons in %
+    "vod_music_volume": 20,           # Lautstärke der eigenen Musik bei VODs (0–100, wirkt wie ein dB-Regler)
     "tw_client_id": "",
     "yt_client_id": "",
     "yt_client_secret": "",
@@ -570,7 +571,12 @@ class AudioFeeder(threading.Thread):
         self.bad = {}           # Song -> Zeitpunkt, bis wann er übersprungen wird (kaputte Datei)
 
     def _decoder(self, song, pos=0.0):
-        vol = max(0, min(100, int(get_cfg().get("cd_volume", 60)))) / 100
+        cfg = get_cfg()
+        if cfg.get("mode") == "twitch" and cfg.get("vod_audio") in ("music", "mix"):
+            v = max(0, min(100, int(cfg.get("vod_music_volume", 20))))
+            vol = 0 if v == 0 else 10 ** ((-40 + 40 * v / 100) / 20)   # wie ein echter Lautstärkeregler: unten richtig leise
+        else:
+            vol = max(0, min(100, int(cfg.get("cd_volume", 60)))) / 100
         return subprocess.Popen(
             ["ffmpeg", "-v", "error", "-ss", f"{pos:.2f}", "-i", song, "-vn",
              "-af", f"volume={vol}", "-f", "s16le", "-ar", "44100", "-ac", "2", "pipe:1"],
@@ -2713,6 +2719,10 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div id="dests" style="margin-top:12px"></div>
  <div id="runtime" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)"></div>
  <div class="btns"><button class="go" id="bStart">▶ Starten</button><button class="stop" id="bStop">■ Stoppen</button><button id="bRe">↻ Neu starten</button></div>
+ <div id="platBtns" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"><b style="min-width:80px">Twitch</b><button class="go" id="pTwStart" onclick="plat('twitch','start')">▶ Start</button><button class="stop" id="pTwStop" onclick="plat('twitch','stop')">■ Stop</button><button id="pTwRe" onclick="plat('twitch','restart')">↻ Neu</button></div>
+  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"><b style="min-width:80px">YouTube</b><button class="go" id="pYtStart" onclick="plat('youtube','start')">▶ Start</button><button class="stop" id="pYtStop" onclick="plat('youtube','stop')">■ Stop</button><button id="pYtRe" onclick="plat('youtube','restart')">↻ Neu</button></div>
+ </div>
 </section>
 <section class="card"><h2>Modus</h2>
  <div class="btns" style="margin-top:0"><button id="mCd">⏱ Countdown</button><button id="mTw">📺 Twitch-VODs</button><button id="mVid">🎞 Gespeicherte Videos</button></div>
@@ -2731,6 +2741,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
    <option value="mute">Komplett stumm</option>
    <option value="orig">Original-Ton vom VOD</option>
   </select>
+  <div id="twMusBox" style="display:none"><label>Lautstärke eigene Musik bei VODs: <b id="twMusV"></b></label><input type="range" id="twMus" min="0" max="100" step="1" oninput="$('twMusV').textContent=this.value+' %'" onchange="api('/api/config',{vod_music_volume:+this.value})"></div>
   <div id="twMixBox" style="display:none"><label>Lautstärke VOD-Ton beim Mischen (%)</label><input type="range" id="twMix" min="0" max="100" step="5" onchange="api('/api/config',{vod_mix_volume:+this.value})"></div>
   <label>Abspiel-Reihenfolge</label>
   <select id="twOrder" onchange="api('/api/twpl_order',{order:this.value}).then(refresh)"><option value="list">Wie in der Liste (oben → unten)</option><option value="random">Zufällig</option></select>
@@ -2893,6 +2904,8 @@ async function refresh(){
  $('dot').className='dot'+(s.live?' live':'');$('st').textContent=s.live?'LIVE':(s.running?s.message:'Gestoppt');
  $('sub').textContent=(s.sender_ok?(s.running?`Zuschauer sehen: ${s.showing=='Live-Programm'?(s.mode=='twitch'?'Twitch-VODs':s.mode=='countdown'?'Countdown':'Videos'):s.showing} · `:''):'⚠ Sender-Dienst läuft nicht · ')+`Speicher frei: ${s.disk_free_gb} GB`+(s.mode=='videos'?` · ${s.videos.length} Videos (${fmt(s.total_duration)})`:'');
  $('bStart').disabled=s.running;$('bStop').disabled=!s.running;$('bRe').disabled=!s.running;
+ for(const[p,k,en]of[['Tw','twitch',s.tw_enabled],['Yt','youtube',s.yt_enabled]]){const on=en&&s.running;$('p'+p+'Start').disabled=on;$('p'+p+'Stop').disabled=!en;$('p'+p+'Re').disabled=!on}
+ for(const k of['tw_enabled','yt_enabled'])if(document.activeElement!==$(k))$(k).checked=s[k];
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
  $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig'&&j.kind!='music').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${(j.state=='konvertiert'||j.state=='lädt von Twitch')?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
  $('log').textContent=s.log||'(noch leer)';
@@ -2934,7 +2947,7 @@ async function refresh(){
  $('cdBox').style.display=cd?'':'none';$('twBox').style.display=tw?'':'none';
  $('twSeek').style.display=s.tw_now?'':'none';
  $('twNow').innerHTML=s.tw_now?`🔴 Läuft: <b>${esc(s.tw_now.title)}</b><br><small style="color:var(--mut)">${fmt(s.tw_now.pos)}${s.tw_now.duration?' / '+fmt(s.tw_now.duration):''}</small>`:'';
- if(document.activeElement!==$('twAudio'))$('twAudio').value=s.vod_audio||'orig';$('twMixBox').style.display=s.vod_audio=='mix'?'':'none';if(document.activeElement!==$('twMix'))$('twMix').value=s.vod_mix_volume;
+ if(document.activeElement!==$('twAudio'))$('twAudio').value=s.vod_audio||'orig';$('twMixBox').style.display=s.vod_audio=='mix'?'':'none';$('twMusBox').style.display=(s.vod_audio=='music'||s.vod_audio=='mix')?'':'none';if(document.activeElement!==$('twMus')){$('twMus').value=s.vod_music_volume;$('twMusV').textContent=s.vod_music_volume+' %'}if(document.activeElement!==$('twMix'))$('twMix').value=s.vod_mix_volume;
  if(document.activeElement!==$('twOrder'))$('twOrder').value=s.tw_order||'list';
  $('twList').innerHTML=s.tw_playlist.length?s.tw_playlist.map((v,i)=>{const cur=v.url==s.tw_cur,nx=v.url==s.tw_next;return `<div class="vid"${cur?' style="border-color:#ffc400"':''}><div class="t">${i+1}. ${cur?'▶ ':''}${esc(v.title)}<br><small>${v.timestamp?new Date(v.timestamp*1000).toLocaleDateString('de-DE')+' · ':''}${v.duration?fmt(v.duration):''}${cur?' · läuft gerade':''}${nx?' · kommt als Nächstes':''}</small></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end" data-u="${esc(v.url)}"><button onclick="twMv(this,'top')" ${i?'':'disabled'} title="Ganz nach oben">⏫</button><button onclick="twMv(this,'up')" ${i?'':'disabled'}>▲</button><button onclick="twMv(this,'down')" ${i<s.tw_playlist.length-1?'':'disabled'}>▼</button>${cur?'':`<button class="go" onclick="twPlay(this,1)">▶ Jetzt</button><button onclick="twPlay(this,0)">⏭ Als Nächstes</button>`}<button onclick="twRemove(this.parentNode.dataset.u)">✕</button></div></div>`}).join(''):'<div class="empty">Noch keine VODs in der Playlist.</div>';
  $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('cvInfo').textContent=s.cd_cover?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
@@ -2950,6 +2963,9 @@ async function refresh(){
 const esc=t=>String(t).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function del(n){if(confirm('Video löschen?')){await api('/api/delete',{name:n});refresh()}}
 async function dismiss(n){await api('/api/dismiss',{name:n});refresh()}
+async function plat(p,a){const n=p=='twitch'?'Twitch':'YouTube';
+ if(a=='stop'&&!confirm(n+' stoppen? Der Stream läuft auf der anderen Plattform weiter.'))return;
+ await api('/api/platform',{platform:p,action:a});setTimeout(refresh,500)}
 $('bStart').onclick=async()=>{await api('/api/start');refresh()};
 $('bStop').onclick=async()=>{if(confirm('Stream wirklich stoppen?')){await api('/api/stop');refresh()}};
 $('bRe').onclick=async()=>{await api('/api/restart');refresh()};
@@ -3161,6 +3177,32 @@ class Handler(BaseHTTPRequestHandler):
             streamer.start()
         elif path == "/api/stop":
             streamer.stop()
+        elif path == "/api/platform":
+            plat = data.get("platform")
+            key = {"twitch": "tw_enabled", "youtube": "yt_enabled"}.get(plat)
+            act = data.get("action")
+            if not key or act not in ("start", "stop", "restart"):
+                return self._send(200, {"error": "Unbekannte Plattform"})
+            cfg = get_cfg()
+            if act != "stop" and not cfg.get("stream_key" if plat == "twitch" else "yt_key"):
+                return self._send(200, {"error": "Für diese Plattform ist noch kein Stream-Schlüssel eingetragen"})
+            name = "Twitch" if plat == "twitch" else "YouTube"
+            if act == "start":
+                set_cfg(**{key: True})
+                if not streamer.want:
+                    streamer.start()
+                log_line(f"{name}: von Hand gestartet")
+            elif act == "stop":
+                set_cfg(**{key: False})
+                log_line(f"{name}: von Hand gestoppt")
+            else:
+                set_cfg(**{key: False})
+                log_line(f"{name}: von Hand neu verbunden")
+
+                def _back(k=key):
+                    time.sleep(3)
+                    set_cfg(**{k: True})
+                threading.Thread(target=_back, daemon=True).start()
         elif path == "/api/restart":
             streamer.restart()
         elif path == "/api/config":
@@ -3237,6 +3279,11 @@ class Handler(BaseHTTPRequestHandler):
                 upd["yt_category"] = str(data["yt_category"])
             if data.get("vod_audio") in ("orig", "mute", "music", "mix"):
                 upd["vod_audio"] = data["vod_audio"]
+            if "vod_music_volume" in data:
+                try:
+                    upd["vod_music_volume"] = max(0, min(100, int(data["vod_music_volume"])))
+                except (TypeError, ValueError):
+                    pass
             if "vod_mix_volume" in data:
                 try:
                     upd["vod_mix_volume"] = max(0, min(100, int(data["vod_mix_volume"])))
@@ -3273,7 +3320,7 @@ class Handler(BaseHTTPRequestHandler):
             old = get_cfg()
             set_cfg(**upd)
             changed = {k for k, v in upd.items() if old.get(k) != v}
-            if "cd_volume" in changed:
+            if changed & {"cd_volume", "vod_music_volume", "vod_audio", "mode"}:
                 audio_feeder.reload = True           # Lautstärke live ändern
             if "quality" in changed:
                 threading.Thread(target=lambda: _safe(build_slate_loop), daemon=True).start()
@@ -3671,7 +3718,7 @@ def status():
         "title_cfg": {k: cfg.get(k, DEFAULT_CFG[k]) for k in ("title_countdown", "title_done", "title_vod", "title_fallback", "cat_countdown", "cat_vod", "yt_category",
                                                             "tw_client_id", "yt_client_id")},
         "yt_secret_set": bool(cfg.get("yt_client_secret")), "tw_secret_set": bool(cfg.get("tw_client_secret")), "cat_vod_auto": cfg.get("cat_vod_auto", True),
-        "vod_audio": cfg.get("vod_audio", "orig"), "vod_mix_volume": cfg.get("vod_mix_volume", 30),
+        "vod_audio": cfg.get("vod_audio", "orig"), "vod_mix_volume": cfg.get("vod_mix_volume", 30), "vod_music_volume": cfg.get("vod_music_volume", 20),
         "games": {"auto": cfg.get("game_auto", True), "done_hours": cfg.get("game_done_hours", 12),
                   "current": cfg.get("game_current"), "next": cfg.get("game_next", ""),
                   "list": [{**g, "custom": g["id"].startswith("c_"),
