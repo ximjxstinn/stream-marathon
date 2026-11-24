@@ -97,7 +97,7 @@ DEFAULT_CFG = {
     "cd_boxlabel": "Kann gespielt werden in:",
     "cd_volume": 60,
     "cd_shuffle_music": True,
-    "cfg_version": 4,
+    "cfg_version": 5,
     "vod_channel": "xImJxstinn",
     "show_runtime": True,             # "● LIVE seit …" im Stream einblenden
     "auto_update": True,              # neue Versionen automatisch installieren
@@ -113,7 +113,7 @@ DEFAULT_CFG = {
     "vod_audio": "music",             # Ton bei VODs: orig | mute | music | mix
     "vod_mix_volume": 30,             # bei "mix": Lautstärke des VOD-Tons in %
     "vod_music_volume": 20,
-    "slate_vod": True,                # "Neu verbinden …" bei VODs über dem letzten VOD-Bild           # Lautstärke der eigenen Musik bei VODs (0–100, wirkt wie ein dB-Regler)
+    "slate_vod": False,               # "Neu verbinden …" bei VODs über dem letzten VOD-Bild           # Lautstärke der eigenen Musik bei VODs (0–100, wirkt wie ein dB-Regler)
     "tw_client_id": "",
     "yt_client_id": "",
     "yt_client_secret": "",
@@ -133,7 +133,10 @@ DEFAULT_CFG = {
     "perf_preset": "veryfast",        # Encoder-Einstellung für Live-Bild (wird bei Überlastung automatisch schneller)
     "perf_auto": True,                # bei Überlastung automatisch sparsamer werden
     "runtime_label": "LIVE seit",
-    "runtime_alltime": True,          # zusätzlich "Insgesamt" (gesamte Live-Zeit aller Streams) zeigen
+    "runtime_alltime": True,
+    "pause_on": False,                # "Kurze Pause" im Stream einblenden
+    "pause_text": "☕ Kurze Pause",
+    "pause_sub": "Gleich geht's weiter!",          # zusätzlich "Insgesamt" (gesamte Live-Zeit aller Streams) zeigen
     "runtime_mode": "start",          # "start" = seit Start, "detail" = Twitch · YouTube · Gesamt
     "runtime_pos": "tr",              # Position der Einblendung (tl, tc, tr, bl, bc, br)
     "tw_playlist": [],                # Twitch-VODs, die direkt (ohne Speichern) abgespielt werden
@@ -169,6 +172,10 @@ def get_cfg():
         if float(stored.get("yt_max_hours", 23.5) or 0) > 11.84:
             stored["yt_max_hours"] = 11.83   # Update auf Version 4: YouTube-Limit 12 h (11:50)
         stored["cfg_version"] = 4
+        save_json(CFG_PATH, {**cfg, **stored})
+    if stored and stored.get("cfg_version", 1) < 5:
+        stored["slate_vod"] = False          # Update auf Version 5: VOD-Wechsel jetzt nahtlos, Standbild aus
+        stored["cfg_version"] = 5
         save_json(CFG_PATH, {**cfg, **stored})
     cfg.update(stored)
     return cfg
@@ -327,10 +334,11 @@ BG_ORIG = os.path.join(CD_DIR, "bg_orig.png")        # hochgeladenes Hintergrund
 COVER_ORIG = os.path.join(CD_DIR, "cover_orig.png")  # hochgeladenes Cover (quadratisch)
 EMPTY_LAYER = os.path.join(RUN_DIR, "empty.png")
 AUDIO_FIFO = os.path.join(RUN_DIR, "audio.pcm")
+AUDIO_FIFO_B = os.path.join(RUN_DIR, "audio_b.pcm")
 IMAGE_FIFO = os.path.join(RUN_DIR, "image.pipe")
 for _d in (RUN_DIR, MUSIC_DIR):
     os.makedirs(_d, exist_ok=True)
-for _f in (AUDIO_FIFO, IMAGE_FIFO):
+for _f in (AUDIO_FIFO, AUDIO_FIFO_B, IMAGE_FIFO):
     if not os.path.exists(_f):
         os.mkfifo(_f)
 
@@ -454,7 +462,13 @@ class Ticker(threading.Thread):
                 if cfg.get("runtime_alltime", True):
                     parts.append(f"Insgesamt {fmt_dur(stats.data.get('alltime', 0), long=True)}")
             return "●  LIVE  " + "  ·  ".join(parts) if parts else " "
-        return f"●  {cfg.get('runtime_label', 'LIVE seit')} {fmt_dur(time.time() - streamer.session_started, long=True)}"
+        parts = [(d["name"], stats.d(k)["session"]) for k, d in DESTINATIONS.items()
+                 if cfg.get(d["enabled"]) and cfg.get(d["key"])]
+        label = cfg.get('runtime_label', 'LIVE seit')
+        if len(parts) > 1:      # jede Plattform getrennt
+            return f"●  {label}  " + "  ·  ".join(f"{n} {fmt_dur(sec, long=True)}" for n, sec in parts)
+        sec = parts[0][1] if parts else time.time() - streamer.session_started
+        return f"●  {label} {fmt_dur(sec, long=True)}"
 
     def __init__(self):
         super().__init__(daemon=True)
@@ -462,10 +476,6 @@ class Ticker(threading.Thread):
 
     def run(self):
         while True:
-            try:
-                self._yt_ensure_live()
-            except Exception as e:  # noqa
-                print("YouTube-Livestream:", e, flush=True)
             try:
                 self.tick()
             except Exception as e:  # noqa
@@ -508,6 +518,8 @@ class Ticker(threading.Thread):
             "k_games": "Spiele", "k_media": "Medien", "k_user": "xImJxstinn",
             "clock": datetime.now(ZoneInfo(TZ_NAME)).strftime("%H:%M"),
             **self._runtime_files(cfg),
+            "pause": (cfg.get("pause_text") or "Kurze Pause") if cfg.get("pause_on") else " ",
+            "pause_sub": (cfg.get("pause_sub") or " ") if cfg.get("pause_on") else " ",
             **self._chat_files(cfg),
             "k_sub": hide("Vorgeladen · Spielbar in"),
             "k_btn": "Spielen" if done else "Vorbestellt",
@@ -571,6 +583,28 @@ class AudioFeeder(threading.Thread):
         self.reload = False    # Lautstärke geändert -> gleicher Song, neue Lautstärke
         self.current = None
         self.bad = {}           # Song -> Zeitpunkt, bis wann er übersprungen wird (kaputte Datei)
+        self.path = AUDIO_FIFO  # aktuelle Pipe
+        self.tee = None         # zweite Pipe während eines nahtlosen Wechsels (fd)
+        self.tee_path = None
+
+    def start_tee(self, path):
+        """Ton zusätzlich in eine zweite Pipe schreiben (für das neue VOD beim nahtlosen Wechsel)."""
+        def opener():
+            try:
+                fd = os.open(path, os.O_WRONLY)          # wartet, bis ffmpeg die Pipe öffnet
+                os.set_blocking(fd, False)
+                self.tee_path, self.tee = path, fd
+            except OSError:
+                pass
+        threading.Thread(target=opener, daemon=True).start()
+
+    def stop_tee(self):
+        fd, self.tee, self.tee_path = self.tee, None, None
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
     def _decoder(self, song, pos=0.0):
         cfg = get_cfg()
@@ -587,9 +621,13 @@ class AudioFeeder(threading.Thread):
     def run(self):
         while True:
             try:
-                with open(AUDIO_FIFO, "wb", buffering=0) as fd:
+                with open(self.path, "wb", buffering=0) as fd:
                     self._feed(fd)
             except (BrokenPipeError, OSError):
+                if self.tee is not None and self.tee_path:   # altes VOD weg -> neue Pipe wird die Haupt-Pipe
+                    self.path = self.tee_path
+                    self.stop_tee()
+                    continue
                 time.sleep(0.2)
 
     def _feed(self, fd):
@@ -633,7 +671,24 @@ class AudioFeeder(threading.Thread):
                 ahead = start + sent / self.RATE - time.monotonic()
                 if ahead > 0.5:
                     time.sleep(ahead - 0.5)
-                fd.write(data)
+                if self.tee is not None:
+                    try:
+                        os.write(self.tee, data)
+                    except BlockingIOError:
+                        pass
+                    except OSError:
+                        self.stop_tee()
+                try:
+                    fd.write(data)
+                except BrokenPipeError:
+                    if self.tee is None:
+                        raise
+                    # altes VOD ist weg -> nahtlos mit der neuen Pipe weiter (gleicher Song, gleiche Stelle)
+                    tee, path = self.tee, self.tee_path
+                    self.tee = self.tee_path = None
+                    os.set_blocking(tee, True)
+                    fd = open(tee, "wb", buffering=0)
+                    self.path = path
                 sent += len(data)
         finally:
             if dec:
@@ -737,11 +792,29 @@ def runtime_filters(top="h*0.04"):
     pre = "h*0.026*1.56884"
     rest_x = {"l": f"w*0.035+{pre}", "c": f"(w-text_w)/2+{pre}/2", "r": "w*0.965-text_w"}
     out = []
+    for p in pos_xy:                       # Dateien müssen existieren, sonst startet ffmpeg nicht
+        for n in (f"runtime_{p}", f"runtime_rest_{p}"):
+            if not os.path.exists(os.path.join(RUN_DIR, n + ".txt")):
+                atomic_write(os.path.join(RUN_DIR, n + ".txt"), " ")
     for p, (x, y) in pos_xy.items():
         out.append(T(f"runtime_{p}", "0xff3b3b", x, y,
                      ":box=1:boxcolor=black@0.45:boxborderw=%d:alpha='if(lt(text_w,h*0.05),0,1)'" % 0))
         out.append(T(f"runtime_rest_{p}", "white", rest_x[p[1]], y))
     return out
+
+
+def pause_filters(h):
+    """Große "Kurze Pause"-Einblendung in der Mitte – leer = unsichtbar, an/aus ohne Neustart."""
+    q = lambda p: "'" + p.replace("'", "") + "'"   # noqa
+    B, R = q(font("bold")), q(font("regular"))
+    for n in ("pause", "pause_sub"):
+        if not os.path.exists(os.path.join(RUN_DIR, n + ".txt")):
+            atomic_write(os.path.join(RUN_DIR, n + ".txt"), " ")
+    tf = lambda n: q(os.path.join(RUN_DIR, n + ".txt"))   # noqa
+    return [f"drawtext=fontfile={B}:textfile={tf('pause')}:reload=1:expansion=none:fontsize=h*0.075:fontcolor=white:"
+            f"x=(w-text_w)/2:y=h*0.40:box=1:boxcolor=black@0.72:boxborderw={int(h * 0.035)}:alpha='if(lt(text_w,h*0.05),0,1)'",
+            f"drawtext=fontfile={R}:textfile={tf('pause_sub')}:reload=1:expansion=none:fontsize=h*0.036:fontcolor=white@0.9:"
+            f"x=(w-text_w)/2:y=h*0.54:box=1:boxcolor=black@0.6:boxborderw={int(h * 0.018)}:alpha='if(lt(text_w,h*0.05),0,1)'"]
 
 
 def theme_filters(cfg, w, h):
@@ -857,7 +930,7 @@ def theme_filters(cfg, w, h):
     bx_, by_ = CHAT_BANNER.get(theme) or (cx, f"h*{cy + lh * (CHAT_LINES + 1.6):.4f}")
     chat.append(T("chat_banner", B, f"h*{max(cfs, 0.024) * 1.35:.3f}", "white", bx_, by_,
                   f":box=1:boxcolor={col}@0.92:boxborderw={int(h * cfs * 0.6)}:alpha='if(lt(text_w,h*0.1),0,1)'"))
-    return f + runtime + chat
+    return f + runtime + chat + pause_filters(h)
 
 
 def build_countdown_cmd(cfg, output, preview=False, fmt="flv"):
@@ -893,7 +966,7 @@ def build_countdown_cmd(cfg, output, preview=False, fmt="flv"):
     if preview:
         return cmd + ["-filter_complex_script", script, "-map", "[v]", "-frames:v", "1", "-update", "1", output]
     # Eingang 2: Musik (live austauschbar)
-    cmd += ["-thread_queue_size", "4096", "-f", "s16le", "-ar", "44100", "-ac", "2", "-i", AUDIO_FIFO]
+    cmd += ["-thread_queue_size", "4096", "-f", "s16le", "-ar", "44100", "-ac", "2", "-i", audio_feeder.path if audio_feeder else AUDIO_FIFO]
     cmd += ["-filter_complex_script", script, "-map", "[v]", "-map", "2:a:0",
             "-c:v", "libx264", "-preset", live_preset(cfg), "-pix_fmt", "yuv420p",
             "-b:v", vb, "-maxrate", vb, "-bufsize", vb, "-x264-params", "nal-hrd=cbr:force-cfr=1:repeat-headers=1",
@@ -1139,7 +1212,7 @@ _slate_lock = threading.Lock()
 def refresh_vod_slate(max_age=20):
     """Aktuelles VOD-Bild als Hintergrund für "Neu verbinden …" verwenden. True = hat geklappt."""
     cfg = get_cfg()
-    if cfg.get("mode") != "twitch" or not cfg.get("slate_vod", True):
+    if cfg.get("mode") != "twitch" or not cfg.get("slate_vod", False):
         return False
     try:
         if time.time() - os.path.getmtime(VOD_SNAP) > max_age:
@@ -1192,7 +1265,7 @@ class SlateKeeper(threading.Thread):
             try:
                 cfg = get_cfg()
                 meta = load_json(slate_path(cfg) + ".json", {})
-                if cfg.get("mode") == "twitch" and cfg.get("slate_vod", True) and streamer and streamer.source_alive():
+                if cfg.get("mode") == "twitch" and cfg.get("slate_vod", False) and streamer and streamer.source_alive():
                     if time.time() - meta.get("at", 0) > 120:
                         refresh_vod_slate()
                 else:
@@ -2041,6 +2114,10 @@ class TitleManager(threading.Thread):
             except Exception as e:  # noqa
                 print("YouTube-Neustart:", e, flush=True)
             try:
+                self._yt_ensure_live()
+            except Exception as e:  # noqa
+                print("YouTube-Livestream:", e, flush=True)
+            try:
                 self.tick()
             except Exception as e:  # noqa
                 print("Titel:", e, flush=True)
@@ -2140,6 +2217,99 @@ def sender_status():
     return st
 
 
+TS_WRAP = 1 << 33
+
+
+def _rd_ts(p, i):
+    return ((p[i] >> 1) & 7) << 30 | p[i + 1] << 22 | (p[i + 2] >> 1) << 15 | p[i + 3] << 7 | p[i + 4] >> 1
+
+
+def _wr_ts(p, i, v):
+    v %= TS_WRAP
+    p[i] = (p[i] & 0xF0) | ((v >> 29) & 0x0E) | 1
+    p[i + 1] = (v >> 22) & 0xFF
+    p[i + 2] = ((v >> 14) & 0xFE) | 1
+    p[i + 3] = (v >> 7) & 0xFF
+    p[i + 4] = ((v << 1) & 0xFE) | 1
+
+
+class SourceRetimer:
+    """Lässt die Zeitstempel weiterlaufen, wenn die Bild-Quelle nahtlos gewechselt wird (z. B. Spulen).
+    So merkt der Sender (und damit Twitch/YouTube) keinen Wechsel – kein "Neu verbinden …"."""
+    VIDEO_PID = 0x100
+
+    def __init__(self):
+        self.last_dts = None
+        self.delta = 0
+        self.need = False        # nach einem Wechsel: neuen Versatz am ersten Keyframe bestimmen
+        self.wait_key = False
+        self.buf = b""
+
+    def switch(self):
+        self.need = self.wait_key = True
+        self.buf = b""
+
+    def process(self, data):
+        data = self.buf + data
+        out = bytearray()
+        i, n = 0, len(data)
+        while i + 188 <= n:
+            if data[i] != 0x47:
+                i += 1
+                continue
+            b1, afc = data[i + 1], (data[i + 3] >> 4) & 3
+            pid = ((b1 & 0x1F) << 8) | data[i + 2]
+            pusi = b1 & 0x40
+            pcr = False
+            rai = False
+            pos = 4
+            if afc & 2:
+                alen = data[i + 4]
+                if alen > 0:
+                    fl = data[i + 5]
+                    rai, pcr = bool(fl & 0x40), bool(fl & 0x10) and alen >= 7
+                pos = 5 + alen
+            if self.wait_key:
+                if pid < 0x20 or pid == 0x1000:
+                    out += data[i:i + 188]
+                    i += 188
+                    continue
+                if not (pid == self.VIDEO_PID and rai):
+                    i += 188
+                    continue
+                self.wait_key = False
+            pes = pusi and afc & 1 and pos + 19 <= 188 and data[i + pos] == 0 and data[i + pos + 1] == 0 \
+                and data[i + pos + 2] == 1
+            if not pes and not pcr:
+                out += data[i:i + 188]            # normales Datenpaket: unverändert
+                i += 188
+                continue
+            p = bytearray(data[i:i + 188])
+            i += 188
+            if pes and p[pos + 3] not in (0xBC, 0xBE, 0xBF, 0xF0, 0xF1, 0xFF, 0xF2, 0xF8) and (p[pos + 7] >> 6) & 2:
+                f = (p[pos + 7] >> 6) & 3
+                pts = _rd_ts(p, pos + 9)
+                dts = _rd_ts(p, pos + 14) if f == 3 else pts
+                if self.need:
+                    base = (self.last_dts + 3000) if self.last_dts is not None else dts
+                    self.delta = (base - dts) % TS_WRAP
+                    self.need = False
+                if self.delta:
+                    _wr_ts(p, pos + 9, pts + self.delta)
+                    if f == 3:
+                        _wr_ts(p, pos + 14, dts + self.delta)
+                if pid == self.VIDEO_PID:
+                    self.last_dts = (dts + self.delta) % TS_WRAP
+            if pcr and self.delta:
+                bse = (p[6] << 25 | p[7] << 17 | p[8] << 9 | p[9] << 1 | p[10] >> 7)
+                v = (bse + self.delta) % TS_WRAP
+                p[6], p[7], p[8], p[9] = (v >> 25) & 0xFF, (v >> 17) & 0xFF, (v >> 9) & 0xFF, (v >> 1) & 0xFF
+                p[10] = ((v & 1) << 7) | (p[10] & 0x7F)
+            out += p
+        self.buf = data[i:]
+        return bytes(out)
+
+
 class Streamer:
     """Erzeugt das Bild (Countdown oder Videos) und gibt es an den Sender-Dienst weiter.
     Der Sender hält die Verbindung zu Twitch/YouTube – auch während dieses Programm neu startet."""
@@ -2155,6 +2325,10 @@ class Streamer:
         self.fails = 0
         self.last_data = 0
         self.outq = queue.Queue(maxsize=200)
+        self.retimer = SourceRetimer()
+        self.active = None            # Prozess, dessen Bild gerade gesendet wird
+        self.swap_req = None          # nahtloser Wechsel (Spulen, anderes VOD …) angefordert
+        self.swap_lock = threading.Lock()
         self.lag = 0.0
         self.perf_note = ""
         self.vod = {"order": [], "url": None, "title": "", "pos": 0.0, "tries": 0, "duration": 0}
@@ -2380,12 +2554,91 @@ class Streamer:
                 chunk = proc.stdout.read(188 * 348)
                 if not chunk:
                     break
-                self.last_data = time.time()
+                with self.swap_lock:
+                    if proc is not self.active:      # neuer Prozess wartet noch aufs Umschalten
+                        if proc is not self.proc:
+                            pend = proc.__dict__.setdefault("pending", [])
+                            if len(pend) < 400:
+                                pend.append(chunk)
+                            proc.__dict__.setdefault("ready", threading.Event()).set()
+                        continue
+                    self.last_data = time.time()
+                    chunk = self.retimer.process(chunk)
                 try:
                     self.outq.put_nowait(chunk)
                 except queue.Full:
                     pass                               # Sender nicht da -> verwerfen
         except (OSError, ValueError):
+            pass
+
+    def request_swap(self, fn):
+        """VOD nahtlos wechseln: das alte läuft weiter, bis das neue Bild da ist – dann wird umgeschaltet."""
+        if get_cfg()["mode"] == "twitch" and self.source_alive():
+            self.swap_req = fn
+        else:
+            fn()
+            self._kill()
+
+    def _do_swap(self, cfg):
+        global VOD_PROGRESS
+        fn, self.swap_req = self.swap_req, None
+        v = self.vod
+        backup = dict(v)
+        fn()
+        if "seek" in v:
+            v["pos"], v["seeked"] = v.pop("seek"), time.time()
+        item = self._next_vod(cfg)
+        try:
+            if not item:
+                raise RuntimeError("Playlist leer")
+            surl = resolve_stream_url(item["url"])
+        except Exception as e:  # noqa
+            log_line(f"Wechsel nicht möglich: {e}")
+            v.clear()
+            v.update(backup)
+            return
+        new_prog = VOD_PROGRESS_B if VOD_PROGRESS == VOD_PROGRESS_A else VOD_PROGRESS_A
+        apath = None
+        if cfg.get("vod_audio", "orig") != "orig":
+            apath = AUDIO_FIFO_B if audio_feeder.path == AUDIO_FIFO else AUDIO_FIFO
+            if not os.path.exists(apath):
+                os.mkfifo(apath)
+            audio_feeder.start_tee(apath)
+        cmd = build_vod_cmd(cfg, surl, v["pos"], "pipe:1", progress=new_prog, audio_path=apath)
+        log_line(f"Nahtloser Wechsel: {item['title']} ab {int(v['pos'] // 60)} min")
+        log = open(LOG_PATH, "a", encoding="utf-8")
+        new = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               env=FF_ENV, bufsize=0)
+        ready = new.__dict__.setdefault("ready", threading.Event())
+        threading.Thread(target=self._pump, args=(new,), daemon=True).start()
+        threading.Thread(target=self._stderr_reader, args=(new, log), daemon=True).start()
+        t0 = time.time()
+        while not ready.is_set() and new.poll() is None and time.time() - t0 < 30 and self.want:
+            time.sleep(0.2)
+        if not ready.is_set() or new.poll() is not None or not self.want:
+            log_line("Nahtloser Wechsel hat nicht geklappt – altes VOD läuft weiter")
+            try:
+                new.kill()
+            except OSError:
+                pass
+            audio_feeder.stop_tee()
+            v.clear()
+            v.update(backup)
+            return
+        old = self.proc
+        with self.swap_lock:
+            self.retimer.switch()
+            self.proc = self.active = new
+            VOD_PROGRESS = new_prog
+            self.started_at = self.last_data = time.time()
+            for chunk in new.__dict__.pop("pending", []):
+                try:
+                    self.outq.put_nowait(self.retimer.process(chunk))
+                except queue.Full:
+                    pass
+        try:
+            old.terminate()
+        except OSError:
             pass
 
     def _loop(self):
@@ -2437,8 +2690,11 @@ class Streamer:
             try:
                 log_line(f"Bild-Quelle startet ({info})")
                 log = open(LOG_PATH, "a", encoding="utf-8")
-                self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                             stderr=subprocess.PIPE, env=FF_ENV, bufsize=0)
+                with self.swap_lock:
+                    self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                                 stderr=subprocess.PIPE, env=FF_ENV, bufsize=0)
+                    self.active = self.proc
+                    self.retimer.switch()
                 threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
                 self.lag = 0.0
                 threading.Thread(target=self._stderr_reader, args=(self.proc, log), daemon=True).start()
@@ -2447,6 +2703,9 @@ class Streamer:
                 reason = None
                 while self.proc.poll() is None:
                     time.sleep(1)
+                    if self.swap_req and get_cfg()["mode"] == "twitch":
+                        self._do_swap(get_cfg())
+                        continue
                     if time.time() - self.last_data > WATCHDOG_SECONDS:
                         reason = "Bild-Quelle hängt – starte neu"
                         self._kill()
@@ -2781,15 +3040,18 @@ def _safe(fn, *a):
         return None
 
 
-VOD_PROGRESS = os.path.join(RUN_DIR, "vod_progress.txt")
+VOD_PROGRESS_A = os.path.join(RUN_DIR, "vod_progress.txt")
+VOD_PROGRESS_B = os.path.join(RUN_DIR, "vod_progress_b.txt")
+VOD_PROGRESS = VOD_PROGRESS_A
 
 
-def vod_audio_args(cfg):
+def vod_audio_args(cfg, audio_path=None):
     """Ton bei VODs: Original, stumm, eigene Musik statt VOD-Ton oder VOD-Ton leise + Musik."""
     mode = cfg.get("vod_audio", "orig")
     if mode == "orig":
         return ["-map", "0:v:0", "-map", "0:a:0?"]
-    music = ["-thread_queue_size", "4096", "-f", "s16le", "-ar", "44100", "-ac", "2", "-i", AUDIO_FIFO]
+    music = ["-thread_queue_size", "4096", "-f", "s16le", "-ar", "44100", "-ac", "2", "-i",
+             audio_path or (audio_feeder.path if audio_feeder else AUDIO_FIFO)]
     if mode == "mute":
         return [*music, "-map", "0:v:0", "-map", "1:a", "-af", "volume=0", "-shortest"]
     if mode == "music":
@@ -2800,28 +3062,32 @@ def vod_audio_args(cfg):
             "-map", "0:v:0", "-map", "[aout]", "-shortest"]
 
 
-def build_vod_cmd(cfg, stream_url, start_pos, output):
+def build_vod_cmd(cfg, stream_url, start_pos, output, progress=None, audio_path=None):
+    global VOD_PROGRESS
     w, h, fps, vb = QUALITIES.get(cfg["quality"], QUALITIES["720p30"])
-    if os.path.exists(VOD_PROGRESS):
-        os.remove(VOD_PROGRESS)
+    if progress is None:                 # normaler Start: diese Datei gilt ab sofort
+        progress = VOD_PROGRESS
+    if os.path.exists(progress):
+        os.remove(progress)
     return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_on_network_error", "1",
             "-reconnect_delay_max", "10", "-rw_timeout", "20000000",
             "-re", *(["-ss", f"{start_pos:.1f}"] if start_pos > 1 else []), "-i", stream_url,
-            *vod_audio_args(cfg),
+            *vod_audio_args(cfg, audio_path),
             "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
                    f"fps={fps},setsar=1," + ",".join(runtime_filters()).replace("boxborderw=0", f"boxborderw={int(h * 0.012)}")
+                   + "," + ",".join(pause_filters(h))
                    + ",format=yuv420p",
             "-c:v", "libx264", "-preset", live_preset(cfg), "-b:v", vb, "-maxrate", vb, "-bufsize", vb,
             "-x264-params", "nal-hrd=cbr:force-cfr=1:repeat-headers=1",
             "-g", str(fps * 2), "-keyint_min", str(fps * 2), "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
-            "-progress", VOD_PROGRESS, "-stats_period", "2",
+            "-progress", progress, "-stats_period", "2",
             "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", output,
-            # alle 5 s ein Standbild – Hintergrund für "Neu verbinden …"
-            "-map", "0:v:0", "-vf", f"fps=1/5,scale={w}:{h}:force_original_aspect_ratio=decrease,"
-                                    f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1",
-            "-q:v", "5", "-f", "image2", "-update", "1", VOD_SNAP]
+            # nur wenn eingeschaltet: alle 5 s ein Standbild als Hintergrund für "Neu verbinden …"
+            *(["-map", "0:v:0", "-vf", f"fps=1/5,scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                                       f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1",
+               "-q:v", "5", "-f", "image2", "-update", "1", VOD_SNAP] if cfg.get("slate_vod") else [])]
 
 
 def vod_progress_seconds():
@@ -2886,6 +3152,9 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div id="dests" style="margin-top:12px"></div>
  <div id="runtime" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)"></div>
  <div class="btns"><button class="go" id="bStart">▶ Starten</button><button class="stop" id="bStop">■ Stoppen</button><button id="bRe">↻ Neu starten</button></div>
+ <div class="btns"><button id="bPause" onclick="api('/api/config',{pause_on:!this.dataset.on}).then(refresh)">☕ Kurze Pause einblenden</button>
+  <input type="text" id="pauseText" maxlength="60" placeholder="☕ Kurze Pause" style="flex:1;min-width:140px" onchange="api('/api/config',{pause_text:this.value})">
+  <input type="text" id="pauseSub" maxlength="60" placeholder="Gleich geht's weiter!" style="flex:1;min-width:140px" onchange="api('/api/config',{pause_sub:this.value})"></div>
  <div id="platBtns" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
   <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"><b style="min-width:80px">Twitch</b><button class="go" id="pTwStart" onclick="plat('twitch','start')">▶ Start</button><button class="stop" id="pTwStop" onclick="plat('twitch','stop')">■ Stop</button><button id="pTwRe" onclick="plat('twitch','restart')">↻ Neu</button></div>
   <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"><b style="min-width:80px">YouTube</b><button class="go" id="pYtStart" onclick="plat('youtube','start')">▶ Start</button><button class="stop" id="pYtStop" onclick="plat('youtube','stop')">■ Stop</button><button id="pYtRe" onclick="plat('youtube','restart')">↻ Neu</button></div>
@@ -3073,6 +3342,8 @@ async function refresh(){
  $('sub').textContent=(s.sender_ok?(s.running?`Zuschauer sehen: ${s.showing=='Live-Programm'?(s.mode=='twitch'?'Twitch-VODs':s.mode=='countdown'?'Countdown':'Videos'):s.showing} · `:''):'⚠ Sender-Dienst läuft nicht · ')+`Speicher frei: ${s.disk_free_gb} GB`+(s.mode=='videos'?` · ${s.videos.length} Videos (${fmt(s.total_duration)})`:'');
  $('bStart').disabled=s.running;$('bStop').disabled=!s.running;$('bRe').disabled=!s.running;
  for(const[p,k,en]of[['Tw','twitch',s.tw_enabled],['Yt','youtube',s.yt_enabled]]){const on=en&&s.running;$('p'+p+'Start').disabled=on;$('p'+p+'Stop').disabled=!en;$('p'+p+'Re').disabled=!on}
+ $('bPause').dataset.on=s.pause_on?'1':'';$('bPause').textContent=s.pause_on?'▶ Pause ausblenden':'☕ Kurze Pause einblenden';$('bPause').className=s.pause_on?'stop':'';
+ if(document.activeElement!==$('pauseText'))$('pauseText').value=s.pause_text||'';if(document.activeElement!==$('pauseSub'))$('pauseSub').value=s.pause_sub||'';
  for(const k of['tw_enabled','yt_enabled'])if(document.activeElement!==$(k))$(k).checked=s[k];
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
  $('jobs').innerHTML=Object.entries(s.jobs).filter(([n,j])=>j.state!='fertig'&&j.kind!='music').map(([n,j])=>`<div class="vid"><div class="t" style="flex:1">${esc(j.title)}<br><small>${j.state}${j.error?': '+esc(j.error):''} ${(j.state=='konvertiert'||j.state=='lädt von Twitch')?j.progress+'%':''}</small><div class="bar"><i style="width:${j.progress}%"></i></div></div>${j.state=='fehler'?`<button onclick="dismiss('${n}')">OK</button>`:''}</div>`).join('');
@@ -3116,7 +3387,7 @@ async function refresh(){
  $('twSeek').style.display=s.tw_now?'':'none';
  $('twNow').innerHTML=s.tw_now?`🔴 Läuft: <b>${esc(s.tw_now.title)}</b><br><small style="color:var(--mut)">${fmt(s.tw_now.pos)}${s.tw_now.duration?' / '+fmt(s.tw_now.duration):''}</small>`:'';
  if(document.activeElement!==$('twAudio'))$('twAudio').value=s.vod_audio||'orig';$('twMixBox').style.display=s.vod_audio=='mix'?'':'none';$('twMusBox').style.display=(s.vod_audio=='music'||s.vod_audio=='mix')?'':'none';if(document.activeElement!==$('twMus')){$('twMus').value=s.vod_music_volume;$('twMusV').textContent=s.vod_music_volume+' %'}if(document.activeElement!==$('twMix'))$('twMix').value=s.vod_mix_volume;
- $('twSlate').checked=s.slate_vod!==false;
+ $('twSlate').checked=!!s.slate_vod;
  if(document.activeElement!==$('twOrder'))$('twOrder').value=s.tw_order||'list';
  $('twList').innerHTML=s.tw_playlist.length?s.tw_playlist.map((v,i)=>{const cur=v.url==s.tw_cur,nx=v.url==s.tw_next;return `<div class="vid"${cur?' style="border-color:#ffc400"':''}><div class="t">${i+1}. ${cur?'▶ ':''}${esc(v.title)}<br><small>${v.timestamp?new Date(v.timestamp*1000).toLocaleDateString('de-DE')+' · ':''}${v.duration?fmt(v.duration):''}${cur?' · läuft gerade':''}${nx?' · kommt als Nächstes':''}</small></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end" data-u="${esc(v.url)}"><button onclick="twMv(this,'top')" ${i?'':'disabled'} title="Ganz nach oben">⏫</button><button onclick="twMv(this,'up')" ${i?'':'disabled'}>▲</button><button onclick="twMv(this,'down')" ${i<s.tw_playlist.length-1?'':'disabled'}>▼</button>${cur?'':`<button class="go" onclick="twPlay(this,1)">▶ Jetzt</button><button onclick="twPlay(this,0)">⏭ Als Nächstes</button>`}<button onclick="twRemove(this.parentNode.dataset.u)">✕</button></div></div>`}).join(''):'<div class="empty">Noch keine VODs in der Playlist.</div>';
  $('bgInfo').textContent=s.cd_bg?'✅':'(keins)';$('cvInfo').textContent=s.cd_cover?'✅':'(keins)';$('muInfo').textContent=s.music.length?`(${s.music.length} Songs)`:'(leer – Stille)';
@@ -3469,6 +3740,12 @@ class Handler(BaseHTTPRequestHandler):
                 upd["auto_update"] = bool(data["auto_update"])
             if "slate_vod" in data:
                 upd["slate_vod"] = bool(data["slate_vod"])
+            if "pause_on" in data:
+                upd["pause_on"] = bool(data["pause_on"])
+                log_line("Kurze Pause eingeblendet" if upd["pause_on"] else "Kurze Pause ausgeblendet")
+            for k in ("pause_text", "pause_sub"):
+                if k in data:
+                    upd[k] = re.sub(r"\s+", " ", "".join(c for c in str(data[k]) if c.isprintable())).strip()[:60]
             if "runtime_alltime" in data:
                 upd["runtime_alltime"] = bool(data["runtime_alltime"])
             if "show_runtime" in data:
@@ -3506,10 +3783,8 @@ class Handler(BaseHTTPRequestHandler):
                     print("Ebenen-Fehler:", e, flush=True)
             v = streamer.vod
             if changed & {"vod_audio", "vod_mix_volume"} and get_cfg()["mode"] == "twitch" and v["url"]:
-                def _re_audio():
-                    v["seek"] = v["pos"] + (vod_progress_seconds() if streamer.source_alive() else 0)
-                    streamer._kill()                 # gleiches VOD an gleicher Stelle, neuer Ton
-                then_restart(_re_audio)
+                cur = streamer._vod_now()
+                streamer.request_swap(lambda: v.__setitem__("seek", cur))   # gleiche Stelle, neuer Ton – nahtlos
             restart = bool(changed & RESTART_KEYS)
             if streamer.want and restart:
                 streamer.restart()
@@ -3660,7 +3935,7 @@ class Handler(BaseHTTPRequestHandler):
             if any(x["url"] == url for x in (get_cfg().get("tw_playlist") or [])):
                 streamer.vod["next"] = url
                 if data.get("now") and get_cfg()["mode"] == "twitch" and streamer.vod["url"] != url:
-                    then_restart(lambda: (streamer._vod_done(), streamer._kill()))                     # kurz "Neu verbinden …", dann das gewählte VOD
+                    streamer.request_swap(streamer._vod_done)                     # kurz "Neu verbinden …", dann das gewählte VOD
         elif path == "/api/twpl_seek":
             v = streamer.vod
             if get_cfg()["mode"] != "twitch" or not v["url"]:
@@ -3671,13 +3946,11 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 return self._send(200, {"error": "Ungültige Zeit"})
             top = (v["duration"] - 30) if v["duration"] else new
-            def _go(t=max(0.0, min(new, top))):
-                v["seek"] = t
-                streamer._kill()                         # kurz "Neu verbinden …", dann ab der neuen Stelle
-            then_restart(_go)
+            t = max(0.0, min(new, top))
+            streamer.request_swap(lambda: v.__setitem__("seek", t))      # nahtlos: altes Bild läuft, bis das neue da ist
         elif path == "/api/twpl_skip":
             if get_cfg()["mode"] == "twitch":
-                then_restart(lambda: (streamer._vod_done(), streamer._kill()))
+                streamer.request_swap(streamer._vod_done)
         elif path == "/api/vod_import":
             try:
                 vod_importer.add(str(data.get("url", "")), str(data.get("title", "Twitch-VOD"))[:80],
@@ -3895,7 +4168,7 @@ def status():
         "title_cfg": {k: cfg.get(k, DEFAULT_CFG[k]) for k in ("title_countdown", "title_done", "title_vod", "title_fallback", "cat_countdown", "cat_vod", "yt_category",
                                                             "tw_client_id", "yt_client_id")},
         "yt_secret_set": bool(cfg.get("yt_client_secret")), "tw_secret_set": bool(cfg.get("tw_client_secret")), "cat_vod_auto": cfg.get("cat_vod_auto", True),
-        "vod_audio": cfg.get("vod_audio", "orig"), "vod_mix_volume": cfg.get("vod_mix_volume", 30), "vod_music_volume": cfg.get("vod_music_volume", 20), "slate_vod": cfg.get("slate_vod", True),
+        "vod_audio": cfg.get("vod_audio", "orig"), "vod_mix_volume": cfg.get("vod_mix_volume", 30), "vod_music_volume": cfg.get("vod_music_volume", 20), "slate_vod": cfg.get("slate_vod", False),
         "games": {"auto": cfg.get("game_auto", True), "done_hours": cfg.get("game_done_hours", 12),
                   "current": cfg.get("game_current"), "next": cfg.get("game_next", ""),
                   "list": [{**g, "custom": g["id"].startswith("c_"),
@@ -3913,6 +4186,7 @@ def status():
         "session_secs": time.time() - streamer.session_started if streamer.session_started else 0,
         "stats": stats.data["dest"], "alltime": stats.data.get("alltime", 0),
         "runtime_alltime": cfg.get("runtime_alltime", True),
+        "pause_on": cfg.get("pause_on", False), "pause_text": cfg.get("pause_text", ""), "pause_sub": cfg.get("pause_sub", ""),
         "show_runtime": cfg.get("show_runtime", True), "runtime_label": cfg.get("runtime_label", "LIVE seit"),
         "runtime_mode": cfg.get("runtime_mode", "start"),
         "runtime_pos": cfg.get("runtime_pos", "tr"), "runtime_positions": RUNTIME_POS,
