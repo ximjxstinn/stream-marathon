@@ -1872,6 +1872,7 @@ def game_texts(g):
     hl = f"{dt.hour} Uhr" if dt.minute == 0 else dt.strftime("%H:%M Uhr")
     return {
         "cd_target": g["target"], "cd_title": g["name"], "cd_game": g["name"],
+        "cd_category": g.get("twitch") or re.sub(r"\s*\(.*?\)", "", g["name"]).strip(),
         "cd_tile": (g.get("tile") or short)[:20], "cd_done": f"{short} IST DA!"[:60],
         "cd_head1": f"{short} ab ", "cd_hl": hl, "cd_head2": "spielbar",
         "cd_sub": f"Freischaltung am {dt.day}. {MONTHS[dt.month - 1]}: Uhrzeit für Deutschland\\nund weltweit",
@@ -1893,6 +1894,8 @@ def switch_game(g, reason=""):
             shutil.copy(new, src)
     set_cfg(game_current=g["id"], **game_texts(g))
     _safe(rebuild_layers)
+    title_mgr.last = {"twitch": (None, 0), "youtube": (None, 0)}   # Titel + Kategorie sofort anpassen
+    title_mgr.wake.set()
     log_line(f"Countdown gewechselt: {g['name']} ({g['target'].replace('T', ' ')})" + (f" – {reason}" if reason else ""))
 
 
@@ -2063,7 +2066,8 @@ def category_for(cfg):
         tpl = cfg.get("cat_vod")
     else:
         tpl = cfg.get("cat_countdown")
-    return (tpl or "").replace("{game}", cfg.get("cd_game") or cfg.get("cd_title", "")).strip()
+    game = cfg.get("cd_category") or cfg.get("cd_game") or cfg.get("cd_title", "")
+    return (tpl or "").replace("{game}", game).strip()
 
 
 def yt_safe_title(t):
@@ -2271,7 +2275,8 @@ class TitleManager(threading.Thread):
         if c == 200 and j.get("data"):
             gid = j["data"][0]["id"]
         else:
-            c, j = self._call("twitch", "GET", "https://api.twitch.tv/helix/search/categories?first=1&query=" + quote(name))
+            c, j = self._call("twitch", "GET", "https://api.twitch.tv/helix/search/categories?first=1&query="
+                              + quote(re.sub(r"\s*\(.*?\)", "", name).strip() or name))
             if c == 200 and j.get("data"):
                 gid = j["data"][0]["id"]
         if gid:
@@ -4382,6 +4387,8 @@ class Handler(BaseHTTPRequestHandler):
                          ("cd_game", 60), ("cd_boxlabel", 60)):
                 if k in data:
                     upd[k] = str(data[k])[:n]
+            if "cd_game" in upd and upd["cd_game"] != get_cfg().get("cd_game"):
+                upd["cd_category"] = ""          # Spiel von Hand geändert -> Kategorie = dieser Spielname
             if "cd_color" in data and re.fullmatch(r"#[0-9a-fA-F]{6}", str(data["cd_color"])):
                 upd["cd_color"] = data["cd_color"]
             if "cd_volume" in data:
