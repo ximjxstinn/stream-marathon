@@ -2967,6 +2967,7 @@ class Streamer:
             old.terminate()
         except OSError:
             pass
+        log_line(f"Umgeschaltet nach {time.time() - t0:.1f} s ✓")
 
     def _build(self, cfg):
         """Befehl für die nächste Bild-Quelle. None = noch nichts zu tun (Meldung steht in status_msg)."""
@@ -3079,6 +3080,7 @@ class Streamer:
                         continue                      # direkt weiter mit dem nächsten VOD
             except Exception as e:  # noqa
                 self.status_msg = f"Fehler: {e}"
+                log_line(f"Fehler in der Bild-Quelle: {e!r}")
             if self.want:
                 self.restarts += 1
                 self.fails = 0 if ran > 60 else self.fails + 1
