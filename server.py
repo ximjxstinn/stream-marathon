@@ -910,11 +910,15 @@ def pause_frame(cfg):
     out = os.path.join(RUN_DIR, f"pause_frame_{w}x{h}.png")
     src_t = os.path.getmtime(PAUSE_ORIG) if os.path.exists(PAUSE_ORIG) else 0
     meta = load_json(out + ".json", {})
-    if os.path.exists(out) and meta.get("src") == src_t and meta.get("v") == 1:
+    if os.path.exists(out) and meta.get("src") == src_t and meta.get("v") == 2:
         return out
     S = int(h * 0.50) // 2 * 2
     b = max(4, int(h * 0.006)) // 2 * 2
-    if src_t:
+    full = src_t and pause_is_full()
+    if full:      # fertiges Design im Querformat (z. B. 1920x1080 mit Text): genau so als ganzer Bildschirm
+        cmd = ["ffmpeg", "-v", "error", "-y", "-i", PAUSE_ORIG, "-vf",
+               f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},format=rgb24"]
+    elif src_t:
         fc = (f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},boxblur=24:3,"
               f"eq=brightness=-0.18:saturation=1.25,format=rgb24[bg];"
               f"[0:v]scale={S}:{S}:force_original_aspect_ratio=increase,crop={S}:{S},"
@@ -931,8 +935,19 @@ def pause_frame(cfg):
     if r.returncode != 0:
         raise RuntimeError("Pause-Bild: " + r.stderr.strip()[-200:])
     os.replace(tmp, out)
-    save_json(out + ".json", {"src": src_t, "v": 1})
+    save_json(out + ".json", {"src": src_t, "v": 2})
     return out
+
+
+def pause_is_full():
+    """Querformat-Bild = fertiger Pause-Bildschirm (Text ist schon im Bild)."""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                            "-of", "csv=p=0", PAUSE_ORIG], capture_output=True, text=True, timeout=10)
+        pw, ph = (int(x) for x in r.stdout.strip().split(",")[:2])
+        return pw / ph > 1.5
+    except Exception:  # noqa
+        return False
 
 
 def build_pause_cmd(cfg, output, audio_path=None):
@@ -946,11 +961,12 @@ def build_pause_cmd(cfg, output, audio_path=None):
             atomic_write(os.path.join(RUN_DIR, n + ".txt"), " ")
     tf = lambda n: q(os.path.join(RUN_DIR, n + ".txt"))   # noqa
     top = 0.66 if os.path.exists(PAUSE_ORIG) else 0.40
-    vf = (f"drawtext=fontfile={B}:textfile={tf('pause')}:reload=1:expansion=none:fontsize=h*0.085:fontcolor=white:"
+    full = os.path.exists(PAUSE_ORIG) and pause_is_full()
+    vf = "" if full else (f"drawtext=fontfile={B}:textfile={tf('pause')}:reload=1:expansion=none:fontsize=h*0.085:fontcolor=white:"
           f"x=(w-text_w)/2:y=h*{top}:shadowcolor=0x7b2cbf@0.9:shadowx=0:shadowy=0:borderw=2:bordercolor=0xc77dff@0.6,"
           f"drawtext=fontfile={R}:textfile={tf('pause_sub')}:reload=1:expansion=none:fontsize=h*0.04:fontcolor=white@0.92:"
-          f"x=(w-text_w)/2:y=h*{top + 0.115:.3f},"
-          + ",".join(runtime_filters()).replace("boxborderw=0", f"boxborderw={int(h * 0.012)}")
+          f"x=(w-text_w)/2:y=h*{top + 0.115:.3f},")
+    vf += (",".join(runtime_filters()).replace("boxborderw=0", f"boxborderw={int(h * 0.012)}")
           + ",format=yuv420p")
     apath = audio_path or (audio_feeder.path if audio_feeder else AUDIO_FIFO)
     return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
@@ -4447,7 +4463,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if kind == "pause":
             r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", tmp, "-vf",
-                                "scale='min(1600,iw)':-2,format=rgb24", "-frames:v", "1", "-update", "1",
+                                "scale='min(1920,iw)':-2,format=rgb24", "-frames:v", "1", "-update", "1",
                                 PAUSE_ORIG + ".new.png"], capture_output=True, text=True)
             os.remove(tmp)
             if r.returncode != 0:
