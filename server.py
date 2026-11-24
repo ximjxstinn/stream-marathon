@@ -933,6 +933,12 @@ class StatsTracker(threading.Thread):
         for k in DESTINATIONS:
             x = self.d(k)
             x.update(session=0, session_drops=0, current=0)
+            x.pop("since", None)
+        self.save()
+
+    def new_dest_session(self, k):
+        """Neue Sitzung nur für eine Plattform (von Hand neu gestartet oder geplanter neuer Livestream)."""
+        self.d(k).update(session=0, session_drops=0, current=0, since=time.time())
         self.save()
 
     def reset_all(self):
@@ -963,6 +969,12 @@ class StatsTracker(threading.Thread):
                             x["longest"] = max(x["longest"], x["current"])
                             x["total"] = max(x["total"], x["session"])
                 for k, dd in st["dest"].items():
+                    pl = dd.get("planned")
+                    if pl is not None:
+                        old = self.__dict__.setdefault("_planned", {}).get(k)
+                        if old is not None and pl > old:      # geplanter Neustart = neuer Livestream
+                            self.new_dest_session(k)
+                        self._planned[k] = pl
                     x = self.d(k)
                     live = bool(dd.get("live")) and want
                     if live:
@@ -2960,7 +2972,7 @@ async function refresh(){
   (()=>{const ks=Object.keys(s.dest).filter(k=>ST[k]&&(ST[k].total||ST[k].session));if(ks.length<1)return'';
    const ses=ks.reduce((a,k)=>a+ST[k].session,0),tot=ks.reduce((a,k)=>a+ST[k].total,0);
    return `<div style="margin-top:10px;font-size:15px">📊 <b>Gesamt ${ks.map(k=>s.dest[k].name).join(' + ')}:</b> ${fmtL(ses)} in dieser Sitzung<br><span style="color:var(--mut);font-size:14px">Insgesamt gestreamt: ${fmt(tot)}</span></div>`})()+
-  Object.entries(s.dest).filter(([k])=>ST[k]&&(ST[k].total||ST[k].session)).map(([k,d])=>{const x=ST[k];return `<div style="margin-top:8px;font-size:14px"><b>${d.name}</b>: live ${fmtL(x.session)} in dieser Sitzung (${pct(x.session,s.session_secs)} % online) · Abbrüche: ${x.session_drops} · längste Strecke am Stück: ${fmtL(x.longest)}<br><span style="color:var(--mut)">Insgesamt gestreamt: ${fmt(x.total)}</span></div>`}).join('')+
+  Object.entries(s.dest).filter(([k])=>ST[k]&&(ST[k].total||ST[k].session)).map(([k,d])=>{const x=ST[k];return `<div style="margin-top:8px;font-size:14px"><b>${d.name}</b>: live ${fmtL(x.session)} in dieser Sitzung (${pct(x.session,x.since?Math.min(s.session_secs,Date.now()/1000-x.since):s.session_secs)} % online)${x.since?' · neu gestartet '+new Date(x.since*1000).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}):''} · Abbrüche: ${x.session_drops} · längste Strecke am Stück: ${fmtL(x.longest)}<br><span style="color:var(--mut)">Insgesamt gestreamt: ${fmt(x.total)}</span></div>`}).join('')+
   `<div class="btns" style="margin-top:10px;align-items:center"><label class="chk" style="margin:0"><input type="checkbox" id="showRt" ${s.show_runtime?'checked':''} onchange="api('/api/config',{show_runtime:this.checked})"> Im Stream zeigen:</label>
    <select style="width:auto" onchange="api('/api/config',{runtime_mode:this.value})"><option value="start" ${s.runtime_mode=='start'?'selected':''}>● ${esc(s.runtime_label)} …</option><option value="detail" ${s.runtime_mode=='detail'?'selected':''}>● Twitch · YouTube · Gesamt</option></select>
    <select style="width:auto" onchange="api('/api/config',{runtime_pos:this.value}).then(()=>setTimeout(showPrev,500))">${Object.entries(s.runtime_positions).map(([k,v])=>`<option value="${k}" ${s.runtime_pos==k?'selected':''}>📍 ${v}</option>`).join('')}</select></div>`;
@@ -3209,6 +3221,8 @@ class Handler(BaseHTTPRequestHandler):
             if act != "stop" and not cfg.get("stream_key" if plat == "twitch" else "yt_key"):
                 return self._send(200, {"error": "Für diese Plattform ist noch kein Stream-Schlüssel eingetragen"})
             name = "Twitch" if plat == "twitch" else "YouTube"
+            if act in ("start", "restart"):
+                stats.new_dest_session(plat)                # Zähler dieser Plattform beginnt neu
             if act == "start":
                 set_cfg(**{key: True})
                 if not streamer.want:
