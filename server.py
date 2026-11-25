@@ -1652,7 +1652,7 @@ def profiles_status(current, info=None):
             st = load_json(os.path.join(PROFILES_DIR, pid, "state.json"), {})
             out.append({"id": pid, "title": p["title"], "running": bool(st.get("want"))})
     return {"current": current, "list": out,
-            "me": {"name": info["name"], "admin": info["admin"], "rights": info["rights"]}}
+            "me": {"name": info["name"], "admin": info["admin"], "rights": rights_for(info, current)}}
 
 
 def restart_panel():
@@ -3907,7 +3907,21 @@ def user_info(name):
     u = users().get(name)
     if not u:
         return None
-    return {"name": name, "admin": False, "channels": u.get("channels") or [], "rights": u.get("rights") or []}
+    return {"name": name, "admin": False, "channels": u.get("channels") or [], "rights": u.get("rights") or [],
+            "per": u.get("per") or {}}
+
+
+def rights_for(info, pid):
+    """Rechte eines Benutzers in einem bestimmten Kanal (eigene Rechte pro Kanal haben Vorrang)."""
+    if not info:
+        return []
+    if info["admin"]:
+        return list(RIGHTS)
+    per = info.get("per") or {}
+    return per[pid] if pid in per else info.get("rights", [])
+
+
+RIGHT_PRESETS = {"view": [], "normal": ["control", "content", "bot"], "full": list(RIGHTS)}
 
 
 def may_channel(info, pid):
@@ -3945,14 +3959,15 @@ def needed_rights(path, data):
     return {"settings"}
 
 
-def check_rights(info, path, data):
+def check_rights(info, path, data, pid=""):
     """None = erlaubt, sonst Fehlertext."""
     if info and info["admin"]:
         return None
     need = needed_rights(path, data)
     if "admin" in need:
         return "Keine Berechtigung (nur Admin)"
-    missing = [RIGHTS[r] for r in need if r not in (info or {}).get("rights", [])]
+    have = rights_for(info, pid)
+    missing = [RIGHTS[r] for r in need if r not in have]
     return f"Keine Berechtigung: {missing[0]}" if missing else None
 
 LOGIN_HTML = """<!doctype html><html lang="de"><head><meta charset="utf-8">
@@ -3997,6 +4012,17 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
 .mixer{background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin-top:6px}
 .mxrow{display:flex;align-items:center;gap:8px;margin:6px 0}.mxrow input{flex:1}.mxl{min-width:78px;font-weight:600}
 .profbar{display:flex;gap:8px;align-items:center;margin:0 0 12px}.profbar select{flex:1}.profbar .mut{color:var(--mut);font-size:14px}
+.ubox{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:8px 0;background:rgba(255,255,255,.02)}
+.uhead{display:flex;align-items:center;gap:8px}.uhead b{flex:1;font-size:16px}.uhead button{padding:6px 10px}
+.uline{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid var(--line);font-size:14px}
+.tg{appearance:none;width:26px;height:26px;border-radius:6px;border:1px solid var(--line);background:#0e0e10;cursor:pointer;position:relative;flex:none}
+.tg:checked{background:#4ade80;border-color:#4ade80}.tg:checked::after{content:"✓";position:absolute;inset:0;display:grid;place-items:center;color:#0e0e10;font-weight:900}
+.upc{padding:6px 0 2px 8px}.upc .uline{border-top:1px dashed var(--line)}.upc select{max-width:150px}
+.rchips{display:flex;flex-wrap:wrap;gap:6px;padding:2px 0 8px 34px}.rchips label{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--mut);margin:0}
+.nf{margin-top:10px}.nfrow{display:flex;gap:8px;flex-wrap:wrap}.nfrow input{flex:1;min-width:140px}
+.rowline{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:10px 0}.rowline select{max-width:220px}
+.addbtn{margin-top:6px;padding:12px 18px;font-weight:700}
+.usgreen{color:#4ade80;cursor:pointer;font-size:14px;padding:8px 0;border-top:1px solid var(--line)}
 </style></head><body>
 <header><h1>📺 24/7 Stream</h1><a href="/logout">Logout</a></header>
 <div class="profbar"><span class="mut" id="profMe">Kanal</span><select id="profSel" onchange="profGo(this.value)"></select>
@@ -4123,15 +4149,17 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div class="btns"><button class="go" id="bGAdd">＋ Hinzufügen</button></div>
  <div class="hint">Die Liste großer Releases pflege ich zentral und sie kommt automatisch per Update. Wechsel passieren live – ohne Neustart.</div>
 </section>
-<section class="card" id="usersCard" style="display:none"><h2>👥 Benutzer & Rechte</h2>
- <div class="hint">Jeder bekommt einen eigenen Login. Du (Admin) loggst dich wie bisher nur mit deinem Passwort ein.</div>
- <div id="usList" style="margin-top:8px"></div>
- <label>Benutzername</label><input type="text" id="usName" autocapitalize="off" placeholder="z. B. max">
- <label>Passwort <span class="mut" id="usPwHint"></span></label><input type="password" id="usPw" autocomplete="new-password">
- <label>Zugriff auf Kanäle</label><div id="usChans"></div>
- <label>Rechte</label><div id="usRights"></div>
- <div class="btns"><button class="go" id="bUsSave">💾 Benutzer speichern</button><button id="bUsClear">Neu</button></div>
- <div class="hint">Ohne Rechte kann der Benutzer alles nur ansehen. Kanäle anlegen/löschen und Benutzer verwalten kann nur der Admin.</div>
+<section class="card" id="usersCard" style="display:none"><h2>👥 Zugang für Freunde</h2>
+ <div id="usList"></div>
+ <div class="nf">
+  <label style="margin-top:0">Neuer Freund</label>
+  <div class="nfrow"><input type="text" id="usName" autocapitalize="off" placeholder="Benutzername"><input type="password" id="usPw" autocomplete="new-password" placeholder="Passwort"></div>
+  <label>Darf diese Kanäle sehen</label><div id="usChans"></div>
+  <div class="rowline"><span>Rechte</span><select id="usPreset"><option value="view">Nur ansehen</option><option value="normal" selected>Normal</option><option value="full">Alles</option></select></div>
+  <button id="bUsAdd" class="addbtn">＋ Freund hinzufügen</button>
+ </div>
+ <div class="hint">Unter „⚙ Rechte pro Kanal“ stellst du pro Freund ein, welche Kanäle er sieht und was er dort machen darf. Neue Kanäle sind für Freunde erst mal aus. Kanäle anlegen, Benutzer und Updates kannst nur du ändern.<br>
+ <b>Normal</b> = Starten/Stoppen, Pause, Inhalte, Chat · <b>Alles</b> = zusätzlich Schlüssel, Qualität, Titel & Updates.</div>
 </section>
 <section class="card"><h2>🤖 Chat-Bot</h2>
  <label class="chk" style="margin-top:0"><input type="checkbox" id="botOn" onchange="api('/api/config',{bot_enabled:this.checked}).then(refresh)"> Chat-Bot einschalten</label>
@@ -4337,18 +4365,28 @@ async function profLoad(){try{PROF=await (await fetch('/api/profiles')).json()}c
  $('profDel').style.display=PROF.current&&adm?'':'none';$('profNew').style.display=adm?'':'none';$('profRen').style.display=adm?'':'none';
  $('profMe').textContent=PROF.me?(adm?'Kanal':PROF.me.name+' · Kanal'):'Kanal';
  $('usersCard').style.display=adm?'':'none';if(adm&&!window.usLoaded){window.usLoaded=1;usLoad()}}
-let US={users:[],rights:{},channels:[]};
+let US={users:[],rights:{},channels:[],presets:{}},usOpen={};
+const preName=r=>{for(const[k,v]of Object.entries(US.presets||{}))if(v.length==r.length&&v.every(x=>r.includes(x)))return k;return 'custom'};
 async function usLoad(){US=await (await fetch('/api/users')).json();if(US.error)return;
- $('usList').innerHTML=US.users.length?US.users.map(u=>`<div class="vid"><div class="t"><b>${esc(u.name)}</b><br><small>${u.channels.includes('*')?'alle Kanäle':u.channels.map(c=>esc((US.channels.find(x=>x.id==c)||{title:c}).title)).join(', ')||'kein Kanal'} · ${u.rights.length?u.rights.map(r=>esc((US.rights[r]||r).split(':')[0].split(' &')[0])).join(', '):'nur ansehen'}</small></div><div style="display:flex;gap:4px" data-n="${esc(u.name)}"><button onclick="usEdit(this.parentNode.dataset.n)">✏</button><button onclick="usDel(this.parentNode.dataset.n)">✕</button></div></div>`).join(''):'<div class="empty">Noch keine weiteren Benutzer.</div>';
- $('usChans').innerHTML=[{id:'*',title:'Alle Kanäle (auch neue)'}].concat(US.channels).map(c=>`<label class="chk"><input type="checkbox" class="usC" value="${esc(c.id)}"> ${esc(c.title)}</label>`).join('');
- $('usRights').innerHTML=Object.entries(US.rights).map(([k,v])=>`<label class="chk"><input type="checkbox" class="usR" value="${k}"> ${esc(v)}</label>`).join('');usClear()}
-function usClear(){$('usName').value='';$('usName').disabled=false;$('usPw').value='';$('usPwHint').textContent='';document.querySelectorAll('.usC,.usR').forEach(x=>x.checked=false)}
-function usEdit(n){const u=US.users.find(x=>x.name==n);if(!u)return;$('usName').value=u.name;$('usName').disabled=true;$('usPw').value='';$('usPwHint').textContent='(leer lassen = bleibt gleich)';
- document.querySelectorAll('.usC').forEach(x=>x.checked=u.channels.includes(x.value));document.querySelectorAll('.usR').forEach(x=>x.checked=u.rights.includes(x.value));$('usName').scrollIntoView({block:'center'})}
-async function usDel(n){if(!confirm(`Benutzer „${n}“ löschen?`))return;await api('/api/user_delete',{name:n});usLoad()}
-$('bUsClear').onclick=usClear;
-$('bUsSave').onclick=async()=>{const ch=[...document.querySelectorAll('.usC:checked')].map(x=>x.value),r=[...document.querySelectorAll('.usR:checked')].map(x=>x.value);
- const j=await api('/api/user_save',{name:$('usName').value,password:$('usPw').value,channels:ch.includes('*')?['*']:ch,rights:r});if(j.ok){alert('Gespeichert ✅');usLoad()}};
+ $('usChans').innerHTML=US.channels.map(c=>`<div class="rowline" style="margin:4px 0"><span>${esc(c.title)}</span><input type="checkbox" class="tg usC" value="${esc(c.id)}"></div>`).join('');
+ $('usList').innerHTML=US.users.map(u=>{const all=u.channels.includes('*');const chs=US.channels.filter(c=>all||u.channels.includes(c.id));
+  const rows=US.channels.map(c=>{const on=all||u.channels.includes(c.id);const r=(u.per&&u.per[c.id])||u.rights;const pn=preName(r);
+   return `<div class="uline"><span>${esc(c.title)}</span><span style="display:flex;gap:8px;align-items:center">${on?`<select onchange="usPreset('${esc(u.name)}','${esc(c.id)}',this.value)">${['view','normal','full','custom'].map(k=>`<option value="${k}"${k==pn?' selected':''}>${{view:'Nur ansehen',normal:'Normal',full:'Alles',custom:'Eigene'}[k]}</option>`).join('')}</select>`:''}<input type="checkbox" class="tg"${on?' checked':''} onchange="usChan('${esc(u.name)}','${esc(c.id)}',this.checked)"></span></div>`+
+    (on?`<div class="rchips">${Object.entries(US.rights).map(([k,v])=>`<label><input type="checkbox"${r.includes(k)?' checked':''} onchange="usRight('${esc(u.name)}','${esc(c.id)}','${k}',this.checked)">${esc(v.split(':')[0].split(' &')[0])}</label>`).join('')}</div>`:'')}).join('');
+  return `<div class="ubox"><div class="uhead"><span>👤</span><b>${esc(u.name)}</b><button onclick="usPw('${esc(u.name)}')" title="Passwort ändern">🔑</button><button onclick="usDel('${esc(u.name)}')" title="Löschen">✕</button></div>
+   <div class="uline"><span>🔑 Passwort ist gesetzt</span><button onclick="usPw('${esc(u.name)}')">Ändern</button></div>
+   <div class="usgreen" onclick="usOpen['${esc(u.name)}']=!usOpen['${esc(u.name)}'];usLoad()">⚙ Rechte pro Kanal (${chs.length} von ${US.channels.length} Kanälen) ${usOpen[u.name]?'▴':'▾'}</div>
+   ${usOpen[u.name]?`<div class="upc">${rows}</div>`:''}</div>`}).join('')||'<div class="empty">Noch keine Freunde freigeschaltet.</div>'}
+function usGet(n){return JSON.parse(JSON.stringify(US.users.find(x=>x.name==n)))}
+async function usSave(u){const j=await api('/api/user_save',{name:u.name,channels:u.channels,rights:u.rights,per:u.per||{}});if(j.ok)usLoad()}
+function usChan(n,c,on){const u=usGet(n);let ch=u.channels.includes('*')?US.channels.map(x=>x.id):u.channels;ch=ch.filter(x=>x!==c);if(on)ch.push(c);u.channels=ch;usSave(u)}
+function usPreset(n,c,p){if(p=='custom')return;const u=usGet(n);u.per=u.per||{};u.per[c]=US.presets[p].slice();usSave(u)}
+function usRight(n,c,r,on){const u=usGet(n);u.per=u.per||{};const cur=(u.per[c]||u.rights).filter(x=>x!==r);if(on)cur.push(r);u.per[c]=cur;usSave(u)}
+async function usPw(n){const pw=prompt(`Neues Passwort für ${n} (mind. 4 Zeichen):`);if(!pw)return;const u=usGet(n);const j=await api('/api/user_save',{name:n,password:pw});if(j.ok)alert('Passwort geändert ✅')}
+async function usDel(n){if(!confirm(`Zugang für „${n}“ löschen?`))return;await api('/api/user_delete',{name:n});usLoad()}
+$('bUsAdd').onclick=async()=>{const ch=[...document.querySelectorAll('.usC:checked')].map(x=>x.value),pre=US.presets[$('usPreset').value]||[];
+ const j=await api('/api/user_save',{name:$('usName').value,password:$('usPw').value,channels:ch,rights:pre,per:{}});
+ if(j.ok){$('usName').value=$('usPw').value='';document.querySelectorAll('.usC').forEach(x=>x.checked=false);usLoad()}};
 async function profGo(id){await fetch('/api/profile_select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});location.reload()}
 async function profNew(){const t=prompt('Name für den neuen Kanal/Stream (z. B. Fortnite VODs):');if(!t)return;
  const j=await (await fetch('/api/profile_create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t})})).json();
@@ -4489,7 +4527,7 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(body or b"{}") if path == "/api/config" else {}
         except ValueError:
             data = {}
-        return check_rights(info, path, data if isinstance(data, dict) else {})
+        return check_rights(info, path, data if isinstance(data, dict) else {}, self._profile())
 
     def _maybe_proxy(self, method):
         """Anfragen fürs gewählte Profil an dessen Panel-Prozess weitergeben. True = erledigt."""
@@ -4569,8 +4607,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/users" and self._authed() and not IS_PROFILE:
             if not (self._user() or {}).get("admin"):
                 return self._send(200, {"error": "Keine Berechtigung"})
-            return self._send(200, {"users": [{"name": n, "channels": u.get("channels", []), "rights": u.get("rights", [])}
+            return self._send(200, {"users": [{"name": n, "channels": u.get("channels", []), "rights": u.get("rights", []),
+                                               "per": u.get("per", {})}
                                               for n, u in sorted(users().items())], "rights": RIGHTS,
+                                    "presets": RIGHT_PRESETS,
                                     "channels": [{"id": "", "title": get_cfg().get("profile_title") or "Haupt-Stream"}]
                                     + [{"id": k, "title": v["title"]} for k, v in profiles().items()]})
         if path == "/logout":
@@ -4668,9 +4708,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, {"error": "Passwort zu kurz"})
                 salt = secrets.token_hex(16)
                 u.update(salt=salt, hash=hash_pw(pw, salt))
-            chans = [c for c in (data.get("channels") or []) if c == "*" or c == "" or c in profiles()]
-            u["channels"] = chans
-            u["rights"] = [r for r in (data.get("rights") or []) if r in RIGHTS]
+            if "channels" in data:
+                u["channels"] = [c for c in (data.get("channels") or []) if c == "*" or c == "" or c in profiles()]
+            if "rights" in data:
+                u["rights"] = [r for r in (data.get("rights") or []) if r in RIGHTS]
+            if "per" in data and isinstance(data["per"], dict):
+                u["per"] = {c: [r for r in (rs or []) if r in RIGHTS] for c, rs in data["per"].items()
+                            if c == "" or c in profiles()}
             us[name] = u
             save_json(USERS_PATH, us)
             os.chmod(USERS_PATH, 0o600)
