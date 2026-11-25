@@ -165,6 +165,10 @@ DEFAULT_CFG = {
     "perf_auto": True,                # bei Überlastung automatisch sparsamer werden
     "runtime_label": "LIVE seit",
     "runtime_alltime": True,
+    "info_on": False,                 # eigener Text im Stream (Banner)
+    "info_text": "",
+    "info_pos": "bot",                # top / mid / bot
+    "info_until": 0,                  # Zeitpunkt, an dem der Text automatisch ausgeht (0 = nie)
     "pause_on": False,                # "Kurze Pause" im Stream einblenden
     "pause_text": "☕ Kurze Pause",
     "pause_sub": "Gleich geht's weiter!",          # zusätzlich "Insgesamt" (gesamte Live-Zeit aller Streams) zeigen
@@ -565,6 +569,7 @@ class Ticker(threading.Thread):
             "pause": (cfg.get("pause_text") or "Kurze Pause") if cfg.get("pause_on") else " ",
             "pause_sub": (cfg.get("pause_sub") or " ") if cfg.get("pause_on") else " ",
             **self._chat_files(cfg),
+            **info_files(cfg),
             "k_sub": hide("Vorgeladen · Spielbar in"),
             "k_btn": "Spielen" if done else "Vorbestellt",
             "pct": f"{int(frac * 100)} %",
@@ -577,7 +582,7 @@ class Ticker(threading.Thread):
 
 
 HANDOFF_PATH = os.path.join(RUN_DIR, "handoff.json")
-SOURCE_VERSION = 2   # erhöhen, wenn sich das Bild (Qualität, Einblendungen) ändert -> nach Update nahtlos neu laden
+SOURCE_VERSION = 3   # erhöhen, wenn sich das Bild (Qualität, Einblendungen) ändert -> nach Update nahtlos neu laden
 _HANDOFF = {}
 try:   # nach einem Update (exec) die laufenden Pipes/Prozesse übernehmen
     _h = load_json(HANDOFF_PATH, {})
@@ -935,6 +940,32 @@ def runtime_filters(top="h*0.04"):
     return out
 
 
+INFO_POS = {"top": "h*0.12", "mid": "(h-text_h)/2", "bot": "h*0.84"}
+
+
+def info_files(cfg):
+    """Eigener Text: nur die gewählte Position bekommt Text, sonst Leerzeichen (= unsichtbar)."""
+    on = cfg.get("info_on") and (cfg.get("info_text") or "").strip()
+    if on and cfg.get("info_until") and time.time() > cfg["info_until"]:
+        on = False
+    pos = cfg.get("info_pos", "bot")
+    return {f"info_{p}": (cfg["info_text"] if on and p == pos else " ") for p in INFO_POS}
+
+
+def info_filters(h, color="0x9147ff"):
+    q = lambda p: "'" + p.replace("'", "") + "'"   # noqa
+    B = q(font("bold"))
+    out = []
+    for p, y in INFO_POS.items():
+        f = os.path.join(RUN_DIR, f"info_{p}.txt")
+        if not os.path.exists(f):
+            atomic_write(f, " ")
+        out.append(f"drawtext=fontfile={B}:textfile={q(f)}:reload=1:expansion=none:fontsize=h*0.045:fontcolor=white:"
+                   f"x=(w-text_w)/2:y={y}:box=1:boxcolor={color}@0.88:boxborderw={int(h * 0.018)}:"
+                   f"shadowcolor=black@0.6:shadowx=2:shadowy=2:alpha='if(lt(text_w,h*0.05),0,1)'")
+    return out
+
+
 def pause_filters(h):
     """Große "Kurze Pause"-Einblendung in der Mitte – leer = unsichtbar, an/aus ohne Neustart."""
     q = lambda p: "'" + p.replace("'", "") + "'"   # noqa
@@ -1035,7 +1066,7 @@ def build_pause_cmd(cfg, output, audio_path=None):
           f"drawtext=fontfile={R}:textfile={tf('pause_sub')}:reload=1:expansion=none:fontsize=h*0.04:fontcolor=white@0.92:"
           f"x=(w-text_w)/2:y=h*{top + 0.115:.3f},")
     vf += (",".join(runtime_filters()).replace("boxborderw=0", f"boxborderw={int(h * 0.012)}")
-          + ",format=yuv420p")
+          + "," + ",".join(info_filters(h)) + ",format=yuv420p")
     apath = audio_path or (audio_feeder.path if audio_feeder else AUDIO_FIFO)
     return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-re", "-loop", "1", "-framerate", str(fps), "-i", frame,
@@ -1161,7 +1192,7 @@ def theme_filters(cfg, w, h):
     bx_, by_ = CHAT_BANNER.get(theme) or (cx, f"h*{cy + lh * (CHAT_LINES + 1.6):.4f}")
     chat.append(T("chat_banner", B, f"h*{max(cfs, 0.024) * 1.35:.3f}", "white", bx_, by_,
                   f":box=1:boxcolor={col}@0.92:boxborderw={int(h * cfs * 0.6)}:alpha='if(lt(text_w,h*0.1),0,1)'"))
-    return f + runtime + chat
+    return f + runtime + chat + info_filters(h, col)
 
 
 def build_countdown_cmd(cfg, output, preview=False, fmt="flv", audio_path=None):
@@ -3857,7 +3888,7 @@ def build_vod_cmd(cfg, stream_url, start_pos, output, progress=None, audio_path=
             *vod_audio_args(cfg, audio_path),
             "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
                    f"fps={fps},setsar=1," + ",".join(runtime_filters()).replace("boxborderw=0", f"boxborderw={int(h * 0.012)}")
-                   + "," + ",".join(vod_chat_filters(cfg, h))
+                   + "," + ",".join(vod_chat_filters(cfg, h)) + "," + ",".join(info_filters(h))
 
                    + ",format=yuv420p",
             "-c:v", "libx264", "-preset", live_preset(cfg), "-b:v", vb, "-maxrate", vb, "-bufsize", vb,
@@ -3898,7 +3929,8 @@ RIGHTS = {   # alte, grobe Rechte (werden automatisch ins neue Modell übernomme
 }
 AREAS = [("countdown", "Countdown"), ("games", "Nächste Spiele"), ("vods", "Twitch-VODs"),
          ("videos", "Gespeicherte Videos"), ("music", "Musik"), ("pause", "Kurze Pause"),
-         ("overlay", "Einblendungen (Live-Zeit)"), ("chat", "Chat im Stream"), ("bot", "Chat-Bot"),
+         ("overlay", "Einblendungen (Live-Zeit)"),
+         ("text", "Text im Stream"), ("chat", "Chat im Stream"), ("bot", "Chat-Bot"),
          ("titles", "Stream-Titel & Kategorie"), ("twitch", "Twitch (Schlüssel & Senden)"),
          ("youtube", "YouTube (Schlüssel & Senden)"),
          ("quality", "Qualität & Leistung"), ("stats", "Statistik"), ("updates", "Updates")]
@@ -3927,7 +3959,7 @@ def perm_from_old(rights):
     do = []
     if "control" in rights:
         do += ["startstop", "platform_twitch", "platform_youtube"]
-        areas["pause"] = 2
+        areas["pause"] = areas["text"] = 2
     if "content" in rights:
         areas.update({a: 2 for a in ("countdown", "games", "vods", "videos", "music", "overlay")})
         do.append("mode")
@@ -3946,6 +3978,8 @@ def norm_perm(p):
         return perm_from_old(p)
     p = p or {}
     a = dict(p.get("a") or {})
+    if "text" not in a and "pause" in a:      # neuer Bereich: so wie „Kurze Pause“
+        a["text"] = a["pause"]
     if "platforms" in a:                     # früher ein gemeinsamer Bereich für beide
         a.setdefault("twitch", a["platforms"])
         a.setdefault("youtube", a["platforms"])
@@ -3993,6 +4027,7 @@ def may_channel(info, pid):
 CONFIG_AREAS = [
     (("profile_title",), "admin"),
     (("pause_",), "pause"),
+    (("info_",), "text"),
     (("cd_volume", "cd_shuffle_music", "vod_music_volume", "music"), "music"),
     (("vod_audio", "vod_mix_volume", "tw_order", "tw_playlist", "vod_channel"), "vods"),
     (("cd_",), "countdown"),
@@ -4158,6 +4193,14 @@ details.adv{margin-top:10px;border:1px solid var(--line);border-radius:10px;padd
   <input type="text" id="pauseText" maxlength="60" placeholder="☕ Kurze Pause" style="flex:1;min-width:140px" onchange="api('/api/config',{pause_text:this.value})">
   <label class="filebtn">🖼 Pause-Bild<input type="file" id="pauseFile" accept="image/png,image/jpeg,image/webp"></label>
   <input type="text" id="pauseSub" maxlength="60" placeholder="Gleich geht's weiter!" style="flex:1;min-width:140px" onchange="api('/api/config',{pause_sub:this.value})"></div>
+ <div data-area="text" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+  <label style="margin-top:0">💬 Text im Stream einblenden</label>
+  <input type="text" id="infoText" maxlength="90" placeholder="z. B. Heute Abend 20 Uhr live auf xImJxstinn!">
+  <div class="btns" style="margin-top:6px"><select id="infoPos" style="flex:1;min-width:110px" onchange="api('/api/config',{info_pos:this.value})"><option value="top">Oben</option><option value="mid">Mitte</option><option value="bot">Unten</option></select>
+   <select id="infoMin" style="flex:1;min-width:110px"><option value="0">bis ich ausmache</option><option value="1">1 Minute</option><option value="5">5 Minuten</option><option value="15">15 Minuten</option><option value="30">30 Minuten</option><option value="60">1 Stunde</option></select></div>
+  <div class="btns"><button class="go" id="bInfo">💬 Einblenden</button><button class="stop" id="bInfoOff" onclick="api('/api/config',{info_on:false}).then(refresh)">Ausblenden</button></div>
+  <div class="hint" id="infoInfo"></div>
+ </div>
  <div id="platBtns" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
   <div data-do="platform_twitch" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"><b style="min-width:80px">Twitch</b><button class="go" id="pTwStart" onclick="plat('twitch','start')">▶ Start</button><button class="stop" id="pTwStop" onclick="plat('twitch','stop')">■ Stop</button><button id="pTwRe" onclick="plat('twitch','restart')">↻ Neu</button></div>
   <div data-do="platform_youtube" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"><b style="min-width:80px">YouTube</b><button class="go" id="pYtStart" onclick="plat('youtube','start')">▶ Start</button><button class="stop" id="pYtStop" onclick="plat('youtube','stop')">■ Stop</button><button id="pYtRe" onclick="plat('youtube','restart')">↻ Neu</button></div>
@@ -4339,6 +4382,7 @@ details.adv{margin-top:10px;border:1px solid var(--line);border-radius:10px;padd
  <input type="password" id="key" placeholder="live_xxxxxxxx (leer lassen = nicht ändern)">
  <label>Twitch Ingest-Server</label><input type="text" id="server">
  <label>Geplant neu verbinden nach (Stunden) – Twitch-Limit 48 h</label><input type="text" id="tw_max_hours" inputmode="decimal">
+ <div class="btns"><button class="go" id="bSaveTw">Twitch speichern</button></div>
  </div><div data-area="youtube"><h3 style="margin:22px 0 0;font-size:16px">🔴 YouTube</h3>
  <label class="chk"><input type="checkbox" id="yt_enabled"> An YouTube senden</label>
  <label>YouTube Stream-Schlüssel <span id="ytkeyinfo"></span></label>
@@ -4346,6 +4390,7 @@ details.adv{margin-top:10px;border:1px solid var(--line);border-radius:10px;padd
  <label>YouTube Server</label><input type="text" id="yt_server">
  <label>Geplant neu verbinden nach (Stunden) – YouTube: 11,83 = 11:50 h (YouTube speichert max. 12 h)</label><input type="text" id="yt_max_hours" inputmode="decimal">
  <div class="hint">YouTube Studio → Erstellen → Livestream starten → Stream. Den Stream-Schlüssel dort kopieren. Am besten einen dauerhaften Schlüssel nehmen. Neuen Key speichern = nur diese Plattform verbindet kurz neu.</div>
+ <div class="btns"><button class="go" id="bSaveYt">YouTube speichern</button></div>
  </div><div data-area="quality"><label>Leistung (Live-Bild)</label>
  <select id="perfPreset" onchange="api('/api/config',{perf_preset:this.value})"><option value="veryfast">Beste Qualität (braucht mehr Leistung)</option><option value="superfast">Ausgewogen</option><option value="ultrafast">Sparsam (für kleine Server)</option></select>
  <label class="chk"><input type="checkbox" id="perfAuto" onchange="api('/api/config',{perf_auto:this.checked})"> Automatisch sparsamer werden, wenn der Server nicht hinterherkommt</label>
@@ -4353,7 +4398,7 @@ details.adv{margin-top:10px;border:1px solid var(--line);border-radius:10px;padd
  <label>Qualität</label><select id="quality"></select>
  <div class="hint" id="qhint"></div>
  <label class="chk"><input type="checkbox" id="shuffle"> Videos zufällig mischen</label>
- <div class="btns"><button class="go" id="bSave">Speichern</button></div></div>
+ <div class="btns"><button class="go" id="bSave">Qualität speichern</button></div></div>
  <div data-area="updates"><label>Update</label>
  <label class="chk" style="margin-top:4px"><input type="checkbox" id="autoUpd" onchange="api('/api/config',{auto_update:this.checked})"> Automatisch updaten (sofort, Stream bleibt online)</label>
  <div class="hint" id="updInfo"></div>
@@ -4386,6 +4431,8 @@ async function refresh(){
  $('bStart').disabled=s.running;$('bStop').disabled=!s.running;$('bRe').disabled=!s.running;
  for(const[p,k,en]of[['Tw','twitch',s.tw_enabled],['Yt','youtube',s.yt_enabled]]){const on=en&&s.running;$('p'+p+'Start').disabled=on;$('p'+p+'Stop').disabled=!en;$('p'+p+'Re').disabled=!on}
  $('bPause').dataset.on=s.pause_on?'1':'';$('bPause').textContent=s.pause_on?'▶ Pause ausblenden':'☕ Kurze Pause einblenden';$('bPause').className=s.pause_on?'stop':'';
+ if(document.activeElement!==$('infoText')&&!$('infoText').dataset.dirty)$('infoText').value=s.info_text||'';if(document.activeElement!==$('infoPos'))$('infoPos').value=s.info_pos||'bot';
+ $('bInfoOff').disabled=!s.info_on;$('infoInfo').textContent=s.info_on?'✅ Wird gerade im Stream gezeigt'+(s.info_left?` · geht in ${Math.ceil(s.info_left/60)} Min. aus`:''):'';
  if(document.activeElement!==$('pauseText'))$('pauseText').value=s.pause_text||'';if(document.activeElement!==$('pauseSub'))$('pauseSub').value=s.pause_sub||'';
  for(const k of['tw_enabled','yt_enabled'])if(document.activeElement!==$(k))$(k).checked=s[k];
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
@@ -4449,7 +4496,7 @@ async function refresh(){
  $('ckInfo').textContent=s.yt_cookies?'✅':'';
  $('muList').innerHTML=s.music.map(m=>`<div class="vid"><div class="t">${m==s.now_playing?'🔊 ':''}${esc(m)}</div><button onclick="delSong(this.dataset.n)" data-n="${esc(m)}">Löschen</button></div>`).join('');
  if(!cfgLoaded){$('cd_theme').innerHTML=Object.entries(s.themes).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
-  for(const k of CDF)$(k).value=s.cfg[k];$('cd_game_ps5').value=s.cfg.cd_game;$('cd_boxlabel_ps5').value=s.cfg.cd_boxlabel;$('cd_shuffle_music').checked=s.cfg.cd_shuffle_music;$('cd_volume').value=s.cfg.cd_volume;$('volV').textContent=s.cfg.cd_volume;showTh()}
+  for(const k of CDF)$(k).value=s.cfg[k];$('cd_game_ps5').value=s.cfg.cd_game;$('cd_boxlabel_ps5').value=s.cfg.cd_boxlabel;$('cd_shuffle_music').checked=s.cfg.cd_shuffle_music;$('cd_volume').value=s.cfg.cd_volume;showTh()}
  if(!cfgLoaded){cfgLoaded=true;$('server').value=s.server;$('yt_server').value=s.yt_server;$('tw_enabled').checked=s.tw_enabled;$('yt_enabled').checked=s.yt_enabled;$('tw_max_hours').value=s.tw_max_hours;$('yt_max_hours').value=s.yt_max_hours;$('shuffle').checked=s.shuffle;
   $('quality').innerHTML=s.qualities.map(q=>`<option ${q==s.quality?'selected':''}>${q}</option>`).join('')}
  $('quality').disabled=s.quality_locked;$('qhint').textContent=s.quality_locked?'Qualität kann nur geändert werden, wenn keine Videos vorhanden sind (alle Videos müssen das gleiche Format haben).':'';
@@ -4463,10 +4510,16 @@ async function plat(p,a){const n=p=='twitch'?'Twitch':'YouTube';
 $('bStart').onclick=async()=>{await api('/api/start');refresh()};
 $('bStop').onclick=async()=>{if(confirm('Stream wirklich stoppen?')){await api('/api/stop');refresh()}};
 $('bRe').onclick=async()=>{await api('/api/restart');refresh()};
-$('bSave').onclick=async()=>{const b={server:$('server').value,shuffle:$('shuffle').checked,quality:$('quality').value,
- yt_server:$('yt_server').value,tw_enabled:$('tw_enabled').checked,yt_enabled:$('yt_enabled').checked,
- tw_max_hours:parseFloat($('tw_max_hours').value.replace(',','.'))||0,yt_max_hours:parseFloat($('yt_max_hours').value.replace(',','.'))||0};
- if($('key').value.trim())b.stream_key=$('key').value.trim();if($('yt_key').value.trim())b.yt_key=$('yt_key').value.trim();const j=await api('/api/config',b);if(j.ok){$('key').value='';$('yt_key').value='';alert('Gespeichert ✅')}refresh()};
+const hrs=id=>parseFloat($(id).value.replace(',','.'))||0;
+async function saveCfg(b,clear){const j=await api('/api/config',b);if(j.ok){clear.forEach(k=>$(k).value='');alert('Gespeichert ✅')}refresh()}
+$('bSave').onclick=()=>saveCfg({shuffle:$('shuffle').checked,quality:$('quality').value},[]);
+$('infoText').oninput=()=>$('infoText').dataset.dirty=1;
+$('bInfo').onclick=async()=>{const t=$('infoText').value.trim();if(!t)return alert('Erst einen Text eingeben');
+ const j=await api('/api/config',{info_text:t,info_pos:$('infoPos').value,info_on:true,info_minutes:+$('infoMin').value});if(j.ok)delete $('infoText').dataset.dirty;refresh()};
+$('bSaveTw').onclick=()=>{const b={server:$('server').value,tw_enabled:$('tw_enabled').checked,tw_max_hours:hrs('tw_max_hours')};
+ if($('key').value.trim())b.stream_key=$('key').value.trim();saveCfg(b,['key'])};
+$('bSaveYt').onclick=()=>{const b={yt_server:$('yt_server').value,yt_enabled:$('yt_enabled').checked,yt_max_hours:hrs('yt_max_hours')};
+ if($('yt_key').value.trim())b.yt_key=$('yt_key').value.trim();saveCfg(b,['yt_key'])};
 $('file').onchange=()=>{for(const f of $('file').files)upload(f);$('file').value=''};
 function upload(f){const id='u'+Math.random().toString(36).slice(2);const el=document.createElement('div');el.className='vid';el.id=id;
  el.innerHTML=`<div class="t" style="flex:1">${esc(f.name)}<br><small>Upload 0%</small><div class="bar"><i style="width:0"></i></div></div>`;$('uploads').appendChild(el);
@@ -4562,7 +4615,7 @@ $('bCdSave').onclick=async()=>{const b={};for(const k of CDF)b[k]=$(k).value;b.c
  const j=await api('/api/config',b);if(j.ok){setTimeout(showPrev,400);if(j.restarted)alert('Design geändert – Zuschauer sehen ein paar Sekunden „Neu verbinden …“, die Verbindung bleibt bestehen.')}};
 function showPrev(){$('prev').style.display='block';$('prev').src='/api/preview.png?'+Date.now()}
 $('bPrev').onclick=showPrev;
-let volT;$('cd_volume').oninput=e=>{$('volV').textContent=e.target.value;clearTimeout(volT);volT=setTimeout(()=>api('/api/config',{cd_volume:+e.target.value}),400)};
+let volT;$('cd_volume').oninput=e=>{clearTimeout(volT);volT=setTimeout(()=>api('/api/config',{cd_volume:+e.target.value}),400)};
 $('cd_shuffle_music').onchange=e=>api('/api/config',{cd_shuffle_music:e.target.checked});
 async function asset(kind,f){
  const CH=16*1024*1024,total=Math.max(1,Math.ceil(f.size/CH)),id=Math.random().toString(36).slice(2)+Date.now().toString(36);
@@ -5106,6 +5159,19 @@ class Handler(BaseHTTPRequestHandler):
                     threading.Timer(0.3, lambda: streamer.request_swap(lambda: vv.__setitem__("seek", cur))).start()
                 else:
                     threading.Timer(0.3, lambda: streamer.request_swap(lambda: None)).start()
+            if "info_text" in data:
+                upd["info_text"] = re.sub(r"\s+", " ", "".join(c for c in str(data["info_text"]) if c.isprintable())).strip()[:90]
+            if data.get("info_pos") in INFO_POS:
+                upd["info_pos"] = data["info_pos"]
+            if "info_on" in data:
+                upd["info_on"] = bool(data["info_on"])
+                if upd["info_on"]:
+                    try:
+                        mins = float(data.get("info_minutes") or 0)
+                    except (TypeError, ValueError):
+                        mins = 0
+                    upd["info_until"] = time.time() + mins * 60 if mins > 0 else 0
+                log_line("Text im Stream eingeblendet" if upd["info_on"] else "Text im Stream ausgeblendet")
             for k in ("pause_text", "pause_sub"):
                 if k in data:
                     upd[k] = re.sub(r"\s+", " ", "".join(c for c in str(data[k]) if c.isprintable())).strip()[:60]
@@ -5638,6 +5704,9 @@ def status():
         "session_secs": time.time() - streamer.session_started if streamer.session_started else 0,
         "stats": stats.data["dest"], "alltime": stats.data.get("alltime", 0),
         "runtime_alltime": cfg.get("runtime_alltime", True),
+        "info_on": bool(cfg.get("info_on")) and not (cfg.get("info_until") and time.time() > cfg["info_until"]),
+        "info_text": cfg.get("info_text", ""), "info_pos": cfg.get("info_pos", "bot"),
+        "info_left": max(0, int(cfg["info_until"] - time.time())) if cfg.get("info_on") and cfg.get("info_until") else 0,
         "pause_on": cfg.get("pause_on", False), "pause_text": cfg.get("pause_text", ""), "pause_sub": cfg.get("pause_sub", ""),
         "show_runtime": cfg.get("show_runtime", True), "runtime_label": cfg.get("runtime_label", "LIVE seit"),
         "runtime_mode": cfg.get("runtime_mode", "start"),
