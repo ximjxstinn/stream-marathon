@@ -4134,14 +4134,18 @@ DO = [("startstop", "Starten und stoppen"), ("platform_twitch", "Twitch einzeln 
 AREA_IDS = [a for a, _ in AREAS]
 
 
-def _perm(areas, see, do):
-    return {"a": {a: areas.get(a, 0) for a in AREA_IDS}, "see": list(see), "do": list(do)}
+def _perm(areas, see, do, dosee=None):
+    """do = darf es machen (Ändern), dosee = sieht den Knopf nur (Sehen), sonst ausgeblendet (Aus)."""
+    if dosee is None:
+        dosee = [x for x, _ in DO if x not in do]
+    return {"a": {a: areas.get(a, 0) for a in AREA_IDS}, "see": list(see), "do": list(do),
+            "dosee": [x for x in dosee if x not in do]}
 
 
 RIGHT_PRESETS = {
     "view": _perm({a: 1 for a in AREA_IDS}, [x for x, _ in SEE], []),
     "normal": _perm({**{a: 2 for a in AREA_IDS}, "titles": 1, "twitch": 0, "youtube": 0, "quality": 1, "stats": 1,
-                     "updates": 0}, [x for x, _ in SEE], ["startstop", "platform_twitch", "platform_youtube", "mode"]),
+                     "updates": 0}, [x for x, _ in SEE], ["startstop", "platform_twitch", "platform_youtube", "mode"], []),
     "full": _perm({a: 2 for a in AREA_IDS}, [x for x, _ in SEE], [x for x, _ in DO]),
 }
 
@@ -4182,7 +4186,8 @@ def norm_perm(p):
     p = {**p, "do": do}
     return {"a": {k: max(0, min(2, int(a.get(k, 0)))) for k in AREA_IDS},
             "see": [x for x in (p.get("see") or []) if x in dict(SEE)],
-            "do": [x for x in (p.get("do") or []) if x in dict(DO)]}
+            "do": [x for x in (p.get("do") or []) if x in dict(DO)],
+            "dosee": [x for x in (p.get("dosee") or []) if x in dict(DO) and x not in (p.get("do") or [])]}
 
 
 def users():
@@ -4372,6 +4377,8 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
 .prow{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;border-top:1px dashed var(--line);font-size:13px}
 .ro{opacity:.45;cursor:not-allowed}
 details.adv{margin-top:10px;border:1px solid var(--line);border-radius:10px;padding:8px 12px}details.adv summary{cursor:pointer;color:var(--mut);font-size:14px}
+.norights{display:none!important}
+.seg3{flex-wrap:nowrap!important;flex:none}.prow>span:first-child{flex:1;min-width:0}
 </style></head><body>
 <header><h1>📺 24/7 Stream</h1><a href="/logout">Logout</a></header>
 <div class="profbar"><span class="mut" id="profMe">Kanal</span><select id="profSel" onchange="profGo(this.value)"></select>
@@ -4778,7 +4785,7 @@ async function profLoad(){try{PROF=await (await fetch('/api/profiles')).json()}c
 let US={users:[],channels:[],areas:[],see:[],do:[],presets:{}},usOpen={},usDet={};
 const PN={none:'Kein Zugriff',view:'Nur gucken',normal:'Normal',full:'Alles',custom:'Eigene'};
 const same=(a,b)=>JSON.stringify(a)==JSON.stringify(b);
-function permNorm(p){return{a:Object.fromEntries(US.areas.map(([k])=>[k,(p.a||{})[k]||0])),see:US.see.map(([k])=>k).filter(k=>(p.see||[]).includes(k)),do:US.do.map(([k])=>k).filter(k=>(p.do||[]).includes(k))}}
+function permNorm(p){return{a:Object.fromEntries(US.areas.map(([k])=>[k,(p.a||{})[k]||0])),see:US.see.map(([k])=>k).filter(k=>(p.see||[]).includes(k)),do:US.do.map(([k])=>k).filter(k=>(p.do||[]).includes(k)),dosee:US.do.map(([k])=>k).filter(k=>(p.dosee||[]).includes(k)&&!(p.do||[]).includes(k))}}
 function presetOf(u,c){if(!(u.channels.includes('*')||u.channels.includes(c)))return'none';const p=permNorm(u.per[c]||{});for(const k of['view','normal','full'])if(same(p,permNorm(US.presets[k])))return k;return'custom'}
 async function usLoad(){US=await (await fetch('/api/users')).json();if(US.error)return;
  $('usChans').innerHTML=US.channels.map(c=>`<div class="rowline" style="margin:4px 0"><span>${esc(c.title)}</span><input type="checkbox" class="tg usC" value="${esc(c.id)}"></div>`).join('');
@@ -4790,7 +4797,7 @@ async function usLoad(){US=await (await fetch('/api/users')).json();if(US.error)
     ${det?`<div class="pdet"><div class="psec">Bereiche · Aus / Sehen / Ändern</div>
      ${US.areas.map(([k,l])=>`<div class="prow"><span>${esc(l)}</span><span class="seg3">${['Aus','Sehen','Ändern'].map((t,i)=>`<button class="${p.a[k]==i?'on':''}" onclick="usArea('${n}','${ci}','${k}',${i})">${t}</button>`).join('')}</span></div>`).join('')}
      <div class="psec">Allgemein · Sehen</div>${US.see.map(([k,l])=>`<div class="prow"><span>${esc(l)}</span><input type="checkbox" class="tg"${p.see.includes(k)?' checked':''} onchange="usFlag('${n}','${ci}','see','${k}',this.checked)"></div>`).join('')}
-     <div class="psec">Allgemein · Machen</div>${US.do.map(([k,l])=>`<div class="prow"><span>${esc(l)}</span><input type="checkbox" class="tg"${p.do.includes(k)?' checked':''} onchange="usFlag('${n}','${ci}','do','${k}',this.checked)"></div>`).join('')}
+     <div class="psec">Allgemein · Machen · Aus / Sehen / Ändern</div>${US.do.map(([k,l])=>{const lv=p.do.includes(k)?2:p.dosee.includes(k)?1:0;return `<div class="prow"><span>${esc(l)}</span><span class="seg3">${['Aus','Sehen','Ändern'].map((t,i)=>`<button class="${lv==i?'on':''}" onclick="usDoLv('${n}','${ci}','${k}',${i})">${t}</button>`).join('')}</span></div>`}).join('')}
     </div>`:''}</div>`}).join('');
   return `<div class="ubox"><div class="uhead"><span>👤</span><b>${n}</b><button onclick="usPw('${n}')" title="Passwort ändern">🔑</button><button onclick="usDel('${n}')" title="Löschen">✕</button></div>
    <div class="uline"><span>🔑 Passwort ist gesetzt</span><button onclick="usPw('${n}')">Ändern</button></div>
@@ -4803,6 +4810,7 @@ async function usSave(u){const j=await api('/api/user_save',{name:u.name,channel
 function usSetPreset(n,c,k){const u=usGet(n);if(k=='custom'){usDet[n+'|'+c]=1;if(!u.channels.includes(c)){u.channels.push(c);u.per[c]=JSON.parse(JSON.stringify(US.presets.view))}return usSave(u)}
  delete usDet[n+'|'+c];u.channels=u.channels.filter(x=>x!==c);if(k!='none'){u.channels.push(c);u.per[c]=JSON.parse(JSON.stringify(US.presets[k]))}usSave(u)}
 function usArea(n,c,k,v){const u=usGet(n);usDet[n+'|'+c]=1;u.per[c]=permNorm(u.per[c]||{});u.per[c].a[k]=v;usSave(u)}
+function usDoLv(n,c,k,lv){const u=usGet(n);usDet[n+'|'+c]=1;const p=permNorm(u.per[c]||{});p.do=p.do.filter(x=>x!==k);p.dosee=p.dosee.filter(x=>x!==k);if(lv==2)p.do.push(k);if(lv==1)p.dosee.push(k);u.per[c]=p;usSave(u)}
 function usFlag(n,c,grp,k,on){const u=usGet(n);usDet[n+'|'+c]=1;const p=permNorm(u.per[c]||{});p[grp]=p[grp].filter(x=>x!==k);if(on)p[grp].push(k);u.per[c]=p;usSave(u)}
 function usCopy(n,from){if(from==='')return;const u=usGet(n);const on=u.channels.includes(from);const p=u.per[from];
  US.channels.forEach(c=>{u.channels=u.channels.filter(x=>x!==c.id);if(on){u.channels.push(c.id);u.per[c.id]=JSON.parse(JSON.stringify(p))}});usSave(u)}
@@ -4831,7 +4839,9 @@ $('bAdReload').onclick=async(skip)=>{if(skip!==true&&!confirm('Alle Kanäle lade
 function applyRights(){const P=PROF.me&&PROF.me.perm;if(!P||PROF.me.admin)return;
  document.querySelectorAll('[data-area]').forEach(el=>{const v=P.a[el.dataset.area]??0;el.style.display=v==0?'none':'';
   if(v==1)el.querySelectorAll('input,select,textarea,button,label.filebtn').forEach(x=>{if(!x.classList.contains('keep')){x.disabled=true;x.classList.add('ro')}})});
- document.querySelectorAll('[data-do]').forEach(el=>{if(!P.do.includes(el.dataset.do))el.querySelectorAll('button,input').forEach(x=>{x.disabled=true;x.classList.add('ro')})});
+ document.querySelectorAll('[data-do]').forEach(el=>{const d=el.dataset.do,can=P.do.includes(d),see=(P.dosee||[]).includes(d);
+  el.classList.toggle('norights',!can&&!see);if(!can&&see)el.querySelectorAll('button,input').forEach(x=>{x.disabled=true;x.classList.add('ro')})});
+ {const pb=$('platBtns');if(pb)pb.classList.toggle('norights',![...pb.querySelectorAll('[data-do]')].some(x=>!x.classList.contains('norights')))}
  document.querySelectorAll('[data-see]').forEach(el=>{el.style.display=P.see.includes(el.dataset.see)?'':'none'});
  // Karten, in denen nichts mehr sichtbar ist, ganz ausblenden (z. B. „Einstellungen“ ohne Rechte)
  document.querySelectorAll('section.card:not([data-area]):not(#usersCard):not(#adminCard)').forEach(c=>{c.style.display='';
