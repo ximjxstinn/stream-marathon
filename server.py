@@ -1592,9 +1592,63 @@ def do_update(sha=None):
         os.replace(path + ".new", path)
     v = load_json(VERSION_PATH, {})
     v.update(sha=sha, installed=time.time(), sender_pending=bool(v.get("sender_pending") or sender_changed))
+    if sender_changed:
+        v["sender_pending_profiles"] = sorted(set(v.get("sender_pending_profiles", [])) | set(profiles()))
     save_json(VERSION_PATH, v)
     log_line(f"Update installiert ({sha[:7]})" + (" – Sender-Update bereit" if sender_changed else ""))
     return True, sender_changed
+
+
+MAIN_VERSION_PATH = os.path.join(CODE_DIR, "version.json")
+RUN_SHA = load_json(MAIN_VERSION_PATH, {}).get("sha", "")     # Version, mit der dieser Prozess gestartet ist
+LATEST = {"sha": "", "t": 0}
+
+
+def sender_restart_channel(pid):
+    """Sender eines Kanals neu starten lassen (Flag-Datei; systemd startet ihn neu)."""
+    base = os.path.join(PROFILES_DIR, pid) if pid else CODE_DIR
+    open(os.path.join(base, "countdown", "run", "restart_sender"), "w").close()
+    v = load_json(MAIN_VERSION_PATH, {})
+    if pid:
+        v["sender_pending_profiles"] = [x for x in v.get("sender_pending_profiles", []) if x != pid]
+    else:
+        v["sender_pending"] = False
+    save_json(MAIN_VERSION_PATH, v)
+
+
+def sender_pending_for(pid):
+    v = load_json(MAIN_VERSION_PATH, {})
+    return bool(v.get("sender_pending")) if not pid else pid in v.get("sender_pending_profiles", [])
+
+
+def _profile_get(pid, path, timeout=3):
+    import http.client
+    conn = http.client.HTTPConnection("127.0.0.1", profiles()[pid]["port"], timeout=timeout)
+    conn.request("GET", path, headers={"X-S24-Key": internal_key()})
+    r = conn.getresponse()
+    return json.loads(r.read() or b"{}")
+
+
+def admin_status():
+    v = load_json(MAIN_VERSION_PATH, {})
+    if time.time() - LATEST["t"] > 60:
+        try:
+            LATEST.update(sha=latest_sha(), t=time.time())
+        except Exception:  # noqa
+            pass
+    chans = []
+    for pid, title in [("", get_cfg().get("profile_title") or "Haupt-Stream")] + [(k, x["title"]) for k, x in profiles().items()]:
+        row = {"id": pid, "title": title, "sender_pending": sender_pending_for(pid)}
+        try:
+            st = status() if not pid else _profile_get(pid, "/api/status")
+            row.update(ok=True, run_sha=st.get("run_sha", ""), running=st.get("running"), live=st.get("live"),
+                       sender_ok=st.get("sender_ok"), sender_version=st.get("sender_version"))
+        except Exception as e:  # noqa
+            row.update(ok=False, error=str(e)[:120])
+        chans.append(row)
+    return {"sha": v.get("sha", ""), "installed": v.get("installed", 0), "latest": LATEST["sha"],
+            "result": auto_updater.last_result, "checked": auto_updater.last_check,
+            "auto_update": get_cfg().get("auto_update", True), "channels": chans}
 
 
 def internal_key():
@@ -4316,6 +4370,14 @@ details.adv{margin-top:10px;border:1px solid var(--line);border-radius:10px;padd
  <div class="btns"><button class="go" id="bGAdd">＋ Hinzufügen</button></div>
  <div class="hint">Die Liste großer Releases pflege ich zentral und sie kommt automatisch per Update. Wechsel passieren live – ohne Neustart.</div>
 </section>
+<section class="card" id="adminCard" style="display:none"><h2>🛠 Admin · Updates für alle Kanäle</h2>
+ <div id="adInfo" class="hint" style="margin-top:0"></div>
+ <label class="chk"><input type="checkbox" id="adAuto" onchange="api('/api/admin_auto',{on:this.checked}).then(adLoad)"> Automatisch updaten – sobald ein Update raus ist, bekommen es alle Kanäle sofort</label>
+ <div id="adChans" style="margin-top:8px"></div>
+ <div class="btns"><button class="go" id="bAdUpd">⬆ Update jetzt für alle holen</button><button id="bAdReload">🔄 Alle Kanäle neu laden</button></div>
+ <div class="btns"><button id="bAdSend">🛰 Ausstehende Sender-Updates einspielen</button><button class="stop" id="bAdSendAll">🛰 Alle Sender neu starten</button></div>
+ <div class="hint">Updates und „Neu laden“ laufen nahtlos – die Streams bleiben online. Nur ein Sender-Neustart bedeutet ca. 10 Sekunden offline auf dem jeweiligen Kanal.</div>
+</section>
 <section class="card" id="usersCard" style="display:none"><h2>👥 Zugang für Freunde</h2>
  <div id="usList"></div>
  <div class="nf">
@@ -4400,12 +4462,13 @@ details.adv{margin-top:10px;border:1px solid var(--line);border-radius:10px;padd
  <label class="chk"><input type="checkbox" id="shuffle"> Videos zufällig mischen</label>
  <div class="btns"><button class="go" id="bSave">Qualität speichern</button></div></div>
  <div data-area="updates"><label>Update</label>
- <label class="chk" style="margin-top:4px"><input type="checkbox" id="autoUpd" onchange="api('/api/config',{auto_update:this.checked})"> Automatisch updaten (sofort, Stream bleibt online)</label>
+ <div class="hint" id="updProf" style="display:none">Dieser Kanal bekommt Updates automatisch zusammen mit dem Haupt-Panel.</div>
+ <label class="chk updMain" style="margin-top:4px"><input type="checkbox" id="autoUpd" onchange="api('/api/config',{auto_update:this.checked})"> Automatisch updaten (sofort, Stream bleibt online)</label>
  <div class="hint" id="updInfo"></div>
  <div id="senderPending" style="display:none;margin-top:8px;padding:10px;border-radius:8px;background:#2a2140">🛰 Ein Sender-Update ist bereit. Beim Neustart des Senders ist der Stream ca. 10 Sekunden offline – mach das, wann es dir passt.
   <div class="btns"><button class="go" onclick="if(confirm('Sender jetzt neu starten? Der Stream ist ca. 10 Sekunden offline.'))api('/api/restart_sender').then(refresh)">Sender jetzt neu starten</button></div></div>
- <div class="btns"><button id="bUpd">⬆ Jetzt nach Update suchen</button></div>
- <div class="hint">Lädt die neueste Version von GitHub. Der Stream bleibt online – Zuschauer sehen ein paar Sekunden „Neu verbinden …“.</div>
+ <div class="btns updMain"><button id="bUpd">⬆ Jetzt nach Update suchen</button></div>
+ <div class="hint updMain">Lädt die neueste Version von GitHub – alle Kanäle übernehmen sie automatisch. Der Stream bleibt online – Zuschauer sehen ein paar Sekunden „Neu verbinden …“.</div>
  </div><div data-area="stats"><label>Statistik</label>
  <div class="btns" style="margin-top:0"><button onclick="if(confirm('Alle Stream-Zeiten auf 0 setzen?'))api('/api/stats_reset').then(refresh)">Zähler zurücksetzen</button></div></div>
 </section>
@@ -4470,6 +4533,7 @@ async function refresh(){
  const PF=s.perf||{};$('perfPreset').value=PF.preset;$('perfAuto').checked=PF.auto;
  $('perfInfo').textContent=`Server-Auslastung: ${Math.round(PF.load/PF.cpus*100)} % (${PF.cpus} Kern${PF.cpus>1?'e':''})`+(PF.lag>1?` · ⚠ Live-Bild hinkt ${PF.lag} s hinterher`:' · Live-Bild läuft flüssig')+(PF.note?` · ${PF.note}`:'');
  const U=s.update_info||{};$('autoUpd').checked=s.auto_update;
+ $('updProf').style.display=s.is_profile?'':'none';document.querySelectorAll('.updMain').forEach(e=>e.style.display=s.is_profile?'none':'');
  $('updInfo').textContent=`Version ${U.sha?U.sha.slice(0,7):'?'}${U.installed?' · installiert '+new Date(U.installed*1000).toLocaleString('de-DE'):''}${U.result?' · '+U.result:''}`;
  $('senderPending').style.display=U.sender_pending?'':'none';
  $('keyinfo').textContent=s.key_set?'✅ gesetzt':'❌ fehlt';$('ytkeyinfo').textContent=s.yt_key_set?'✅ gesetzt':'❌ fehlt';
@@ -4546,7 +4610,7 @@ async function profLoad(){try{PROF=await (await fetch('/api/profiles')).json()}c
  $('profSel').value=PROF.current;const adm=PROF.me&&PROF.me.admin;
  $('profDel').style.display=PROF.current&&adm?'':'none';$('profNew').style.display=adm?'':'none';$('profRen').style.display=adm?'':'none';
  $('profMe').textContent=PROF.me?(adm?'Kanal':PROF.me.name+' · Kanal'):'Kanal';
- $('usersCard').style.display=adm?'':'none';try{applyRights()}catch(e){}if(adm&&!window.usLoaded){window.usLoaded=1;usLoad()}}
+ $('usersCard').style.display=adm?'':'none';$('adminCard').style.display=adm?'':'none';if(adm&&!window.adT){window.adT=setInterval(adLoad,10000);adLoad()}try{applyRights()}catch(e){}if(adm&&!window.usLoaded){window.usLoaded=1;usLoad()}}
 let US={users:[],channels:[],areas:[],see:[],do:[],presets:{}},usOpen={},usDet={};
 const PN={none:'Kein Zugriff',view:'Nur gucken',normal:'Normal',full:'Alles',custom:'Eigene'};
 const same=(a,b)=>JSON.stringify(a)==JSON.stringify(b);
@@ -4585,6 +4649,20 @@ $('bUsAdd').onclick=async()=>{const ch=[...document.querySelectorAll('.usC:check
  const per={};ch.forEach(c=>per[c]=pre);
  const j=await api('/api/user_save',{name:$('usName').value,password:$('usPw').value,channels:ch,rights:pre,per});
  if(j.ok){$('usName').value=$('usPw').value='';document.querySelectorAll('.usC').forEach(x=>x.checked=false);usLoad()}};
+async function adLoad(){const r=await fetch('/api/admin_status');const A=await r.json();if(A.error)return;
+ const sh=x=>x?x.slice(0,7):'?',up=A.latest&&A.latest!=A.sha;$('adAuto').checked=A.auto_update;
+ $('adInfo').innerHTML=`Installiert: <b>${sh(A.sha)}</b>${A.installed?' · '+new Date(A.installed*1000).toLocaleString('de-DE'):''}<br>Neueste auf GitHub: <b>${sh(A.latest)}</b> ${up?'<span style="color:#ffc400">· neues Update da</span>':'<span style="color:#4ade80">· aktuell ✅</span>'}${A.result?' · '+esc(A.result):''}`;
+ $('adChans').innerHTML=A.channels.map(c=>{const cur=c.ok&&c.run_sha==A.sha;
+  return `<div class="vid"><div class="t" style="white-space:normal;min-width:0"><b>${esc(c.title)}</b><br><small style="white-space:normal">${!c.ok?'<span style="color:#ff6b6b">läuft nicht / startet gerade</span>':(cur?'✅ aktuelle Version':'⏳ lädt Version '+sh(A.sha)+' … (läuft noch '+sh(c.run_sha)+')')+' · '+(c.live?'🔴 live':c.running?'läuft':'gestoppt')+(c.sender_ok?'':' · ⚠ Sender läuft nicht')}${c.sender_pending?' · <span style="color:#ffc400">Sender-Update bereit</span>':''}</small></div>
+   <div><button onclick="adSend(['${esc(c.id)}'])" title="Sender dieses Kanals neu starten">🛰</button></div></div>`}).join('')}
+async function adSend(ids){if(!confirm(ids=='all'?'Alle Sender neu starten? Alle Kanäle sind ca. 10 Sekunden offline.':ids=='pending'?'Sender mit ausstehendem Update neu starten? Diese Kanäle sind ca. 10 Sekunden offline.':'Sender dieses Kanals neu starten? Ca. 10 Sekunden offline.'))return;
+ const j=await api('/api/admin_senders',{ids:ids=='all'?null:ids});if(j.ok){alert(`${j.n} Sender neu gestartet ✅`);setTimeout(adLoad,3000)}}
+$('bAdSend').onclick=()=>adSend('pending');$('bAdSendAll').onclick=()=>adSend('all');
+$('bAdUpd').onclick=async()=>{$('bAdUpd').disabled=true;const j=await api('/api/admin_update',{});$('bAdUpd').disabled=false;if(!j.ok)return;
+ if(j.same){if(confirm('Du hast schon die neueste Version ✅\n\nTrotzdem bei allen Kanälen neu laden?'))$('bAdReload').onclick(true);return}
+ alert('Update installiert ✅ Alle Kanäle übernehmen es in den nächsten Sekunden – die Streams bleiben online.'+(j.sender_changed?'\n\nAuch der Sender hat ein Update – unten „Ausstehende Sender-Updates einspielen“, wenn es dir passt (ca. 10 s offline).':''));setTimeout(()=>location.reload(),6000)};
+$('bAdReload').onclick=async(skip)=>{if(skip!==true&&!confirm('Alle Kanäle laden die aktuelle Version neu? Die Streams bleiben online.'))return;
+ const j=await api('/api/admin_reload',{});if(j.ok)setTimeout(()=>location.reload(),6000)};
 // Rechte im Panel anwenden: Aus = ausblenden, Sehen = nur ansehen
 function applyRights(){const P=PROF.me&&PROF.me.perm;if(!P||PROF.me.admin)return;
  document.querySelectorAll('[data-area]').forEach(el=>{const v=P.a[el.dataset.area]??0;el.style.display=v==0?'none':'';
@@ -4592,7 +4670,7 @@ function applyRights(){const P=PROF.me&&PROF.me.perm;if(!P||PROF.me.admin)return
  document.querySelectorAll('[data-do]').forEach(el=>{if(!P.do.includes(el.dataset.do))el.querySelectorAll('button,input').forEach(x=>{x.disabled=true;x.classList.add('ro')})});
  document.querySelectorAll('[data-see]').forEach(el=>{el.style.display=P.see.includes(el.dataset.see)?'':'none'});
  // Karten, in denen nichts mehr sichtbar ist, ganz ausblenden (z. B. „Einstellungen“ ohne Rechte)
- document.querySelectorAll('section.card:not([data-area]):not(#usersCard)').forEach(c=>{c.style.display='';
+ document.querySelectorAll('section.card:not([data-area]):not(#usersCard):not(#adminCard)').forEach(c=>{c.style.display='';
   const vis=[...c.children].filter(x=>x.tagName!='H2'&&getComputedStyle(x).display!='none');if(!vis.length)c.style.display='none'})}
 async function profGo(id){await fetch('/api/profile_select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});location.reload()}
 async function profNew(){const t=prompt('Name für den neuen Kanal/Stream (z. B. Fortnite VODs):');if(!t)return;
@@ -4721,7 +4799,8 @@ class Handler(BaseHTTPRequestHandler):
         return pid
 
     MAIN_ONLY = ("/logout", "/login", "/api/profiles", "/api/profile_select", "/api/profile_create",
-                 "/api/profile_delete", "/api/profile_rename", "/api/users", "/api/user_save", "/api/user_delete")
+                 "/api/profile_delete", "/api/profile_rename", "/api/users", "/api/user_save", "/api/user_delete",
+                 "/api/admin_status", "/api/admin_update", "/api/admin_reload", "/api/admin_senders", "/api/admin_auto")
 
     def _rights_error(self, path, body):
         """Prüft Änderungen gegen die Rechte des Benutzers. Gibt Fehlertext oder None zurück."""
@@ -4817,6 +4896,10 @@ class Handler(BaseHTTPRequestHandler):
             import html as _h
             name = _h.escape((self._user() or {}).get("name", ""))
             return self._send(403, NO_ACCESS_HTML.replace("__NAME__", name), "text/html")
+        if path == "/api/admin_status" and self._authed() and not IS_PROFILE:
+            if not (self._user() or {}).get("admin"):
+                return self._send(200, {"error": "Keine Berechtigung"})
+            return self._send(200, admin_status())
         if path == "/api/users" and self._authed() and not IS_PROFILE:
             if not (self._user() or {}).get("admin"):
                 return self._send(200, {"error": "Keine Berechtigung"})
@@ -4891,6 +4974,8 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/api/profile_select", "/api/profile_create", "/api/profile_delete", "/api/profile_rename",
                     "/api/user_save", "/api/user_delete") and self._authed() and not IS_PROFILE:
             return self._profile_api()
+        if path.startswith("/api/admin_") and self._authed() and not IS_PROFILE:
+            return self._admin_api(path)
         if path.startswith("/api/") and self._authed() and not IS_PROFILE:
             body = self._body()
             err = self._rights_error(path, body)
@@ -4898,6 +4983,47 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"error": err})
             self._cached_body = body
         return self._do_post()
+
+    def _admin_api(self, path):
+        if not (self._user() or {}).get("admin"):
+            return self._send(200, {"error": "Keine Berechtigung (nur Admin)"})
+        data = json.loads(self._body() or b"{}")
+        if path == "/api/admin_update":                  # neueste Version holen – alle Kanäle ziehen automatisch nach
+            try:
+                sha = latest_sha()
+            except Exception as e:  # noqa
+                return self._send(200, {"error": f"GitHub nicht erreichbar: {e}"})
+            if sha == load_json(MAIN_VERSION_PATH, {}).get("sha") and not data.get("force"):
+                return self._send(200, {"ok": True, "same": True})
+            ok, info = do_update(sha)
+            if not ok:
+                return self._send(200, {"error": info})
+            self._send(200, {"ok": True, "sender_changed": info})
+            threading.Timer(1.0, restart_panel).start()
+            return
+        if path == "/api/admin_reload":                  # alle Kanäle laden die aktuelle Version (nahtlos)
+            os.utime(os.path.join(CODE_DIR, "server.py"))
+            log_line("Alle Kanäle laden die aktuelle Version neu")
+            self._send(200, {"ok": True})
+            threading.Timer(1.0, restart_panel).start()
+            return
+        if path == "/api/admin_senders":                 # Sender neu starten (ca. 10 s offline)
+            ids = data.get("ids")
+            allp = [""] + list(profiles())
+            ids = [i for i in (allp if ids == "pending" or ids is None else ids) if i in allp]
+            if data.get("ids") == "pending":
+                ids = [i for i in ids if sender_pending_for(i)]
+            for i in ids:
+                try:
+                    sender_restart_channel(i)
+                except OSError:
+                    pass
+            log_line(f"Sender neu gestartet: {len(ids)} Kanal/Kanäle")
+            return self._send(200, {"ok": True, "n": len(ids)})
+        if path == "/api/admin_auto":
+            set_cfg(auto_update=bool(data.get("on")))
+            return self._send(200, {"ok": True})
+        return self._send(404, {"error": "unbekannt"})
 
     def _profile_api(self):
         path = urlparse(self.path).path
@@ -5237,10 +5363,7 @@ class Handler(BaseHTTPRequestHandler):
                         audio_feeder.skip = True
                     os.remove(p)
         elif path == "/api/restart_sender":
-            open(SENDER_RESTART_FLAG, "w").close()           # Sender beendet sich, systemd startet ihn neu
-            v = load_json(VERSION_PATH, {})
-            v["sender_pending"] = False
-            save_json(VERSION_PATH, v)
+            sender_restart_channel(PROFILE_ID)               # Sender beendet sich, systemd startet ihn neu
         elif path == "/api/default_cover":
             import urllib.request
             try:
@@ -5700,7 +5823,9 @@ def status():
         "perf": {"preset": live_preset(cfg), "auto": cfg.get("perf_auto", True), "lag": round(streamer.lag, 1),
                  "load": round(os.getloadavg()[0], 2), "cpus": os.cpu_count() or 1, "note": streamer.perf_note},
         "update_info": {"result": auto_updater.last_result, "checked": auto_updater.last_check,
-                        **{k: v for k, v in load_json(VERSION_PATH, {}).items() if k in ("sha", "installed", "sender_pending")}},
+                        **{k: v for k, v in load_json(MAIN_VERSION_PATH, {}).items() if k in ("sha", "installed")},
+                        "sender_pending": sender_pending_for(PROFILE_ID)},
+        "run_sha": RUN_SHA, "is_profile": IS_PROFILE,
         "session_secs": time.time() - streamer.session_started if streamer.session_started else 0,
         "stats": stats.data["dest"], "alltime": stats.data.get("alltime", 0),
         "runtime_alltime": cfg.get("runtime_alltime", True),
