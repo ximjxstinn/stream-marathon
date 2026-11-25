@@ -1652,7 +1652,7 @@ def profiles_status(current, info=None):
             st = load_json(os.path.join(PROFILES_DIR, pid, "state.json"), {})
             out.append({"id": pid, "title": p["title"], "running": bool(st.get("want"))})
     return {"current": current, "list": out,
-            "me": {"name": info["name"], "admin": info["admin"], "rights": rights_for(info, current)}}
+            "me": {"name": info["name"], "admin": info["admin"], "perm": perm_for(info, current)}}
 
 
 def restart_panel():
@@ -3887,13 +3887,64 @@ SESSIONS = set(load_json(SESSIONS_PATH, []))
 SESSION_USERS_PATH = os.path.join(BASE, "session_users.json")
 SESSION_USERS = load_json(SESSION_USERS_PATH, {})          # Sitzung -> Benutzername ("" = Admin)
 USERS_PATH = os.path.join(BASE, "users.json")
-RIGHTS = {
+RIGHTS = {   # alte, grobe Rechte (werden automatisch ins neue Modell übernommen)
     "control": "Stream starten/stoppen & Kurze Pause",
     "content": "Inhalte: VODs, Musik, Countdown, Bilder, Spiele",
     "settings": "Einstellungen: Stream-Schlüssel, Qualität, Titel & Kategorie",
     "bot": "Chat & Chat-Bot",
     "update": "Updates & Sender neu starten",
 }
+AREAS = [("countdown", "Countdown"), ("games", "Nächste Spiele"), ("vods", "Twitch-VODs"),
+         ("videos", "Gespeicherte Videos"), ("music", "Musik"), ("pause", "Kurze Pause"),
+         ("overlay", "Einblendungen (Live-Zeit)"), ("chat", "Chat im Stream"), ("bot", "Chat-Bot"),
+         ("titles", "Stream-Titel & Kategorie"), ("platforms", "Twitch & YouTube (Schlüssel)"),
+         ("quality", "Qualität & Leistung"), ("stats", "Statistik"), ("updates", "Updates")]
+SEE = [("log", "Log lesen")]
+DO = [("startstop", "Starten und stoppen"), ("platform", "Twitch/YouTube einzeln starten & stoppen"),
+      ("mode", "Modus wechseln (Countdown / VODs / Videos)"), ("sender", "Sender neu starten")]
+AREA_IDS = [a for a, _ in AREAS]
+
+
+def _perm(areas, see, do):
+    return {"a": {a: areas.get(a, 0) for a in AREA_IDS}, "see": list(see), "do": list(do)}
+
+
+RIGHT_PRESETS = {
+    "view": _perm({a: 1 for a in AREA_IDS}, [x for x, _ in SEE], []),
+    "normal": _perm({**{a: 2 for a in AREA_IDS}, "titles": 1, "platforms": 0, "quality": 1, "stats": 1, "updates": 0},
+                    [x for x, _ in SEE], ["startstop", "platform", "mode"]),
+    "full": _perm({a: 2 for a in AREA_IDS}, [x for x, _ in SEE], [x for x, _ in DO]),
+}
+
+
+def perm_from_old(rights):
+    """Alte Rechte-Liste -> neues Modell (Bereiche Aus/Sehen/Ändern + Sehen + Machen)."""
+    areas = {a: 1 for a in AREA_IDS}
+    do = []
+    if "control" in rights:
+        do += ["startstop", "platform"]
+        areas["pause"] = 2
+    if "content" in rights:
+        areas.update({a: 2 for a in ("countdown", "games", "vods", "videos", "music", "overlay")})
+        do.append("mode")
+    if "settings" in rights:
+        areas.update({a: 2 for a in ("titles", "platforms", "quality")})
+    if "bot" in rights:
+        areas.update(chat=2, bot=2)
+    if "update" in rights:
+        areas["updates"] = 2
+        do.append("sender")
+    return _perm(areas, [x for x, _ in SEE], do)
+
+
+def norm_perm(p):
+    if isinstance(p, list):
+        return perm_from_old(p)
+    p = p or {}
+    a = p.get("a") or {}
+    return {"a": {k: max(0, min(2, int(a.get(k, 0)))) for k in AREA_IDS},
+            "see": [x for x in (p.get("see") or []) if x in dict(SEE)],
+            "do": [x for x in (p.get("do") or []) if x in dict(DO)]}
 
 
 def users():
@@ -3903,7 +3954,7 @@ def users():
 def user_info(name):
     """Rechte eines Benutzers. "" = Admin (das bisherige Passwort) darf alles."""
     if not name:
-        return {"name": "Admin", "admin": True, "channels": ["*"], "rights": list(RIGHTS)}
+        return {"name": "Admin", "admin": True, "channels": ["*"], "rights": [], "per": {}}
     u = users().get(name)
     if not u:
         return None
@@ -3911,64 +3962,95 @@ def user_info(name):
             "per": u.get("per") or {}}
 
 
-def rights_for(info, pid):
-    """Rechte eines Benutzers in einem bestimmten Kanal (eigene Rechte pro Kanal haben Vorrang)."""
+def perm_for(info, pid):
+    """Rechte in einem Kanal: {"a": {Bereich: 0 aus/1 sehen/2 ändern}, "see": [...], "do": [...]}."""
     if not info:
-        return []
+        return norm_perm({})
     if info["admin"]:
-        return list(RIGHTS)
+        return RIGHT_PRESETS["full"]
     per = info.get("per") or {}
-    return per[pid] if pid in per else info.get("rights", [])
-
-
-RIGHT_PRESETS = {"view": [], "normal": ["control", "content", "bot"], "full": list(RIGHTS)}
+    if pid in per:
+        return norm_perm(per[pid])
+    return norm_perm(info.get("rights") or [])
 
 
 def may_channel(info, pid):
     return bool(info) and ("*" in info["channels"] or pid in info["channels"])
 
 
-CONFIG_RIGHTS = [   # Einstellung -> nötiges Recht (Anfang des Namens)
-    (("pause_",), "control"),
-    (("bot_", "chat_", "discord_link", "tiktok_link"), "bot"),
-    (("cd_", "mode", "vod_", "game_", "games_", "shuffle", "tw_order", "runtime_", "show_runtime", "slate_",
-      "music"), "content"),
+# Einstellung -> Bereich (Anfang des Namens; Reihenfolge zählt)
+CONFIG_AREAS = [
     (("profile_title",), "admin"),
+    (("pause_",), "pause"),
+    (("cd_volume", "cd_shuffle_music", "vod_music_volume", "music"), "music"),
+    (("vod_audio", "vod_mix_volume", "tw_order", "tw_playlist", "vod_channel"), "vods"),
+    (("cd_",), "countdown"),
+    (("game_", "games_"), "games"),
+    (("runtime_", "show_runtime"), "overlay"),
+    (("chat_",), "chat"),
+    (("bot_", "discord_link", "tiktok_link"), "bot"),
+    (("title_", "cat_", "yt_category", "tw_client", "yt_client"), "titles"),
+    (("quality", "perf_"), "quality"),
+    (("auto_update",), "updates"),
+    (("shuffle",), "videos"),
+    (("mode",), "do:mode"),
 ]
-PATH_RIGHTS = [
-    (("/api/start", "/api/stop", "/api/platform", "/api/session_start", "/api/stats_reset"), "control"),
-    (("/api/twpl_", "/api/vod", "/api/music", "/api/asset_chunk", "/api/default_cover", "/api/game_",
-      "/api/cookies_delete", "/api/video", "/api/delete", "/api/convert"), "content"),
+PATH_AREAS = [
+    (("/api/start", "/api/stop"), "do:startstop"),
+    (("/api/platform",), "do:platform"),
+    (("/api/restart_sender",), "do:sender"),
+    (("/api/update",), "updates"),
+    (("/api/session_start", "/api/stats_reset"), "stats"),
+    (("/api/twpl_", "/api/vod"), "vods"),
+    (("/api/music",), "music"),
+    (("/api/game_",), "games"),
+    (("/api/default_cover",), "countdown"),
     (("/api/bot_",), "bot"),
-    (("/api/update", "/api/restart_sender"), "update"),
-    (("/api/title_",), "settings"),
+    (("/api/title_",), "titles"),
+    (("/api/video", "/api/delete", "/api/convert", "/api/upload"), "videos"),
 ]
+ASSET_AREAS = {"bg": "countdown", "cover": "countdown", "music": "music", "cookies": "music", "pause": "pause"}
 
 
-def needed_rights(path, data):
-    """Welche Rechte eine Änderung braucht (Lesen ist immer erlaubt)."""
+def config_area(key):
+    return next((r for pre, r in CONFIG_AREAS if key.startswith(pre)), "platforms")
+
+
+def needed_rights(path, data, query=None):
+    """Was eine Änderung braucht: Menge aus Bereichen (Stufe "Ändern"), "do:…" oder "admin"."""
     if path == "/api/config":
-        need = set()
-        for k in data:
-            r = next((r for pre, r in CONFIG_RIGHTS if k.startswith(pre)), "settings")
-            need.add(r)
-        return need
-    for pre, r in PATH_RIGHTS:
+        return {config_area(k) for k in data}
+    if path == "/api/asset_chunk":
+        kind = ((query or {}).get("kind") or [""])[0]
+        return {ASSET_AREAS.get(kind, "videos")}
+    for pre, r in PATH_AREAS:
         if path.startswith(pre):
             return {r}
-    return {"settings"}
+    return {"platforms"}
 
 
-def check_rights(info, path, data, pid=""):
-    """None = erlaubt, sonst Fehlertext."""
+def _label(r):
+    if r.startswith("do:"):
+        return dict(DO).get(r[3:], r)
+    return dict(AREAS).get(r, r)
+
+
+def check_rights(info, path, data, pid="", query=None, current=None):
+    """None = erlaubt, sonst Fehlertext. Unveränderte Werte (z. B. beim Speichern ganzer Formulare) zählen nicht."""
     if info and info["admin"]:
         return None
-    need = needed_rights(path, data)
-    if "admin" in need:
-        return "Keine Berechtigung (nur Admin)"
-    have = rights_for(info, pid)
-    missing = [RIGHTS[r] for r in need if r not in have]
-    return f"Keine Berechtigung: {missing[0]}" if missing else None
+    perm = perm_for(info, pid)
+    if path == "/api/config" and current is not None:
+        data = {k: v for k, v in data.items()
+                if not (k in current and current.get(k) == v) and not (k in ("stream_key", "yt_key") and not v)}
+    need = needed_rights(path, data, query)
+    for r in need:
+        if r == "admin":
+            return "Keine Berechtigung (nur Admin)"
+        ok = (r[3:] in perm["do"]) if r.startswith("do:") else perm["a"].get(r, 0) >= 2
+        if not ok:
+            return f"Keine Berechtigung: {_label(r)}"
+    return None
 
 LOGIN_HTML = """<!doctype html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -3991,7 +4073,7 @@ PANEL_HTML = r"""<!doctype html><html lang="de"><head><meta charset="utf-8">
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,sans-serif;font-size:15px}
 header{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid var(--line)}
 header h1{font-size:18px;margin:0}header a{color:var(--mut);font-size:14px}
-main{max-width:720px;margin:0 auto;padding:16px;display:grid;gap:16px}
+main{max-width:720px;margin:0 auto;padding:16px;display:grid;gap:16px;grid-template-columns:minmax(0,1fr)}.card{min-width:0}pre{white-space:pre-wrap;word-break:break-word}
 .card{background:var(--card);border-radius:14px;padding:18px}.card h2{font-size:15px;margin:0 0 14px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em}
 .status{display:flex;align-items:center;gap:12px;font-size:22px;font-weight:700}
 .dot{width:14px;height:14px;border-radius:50%;background:#555}.dot.live{background:var(--red);box-shadow:0 0 12px var(--red);animation:p 1.6s infinite}
@@ -4011,7 +4093,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
 .hint{color:var(--mut);font-size:13px;margin-top:8px}.empty{color:var(--mut)}
 .mixer{background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin-top:6px}
 .mxrow{display:flex;align-items:center;gap:8px;margin:6px 0}.mxrow input{flex:1}.mxl{min-width:78px;font-weight:600}
-.profbar{display:flex;gap:8px;align-items:center;margin:0 0 12px}.profbar select{flex:1}.profbar .mut{color:var(--mut);font-size:14px}
+.profbar{display:flex;gap:8px;align-items:center;max-width:720px;margin:0 auto;padding:12px 16px 0;box-sizing:border-box}.profbar select{flex:1}.profbar .mut{color:var(--mut);font-size:14px}
 .ubox{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:8px 0;background:rgba(255,255,255,.02)}
 .uhead{display:flex;align-items:center;gap:8px}.uhead b{flex:1;font-size:16px}.uhead button{padding:6px 10px}
 .uline{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid var(--line);font-size:14px}
@@ -4023,6 +4105,12 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
 .rowline{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:10px 0}.rowline select{max-width:220px}
 .addbtn{margin-top:6px;padding:12px 18px;font-weight:700}
 .usgreen{color:#4ade80;cursor:pointer;font-size:14px;padding:8px 0;border-top:1px solid var(--line)}
+.pch{border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:8px 0}.pchh{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}.pchh small{color:var(--mut)}
+.seg,.seg3{display:flex;gap:4px;flex-wrap:wrap}.seg button{flex:1;padding:7px 4px;font-size:12px;min-width:64px}.seg3 button{padding:5px 8px;font-size:12px}
+.seg button.on,.seg3 button.on{background:#4ade80;color:#0e0e10;border-color:#4ade80;font-weight:700}
+.pdet{margin-top:6px}.psec{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin:10px 0 4px}
+.prow{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;border-top:1px dashed var(--line);font-size:13px}
+.ro{opacity:.45;cursor:not-allowed}
 </style></head><body>
 <header><h1>📺 24/7 Stream</h1><a href="/logout">Logout</a></header>
 <div class="profbar"><span class="mut" id="profMe">Kanal</span><select id="profSel" onchange="profGo(this.value)"></select>
@@ -4032,20 +4120,20 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div class="status"><span class="dot" id="dot"></span><span id="st">…</span></div>
  <div class="sub" id="sub"></div>
  <div id="dests" style="margin-top:12px"></div>
- <div id="runtime" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)"></div>
- <div class="btns"><button class="go" id="bStart">▶ Starten</button><button class="stop" id="bStop">■ Stoppen</button><button id="bRe">↻ Neu starten</button></div>
- <div class="btns"><button id="bPause" onclick="api('/api/config',{pause_on:!this.dataset.on}).then(refresh)">☕ Kurze Pause einblenden</button>
+ <div id="runtime" data-area="stats" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)"></div>
+ <div class="btns" data-do="startstop"><button class="go" id="bStart">▶ Starten</button><button class="stop" id="bStop">■ Stoppen</button><button id="bRe">↻ Neu starten</button></div>
+ <div class="btns" data-area="pause"><button id="bPause" onclick="api('/api/config',{pause_on:!this.dataset.on}).then(refresh)">☕ Kurze Pause einblenden</button>
   <input type="text" id="pauseText" maxlength="60" placeholder="☕ Kurze Pause" style="flex:1;min-width:140px" onchange="api('/api/config',{pause_text:this.value})">
   <label class="filebtn">🖼 Pause-Bild<input type="file" id="pauseFile" accept="image/png,image/jpeg,image/webp"></label>
   <input type="text" id="pauseSub" maxlength="60" placeholder="Gleich geht's weiter!" style="flex:1;min-width:140px" onchange="api('/api/config',{pause_sub:this.value})"></div>
- <div id="platBtns" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+ <div id="platBtns" data-do="platform" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
   <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"><b style="min-width:80px">Twitch</b><button class="go" id="pTwStart" onclick="plat('twitch','start')">▶ Start</button><button class="stop" id="pTwStop" onclick="plat('twitch','stop')">■ Stop</button><button id="pTwRe" onclick="plat('twitch','restart')">↻ Neu</button></div>
   <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"><b style="min-width:80px">YouTube</b><button class="go" id="pYtStart" onclick="plat('youtube','start')">▶ Start</button><button class="stop" id="pYtStop" onclick="plat('youtube','stop')">■ Stop</button><button id="pYtRe" onclick="plat('youtube','restart')">↻ Neu</button></div>
  </div>
 </section>
 <section class="card"><h2>Modus</h2>
- <div class="btns" style="margin-top:0"><button id="mCd">⏱ Countdown</button><button id="mTw">📺 Twitch-VODs</button><button id="mVid">🎞 Gespeicherte Videos</button></div>
- <div id="twBox" style="display:none">
+ <div class="btns" style="margin-top:0" data-do="mode"><button id="mCd">⏱ Countdown</button><button id="mTw">📺 Twitch-VODs</button><button id="mVid">🎞 Gespeicherte Videos</button></div>
+ <div id="twBox" style="display:none"><div data-area="vods">
   <div class="hint">Spielt VODs direkt von Twitch ab – ohne Speicher. VODs fügst du unten bei „Videos → Direkt von Twitch“ mit „▶ Abspielen“ hinzu.</div>
   <div id="twNow" style="margin-top:10px"></div>
   <div id="twSeek" style="display:none">
@@ -4066,7 +4154,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <div class="hint">Mit ▲ ▼ verschiebst du einzelne VODs. ⏫ holt es ganz nach oben. „▶ Jetzt“ spielt ein VOD sofort, „⏭ Als Nächstes“ danach.</div>
   <div id="twList" style="margin-top:8px"></div>
  </div>
- <div id="cdBox">
+ </div><div id="cdBox"><div data-area="countdown">
   <label>Design</label><select id="cd_theme"></select>
   <div class="hint">Design oder Farbe wechseln = ein paar Sekunden „Neu verbinden …“ (Stream bleibt online). Alles andere wird live übernommen.</div>
   <label>Countdown bis (deutsche Zeit)</label><input type="datetime-local" id="cd_target">
@@ -4091,9 +4179,9 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <div class="btns" style="margin-top:0"><label class="filebtn">Bild wählen<input type="file" id="bgFile" accept="image/png,image/jpeg,image/webp"></label><button id="bgDel">Entfernen</button></div>
   <div data-th="ps5 release konsole"><label>Cover (quadratisch) <span id="cvInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">Cover wählen<input type="file" id="cvFile" accept="image/png,image/jpeg,image/webp"></label><button onclick="api('/api/default_cover').then(j=>{refresh();if(j.ok)showPrev()})">🎨 Vice-City-Cover verwenden</button><button id="cvDel">Entfernen</button></div></div>
- </div>
+ </div></div>
 </section>
-<section class="card"><h2>🎵 Musik</h2>
+<section class="card" data-area="music"><h2>🎵 Musik</h2>
   <label style="margin-top:0">Musik-Playlist <span id="muInfo"></span></label>
   <div class="btns" style="margin-top:0"><label class="filebtn">＋ Songs hinzufügen<input type="file" id="muFile" accept="audio/*,video/*,.mp3,.m4a,.mp4,.webm,.mkv" multiple></label><button id="muSkip">⏭ Nächster Song</button></div>
   <div style="display:flex;gap:8px;margin-top:8px"><input type="text" id="muLink" placeholder="Link einfügen (YouTube, SoundCloud, Playlist bis 200 Songs)" style="flex:1"><button class="go" id="bMuLink">＋ Per Link</button></div>
@@ -4110,7 +4198,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <label class="chk"><input type="checkbox" id="cd_shuffle_music" onchange="api('/api/config',{cd_shuffle_music:this.checked})"> Songs zufällig mischen</label>
   <div class="hint">Songs, Bild und Lautstärke werden live getauscht – der Stream läuft weiter. Nur lizenzfreie Musik verwenden (z. B. StreamBeats, NCS), sonst drohen DMCA-Strikes.</div>
 </section>
-<section class="card"><h2>📝 Stream-Titel automatisch</h2>
+<section class="card" data-area="titles"><h2>📝 Stream-Titel automatisch</h2>
  <label class="chk" style="margin-top:0"><input type="checkbox" id="tiAuto" onchange="api('/api/config',{title_auto:this.checked}).then(refresh)"> Titel auf Twitch und YouTube automatisch anpassen</label>
  <div class="hint" id="tiPrev"></div>
  <label>Titel beim Countdown ({game} = Spiel, {date} = Datum)</label><input type="text" id="ti_countdown" maxlength="140">
@@ -4133,7 +4221,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div class="btns"><button id="bTiYt">🔗 Mit YouTube verbinden</button></div>
  <div class="hint">Einmalige Einrichtung: siehe Anleitung, Abschnitt „Stream-Titel“. Dein Passwort gibst du dabei nur direkt bei Twitch/Google ein.</div>
 </section>
-<section class="card"><h2>🎮 Nächste Spiele</h2>
+<section class="card" data-area="games"><h2>🎮 Nächste Spiele</h2>
  <label style="margin-top:0">Wann soll nach dem Release gewechselt werden?</label>
  <select id="gWhen2" onchange="gSetWhen(this.value)">
   <option value="0">Sofort beim Release</option><option value="1">Nach 1 Stunde</option><option value="3">Nach 3 Stunden</option>
@@ -4155,13 +4243,13 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
   <label style="margin-top:0">Neuer Freund</label>
   <div class="nfrow"><input type="text" id="usName" autocapitalize="off" placeholder="Benutzername"><input type="password" id="usPw" autocomplete="new-password" placeholder="Passwort"></div>
   <label>Darf diese Kanäle sehen</label><div id="usChans"></div>
-  <div class="rowline"><span>Rechte</span><select id="usPreset"><option value="view">Nur ansehen</option><option value="normal" selected>Normal</option><option value="full">Alles</option></select></div>
+  <div class="rowline"><span>Rechte</span><select id="usPreset"><option value="view">Nur gucken</option><option value="normal" selected>Normal</option><option value="full">Alles</option></select></div>
   <button id="bUsAdd" class="addbtn">＋ Freund hinzufügen</button>
  </div>
  <div class="hint">Unter „⚙ Rechte pro Kanal“ stellst du pro Freund ein, welche Kanäle er sieht und was er dort machen darf. Neue Kanäle sind für Freunde erst mal aus. Kanäle anlegen, Benutzer und Updates kannst nur du ändern.<br>
- <b>Normal</b> = Starten/Stoppen, Pause, Inhalte, Chat · <b>Alles</b> = zusätzlich Schlüssel, Qualität, Titel & Updates.</div>
+ <b>Nur gucken</b> = alles sehen, nichts ändern · <b>Normal</b> = Inhalte, Musik, Pause, Chat & Starten/Stoppen, aber keine Schlüssel/Updates · <b>Alles</b> = alles außer Freunde & Kanäle verwalten.</div>
 </section>
-<section class="card"><h2>🤖 Chat-Bot</h2>
+<section class="card" data-area="bot"><h2>🤖 Chat-Bot</h2>
  <label class="chk" style="margin-top:0"><input type="checkbox" id="botOn" onchange="api('/api/config',{bot_enabled:this.checked}).then(refresh)"> Chat-Bot einschalten</label>
  <div id="botInfo" class="hint"></div>
  <label class="chk"><input type="checkbox" id="botGreet" onchange="api('/api/config',{bot_greet:this.checked})"> Wer im Chat schreibt, bekommt eine Antwort</label>
@@ -4185,7 +4273,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div id="botBanned" style="margin-top:8px"></div>
  <div class="hint">{name} wird durch den Namen ersetzt. Mods, VIPs und Subs werden nie gebannt. Der Bot schreibt mit deinem Twitch-Konto (Verbindung unter „📝 Stream-Titel“).</div>
 </section>
-<section class="card"><h2>💬 Chat im Stream</h2>
+<section class="card" data-area="chat"><h2>💬 Chat im Stream</h2>
  <label class="chk" style="margin-top:0"><input type="checkbox" id="chOn"> Twitch-Chat im Stream anzeigen</label>
  <label>Position bei VODs</label><select id="chVodPos" onchange="api('/api/config',{chat_vod_pos:this.value})"><option value="tl">oben links</option><option value="tr">oben rechts</option><option value="bl">unten links</option><option value="br">unten rechts</option></select>
  <div class="hint" id="chInfo"></div>
@@ -4196,7 +4284,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div class="hint">Links in Nachrichten werden zu [Link]. Löschst du eine Nachricht oder bannst jemanden auf Twitch, verschwindet sie sofort auch aus dem Stream.</div>
  <div id="chRecent" style="margin-top:8px"></div>
 </section>
-<section class="card" id="vidCard"><h2>Videos</h2>
+<section class="card" id="vidCard" data-area="videos"><h2>Videos</h2>
  <label class="filebtn">＋ Videos hochladen<input type="file" id="file" accept="video/*" multiple></label>
  <div class="hint">Videos werden nach dem Upload einmal umgewandelt, danach landen sie automatisch in der Playlist.</div>
  <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
@@ -4208,7 +4296,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div id="uploads"></div><div id="jobs"></div><div id="vids" style="margin-top:10px"></div>
 </section>
 <section class="card"><h2>Einstellungen</h2>
- <h3 style="margin:4px 0 0;font-size:16px">🟣 Twitch</h3>
+ <div data-area="platforms"><h3 style="margin:4px 0 0;font-size:16px">🟣 Twitch</h3>
  <label class="chk"><input type="checkbox" id="tw_enabled"> An Twitch senden</label>
  <label>Twitch Stream-Key <span id="keyinfo"></span></label>
  <input type="password" id="key" placeholder="live_xxxxxxxx (leer lassen = nicht ändern)">
@@ -4221,25 +4309,25 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <label>YouTube Server</label><input type="text" id="yt_server">
  <label>Geplant neu verbinden nach (Stunden) – YouTube: 11,83 = 11:50 h (YouTube speichert max. 12 h)</label><input type="text" id="yt_max_hours" inputmode="decimal">
  <div class="hint">YouTube Studio → Erstellen → Livestream starten → Stream. Den Stream-Schlüssel dort kopieren. Am besten einen dauerhaften Schlüssel nehmen. Neuen Key speichern = nur diese Plattform verbindet kurz neu.</div>
- <label>Leistung (Live-Bild)</label>
+ </div><div data-area="quality"><label>Leistung (Live-Bild)</label>
  <select id="perfPreset" onchange="api('/api/config',{perf_preset:this.value})"><option value="veryfast">Beste Qualität (braucht mehr Leistung)</option><option value="superfast">Ausgewogen</option><option value="ultrafast">Sparsam (für kleine Server)</option></select>
  <label class="chk"><input type="checkbox" id="perfAuto" onchange="api('/api/config',{perf_auto:this.checked})"> Automatisch sparsamer werden, wenn der Server nicht hinterherkommt</label>
  <div class="hint" id="perfInfo"></div>
  <label>Qualität</label><select id="quality"></select>
  <div class="hint" id="qhint"></div>
  <label class="chk"><input type="checkbox" id="shuffle"> Videos zufällig mischen</label>
- <div class="btns"><button class="go" id="bSave">Speichern</button></div>
- <label>Update</label>
+ <div class="btns"><button class="go" id="bSave">Speichern</button></div></div>
+ <div data-area="updates"><label>Update</label>
  <label class="chk" style="margin-top:4px"><input type="checkbox" id="autoUpd" onchange="api('/api/config',{auto_update:this.checked})"> Automatisch updaten (sofort, Stream bleibt online)</label>
  <div class="hint" id="updInfo"></div>
  <div id="senderPending" style="display:none;margin-top:8px;padding:10px;border-radius:8px;background:#2a2140">🛰 Ein Sender-Update ist bereit. Beim Neustart des Senders ist der Stream ca. 10 Sekunden offline – mach das, wann es dir passt.
   <div class="btns"><button class="go" onclick="if(confirm('Sender jetzt neu starten? Der Stream ist ca. 10 Sekunden offline.'))api('/api/restart_sender').then(refresh)">Sender jetzt neu starten</button></div></div>
  <div class="btns"><button id="bUpd">⬆ Jetzt nach Update suchen</button></div>
  <div class="hint">Lädt die neueste Version von GitHub. Der Stream bleibt online – Zuschauer sehen ein paar Sekunden „Neu verbinden …“.</div>
- <label>Statistik</label>
- <div class="btns" style="margin-top:0"><button onclick="if(confirm('Alle Stream-Zeiten auf 0 setzen?'))api('/api/stats_reset').then(refresh)">Zähler zurücksetzen</button></div>
+ </div><div data-area="stats"><label>Statistik</label>
+ <div class="btns" style="margin-top:0"><button onclick="if(confirm('Alle Stream-Zeiten auf 0 setzen?'))api('/api/stats_reset').then(refresh)">Zähler zurücksetzen</button></div></div>
 </section>
-<section class="card"><h2>Log</h2><pre id="log"></pre></section>
+<section class="card" data-see="log"><h2>Log</h2><pre id="log"></pre></section>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -4253,6 +4341,7 @@ const mb=b=>(b/1048576).toFixed(0)+' MB';
 let cfgLoaded=false;
 async function api(p,body){const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
  if(r.status==401)location.reload();const j=await r.json();if(j.error)alert(j.error);return j}
+setInterval(()=>{try{applyRights()}catch(e){}},400);
 async function refresh(){
  const r=await fetch('/api/status');if(r.status==401)return location.reload();const s=await r.json();
  $('dot').className='dot'+(s.live?' live':'');$('st').textContent=s.live?'LIVE':(s.running?s.message:'Gestoppt');
@@ -4364,29 +4453,51 @@ async function profLoad(){try{PROF=await (await fetch('/api/profiles')).json()}c
  $('profSel').value=PROF.current;const adm=PROF.me&&PROF.me.admin;
  $('profDel').style.display=PROF.current&&adm?'':'none';$('profNew').style.display=adm?'':'none';$('profRen').style.display=adm?'':'none';
  $('profMe').textContent=PROF.me?(adm?'Kanal':PROF.me.name+' · Kanal'):'Kanal';
- $('usersCard').style.display=adm?'':'none';if(adm&&!window.usLoaded){window.usLoaded=1;usLoad()}}
-let US={users:[],rights:{},channels:[],presets:{}},usOpen={};
-const preName=r=>{for(const[k,v]of Object.entries(US.presets||{}))if(v.length==r.length&&v.every(x=>r.includes(x)))return k;return 'custom'};
+ $('usersCard').style.display=adm?'':'none';try{applyRights()}catch(e){}if(adm&&!window.usLoaded){window.usLoaded=1;usLoad()}}
+let US={users:[],channels:[],areas:[],see:[],do:[],presets:{}},usOpen={},usDet={};
+const PN={none:'Kein Zugriff',view:'Nur gucken',normal:'Normal',full:'Alles',custom:'Eigene'};
+const same=(a,b)=>JSON.stringify(a)==JSON.stringify(b);
+function permNorm(p){return{a:Object.fromEntries(US.areas.map(([k])=>[k,(p.a||{})[k]||0])),see:US.see.map(([k])=>k).filter(k=>(p.see||[]).includes(k)),do:US.do.map(([k])=>k).filter(k=>(p.do||[]).includes(k))}}
+function presetOf(u,c){if(!(u.channels.includes('*')||u.channels.includes(c)))return'none';const p=permNorm(u.per[c]||{});for(const k of['view','normal','full'])if(same(p,permNorm(US.presets[k])))return k;return'custom'}
 async function usLoad(){US=await (await fetch('/api/users')).json();if(US.error)return;
  $('usChans').innerHTML=US.channels.map(c=>`<div class="rowline" style="margin:4px 0"><span>${esc(c.title)}</span><input type="checkbox" class="tg usC" value="${esc(c.id)}"></div>`).join('');
- $('usList').innerHTML=US.users.map(u=>{const all=u.channels.includes('*');const chs=US.channels.filter(c=>all||u.channels.includes(c.id));
-  const rows=US.channels.map(c=>{const on=all||u.channels.includes(c.id);const r=(u.per&&u.per[c.id])||u.rights;const pn=preName(r);
-   return `<div class="uline"><span>${esc(c.title)}</span><span style="display:flex;gap:8px;align-items:center">${on?`<select onchange="usPreset('${esc(u.name)}','${esc(c.id)}',this.value)">${['view','normal','full','custom'].map(k=>`<option value="${k}"${k==pn?' selected':''}>${{view:'Nur ansehen',normal:'Normal',full:'Alles',custom:'Eigene'}[k]}</option>`).join('')}</select>`:''}<input type="checkbox" class="tg"${on?' checked':''} onchange="usChan('${esc(u.name)}','${esc(c.id)}',this.checked)"></span></div>`+
-    (on?`<div class="rchips">${Object.entries(US.rights).map(([k,v])=>`<label><input type="checkbox"${r.includes(k)?' checked':''} onchange="usRight('${esc(u.name)}','${esc(c.id)}','${k}',this.checked)">${esc(v.split(':')[0].split(' &')[0])}</label>`).join('')}</div>`:'')}).join('');
-  return `<div class="ubox"><div class="uhead"><span>👤</span><b>${esc(u.name)}</b><button onclick="usPw('${esc(u.name)}')" title="Passwort ändern">🔑</button><button onclick="usDel('${esc(u.name)}')" title="Löschen">✕</button></div>
-   <div class="uline"><span>🔑 Passwort ist gesetzt</span><button onclick="usPw('${esc(u.name)}')">Ändern</button></div>
-   <div class="usgreen" onclick="usOpen['${esc(u.name)}']=!usOpen['${esc(u.name)}'];usLoad()">⚙ Rechte pro Kanal (${chs.length} von ${US.channels.length} Kanälen) ${usOpen[u.name]?'▴':'▾'}</div>
-   ${usOpen[u.name]?`<div class="upc">${rows}</div>`:''}</div>`}).join('')||'<div class="empty">Noch keine Freunde freigeschaltet.</div>'}
-function usGet(n){return JSON.parse(JSON.stringify(US.users.find(x=>x.name==n)))}
-async function usSave(u){const j=await api('/api/user_save',{name:u.name,channels:u.channels,rights:u.rights,per:u.per||{}});if(j.ok)usLoad()}
-function usChan(n,c,on){const u=usGet(n);let ch=u.channels.includes('*')?US.channels.map(x=>x.id):u.channels;ch=ch.filter(x=>x!==c);if(on)ch.push(c);u.channels=ch;usSave(u)}
-function usPreset(n,c,p){if(p=='custom')return;const u=usGet(n);u.per=u.per||{};u.per[c]=US.presets[p].slice();usSave(u)}
-function usRight(n,c,r,on){const u=usGet(n);u.per=u.per||{};const cur=(u.per[c]||u.rights).filter(x=>x!==r);if(on)cur.push(r);u.per[c]=cur;usSave(u)}
-async function usPw(n){const pw=prompt(`Neues Passwort für ${n} (mind. 4 Zeichen):`);if(!pw)return;const u=usGet(n);const j=await api('/api/user_save',{name:n,password:pw});if(j.ok)alert('Passwort geändert ✅')}
+ $('usList').innerHTML=US.users.map(u=>{const n=esc(u.name);const all=u.channels.includes('*');const cnt=US.channels.filter(c=>all||u.channels.includes(c.id)).length;
+  const chs=US.channels.map(c=>{const ci=esc(c.id),pr=presetOf(u,c.id),p=permNorm(u.per[c.id]||{}),edit=Object.values(p.a).filter(v=>v==2).length;
+   const det=pr!='none'&&(pr=='custom'||usDet[u.name+'|'+c.id]);
+   return `<div class="pch"><div class="pchh"><b>${esc(c.title)}</b><small>${pr=='none'?'kein Zugriff':`${edit} von ${US.areas.length} änderbar`}</small></div>
+    <div class="seg">${['none','view','normal','full','custom'].map(k=>`<button class="${k==pr?'on':''}" onclick="usSetPreset('${n}','${ci}','${k}')">${PN[k]}</button>`).join('')}</div>
+    ${det?`<div class="pdet"><div class="psec">Bereiche · Aus / Sehen / Ändern</div>
+     ${US.areas.map(([k,l])=>`<div class="prow"><span>${esc(l)}</span><span class="seg3">${['Aus','Sehen','Ändern'].map((t,i)=>`<button class="${p.a[k]==i?'on':''}" onclick="usArea('${n}','${ci}','${k}',${i})">${t}</button>`).join('')}</span></div>`).join('')}
+     <div class="psec">Allgemein · Sehen</div>${US.see.map(([k,l])=>`<div class="prow"><span>${esc(l)}</span><input type="checkbox" class="tg"${p.see.includes(k)?' checked':''} onchange="usFlag('${n}','${ci}','see','${k}',this.checked)"></div>`).join('')}
+     <div class="psec">Allgemein · Machen</div>${US.do.map(([k,l])=>`<div class="prow"><span>${esc(l)}</span><input type="checkbox" class="tg"${p.do.includes(k)?' checked':''} onchange="usFlag('${n}','${ci}','do','${k}',this.checked)"></div>`).join('')}
+    </div>`:''}</div>`}).join('');
+  return `<div class="ubox"><div class="uhead"><span>👤</span><b>${n}</b><button onclick="usPw('${n}')" title="Passwort ändern">🔑</button><button onclick="usDel('${n}')" title="Löschen">✕</button></div>
+   <div class="uline"><span>🔑 Passwort ist gesetzt</span><button onclick="usPw('${n}')">Ändern</button></div>
+   <div class="usgreen" onclick="usOpen['${n}']=!usOpen['${n}'];usLoad()">⚙ Rechte pro Kanal (${cnt} von ${US.channels.length} Kanälen) ${usOpen[u.name]?'▴':'▾'}</div>
+   ${usOpen[u.name]?`<div class="upc">${chs}<div class="nfrow" style="margin-top:8px">
+     <select onchange="usCopy('${n}',this.value);this.value=''"><option value="">Rechte kopieren …</option>${US.channels.map(c=>`<option value="${esc(c.id)}">von „${esc(c.title)}“ auf alle</option>`).join('')}</select>
+     <select onchange="usAll('${n}',this.value);this.value=''"><option value="">Für alle gleich …</option>${['none','view','normal','full'].map(k=>`<option value="${k}">${PN[k]}</option>`).join('')}</select></div></div>`:''}</div>`}).join('')||'<div class="empty">Noch keine Freunde freigeschaltet.</div>'}
+function usGet(n){const u=JSON.parse(JSON.stringify(US.users.find(x=>x.name==n)));if(u.channels.includes('*'))u.channels=US.channels.map(c=>c.id);return u}
+async function usSave(u){const j=await api('/api/user_save',{name:u.name,channels:u.channels,per:u.per});if(j.ok)usLoad()}
+function usSetPreset(n,c,k){const u=usGet(n);if(k=='custom'){usDet[n+'|'+c]=1;if(!u.channels.includes(c)){u.channels.push(c);u.per[c]=JSON.parse(JSON.stringify(US.presets.view))}return usSave(u)}
+ delete usDet[n+'|'+c];u.channels=u.channels.filter(x=>x!==c);if(k!='none'){u.channels.push(c);u.per[c]=JSON.parse(JSON.stringify(US.presets[k]))}usSave(u)}
+function usArea(n,c,k,v){const u=usGet(n);usDet[n+'|'+c]=1;u.per[c]=permNorm(u.per[c]||{});u.per[c].a[k]=v;usSave(u)}
+function usFlag(n,c,grp,k,on){const u=usGet(n);usDet[n+'|'+c]=1;const p=permNorm(u.per[c]||{});p[grp]=p[grp].filter(x=>x!==k);if(on)p[grp].push(k);u.per[c]=p;usSave(u)}
+function usCopy(n,from){if(from==='')return;const u=usGet(n);const on=u.channels.includes(from);const p=u.per[from];
+ US.channels.forEach(c=>{u.channels=u.channels.filter(x=>x!==c.id);if(on){u.channels.push(c.id);u.per[c.id]=JSON.parse(JSON.stringify(p))}});usSave(u)}
+function usAll(n,k){if(!k)return;const u=usGet(n);u.channels=k=='none'?[]:US.channels.map(c=>c.id);if(k!='none')US.channels.forEach(c=>u.per[c.id]=JSON.parse(JSON.stringify(US.presets[k])));usSave(u)}
+async function usPw(n){const pw=prompt(`Neues Passwort für ${n} (mind. 4 Zeichen):`);if(!pw)return;const j=await api('/api/user_save',{name:n,password:pw});if(j.ok)alert('Passwort geändert ✅')}
 async function usDel(n){if(!confirm(`Zugang für „${n}“ löschen?`))return;await api('/api/user_delete',{name:n});usLoad()}
-$('bUsAdd').onclick=async()=>{const ch=[...document.querySelectorAll('.usC:checked')].map(x=>x.value),pre=US.presets[$('usPreset').value]||[];
- const j=await api('/api/user_save',{name:$('usName').value,password:$('usPw').value,channels:ch,rights:pre,per:{}});
+$('bUsAdd').onclick=async()=>{const ch=[...document.querySelectorAll('.usC:checked')].map(x=>x.value),pre=US.presets[$('usPreset').value];
+ const per={};ch.forEach(c=>per[c]=pre);
+ const j=await api('/api/user_save',{name:$('usName').value,password:$('usPw').value,channels:ch,rights:pre,per});
  if(j.ok){$('usName').value=$('usPw').value='';document.querySelectorAll('.usC').forEach(x=>x.checked=false);usLoad()}};
+// Rechte im Panel anwenden: Aus = ausblenden, Sehen = nur ansehen
+function applyRights(){const P=PROF.me&&PROF.me.perm;if(!P||PROF.me.admin)return;
+ document.querySelectorAll('[data-area]').forEach(el=>{const v=P.a[el.dataset.area]??0;el.style.display=v==0?'none':'';
+  if(v==1)el.querySelectorAll('input,select,textarea,button,label.filebtn').forEach(x=>{if(!x.classList.contains('keep')){x.disabled=true;x.classList.add('ro')}})});
+ document.querySelectorAll('[data-do]').forEach(el=>{if(!P.do.includes(el.dataset.do))el.querySelectorAll('button,input').forEach(x=>{x.disabled=true;x.classList.add('ro')})});
+ document.querySelectorAll('[data-see]').forEach(el=>{el.style.display=P.see.includes(el.dataset.see)?'':'none'})}
 async function profGo(id){await fetch('/api/profile_select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});location.reload()}
 async function profNew(){const t=prompt('Name für den neuen Kanal/Stream (z. B. Fortnite VODs):');if(!t)return;
  const j=await (await fetch('/api/profile_create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t})})).json();
@@ -4527,7 +4638,12 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(body or b"{}") if path == "/api/config" else {}
         except ValueError:
             data = {}
-        return check_rights(info, path, data if isinstance(data, dict) else {}, self._profile())
+        pid = self._profile()
+        current = None
+        if path == "/api/config":
+            current = get_cfg() if not pid else load_json(os.path.join(PROFILES_DIR, pid, "config.json"), {})
+        return check_rights(info, path, data if isinstance(data, dict) else {}, pid,
+                            parse_qs(urlparse(self.path).query), current)
 
     def _maybe_proxy(self, method):
         """Anfragen fürs gewählte Profil an dessen Panel-Prozess weitergeben. True = erledigt."""
@@ -4607,10 +4723,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/users" and self._authed() and not IS_PROFILE:
             if not (self._user() or {}).get("admin"):
                 return self._send(200, {"error": "Keine Berechtigung"})
-            return self._send(200, {"users": [{"name": n, "channels": u.get("channels", []), "rights": u.get("rights", []),
-                                               "per": u.get("per", {})}
-                                              for n, u in sorted(users().items())], "rights": RIGHTS,
-                                    "presets": RIGHT_PRESETS,
+            return self._send(200, {"users": [{"name": n, "channels": u.get("channels", []),
+                                               "per": {c: perm_for(user_info(n), c) for c in
+                                                       [""] + list(profiles())}}
+                                              for n, u in sorted(users().items())],
+                                    "areas": AREAS, "see": SEE, "do": DO, "presets": RIGHT_PRESETS,
                                     "channels": [{"id": "", "title": get_cfg().get("profile_title") or "Haupt-Stream"}]
                                     + [{"id": k, "title": v["title"]} for k, v in profiles().items()]})
         if path == "/logout":
@@ -4710,11 +4827,10 @@ class Handler(BaseHTTPRequestHandler):
                 u.update(salt=salt, hash=hash_pw(pw, salt))
             if "channels" in data:
                 u["channels"] = [c for c in (data.get("channels") or []) if c == "*" or c == "" or c in profiles()]
-            if "rights" in data:
-                u["rights"] = [r for r in (data.get("rights") or []) if r in RIGHTS]
+            if "rights" in data:        # Standard für neue/ungesetzte Kanäle (Modell wie pro Kanal)
+                u["rights"] = norm_perm(data.get("rights"))
             if "per" in data and isinstance(data["per"], dict):
-                u["per"] = {c: [r for r in (rs or []) if r in RIGHTS] for c, rs in data["per"].items()
-                            if c == "" or c in profiles()}
+                u["per"] = {c: norm_perm(p) for c, p in data["per"].items() if c == "" or c in profiles()}
             us[name] = u
             save_json(USERS_PATH, us)
             os.chmod(USERS_PATH, 0o600)
