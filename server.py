@@ -2448,7 +2448,7 @@ class TitleManager(threading.Thread):
                     self._set_start("twitch", j["data"][0]["started_at"])
                 else:
                     self.platform_start.pop("twitch", None)
-        login = ((t or {}).get("name") or cfg.get("vod_channel") or "").strip().lower()
+        login = (cfg.get("chat_channel") or (t or {}).get("name") or cfg.get("vod_channel") or "").strip().lower()
         if not done and cfg.get("tw_enabled") and login:
             # ohne Anmeldung: öffentliche Twitch-Abfrage (wie die Twitch-Webseite) – "live seit"
             c, j = _http("POST", "https://gql.twitch.tv/gql",
@@ -4129,6 +4129,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
 .pdet{margin-top:6px}.psec{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin:10px 0 4px}
 .prow{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;border-top:1px dashed var(--line);font-size:13px}
 .ro{opacity:.45;cursor:not-allowed}
+details.adv{margin-top:10px;border:1px solid var(--line);border-radius:10px;padding:8px 12px}details.adv summary{cursor:pointer;color:var(--mut);font-size:14px}
 </style></head><body>
 <header><h1>📺 24/7 Stream</h1><a href="/logout">Logout</a></header>
 <div class="profbar"><span class="mut" id="profMe">Kanal</span><select id="profSel" onchange="profGo(this.value)"></select>
@@ -4229,10 +4230,14 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <label>YouTube-Kategorie</label><select id="ti_ytcat"><option value="20">Gaming</option><option value="24">Unterhaltung</option><option value="22">Menschen &amp; Blogs</option></select>
  <div class="hint">Das „Spiel“-Feld bei YouTube lässt sich leider nicht automatisch setzen – YouTube bietet dafür keine Schnittstelle.</div>
  <div class="btns"><button class="go" id="bTiSave">💾 Titel &amp; Kategorie speichern</button><button id="bTiNow">↻ Jetzt setzen</button></div>
- <h3 style="margin:16px 0 4px;font-size:15px">Twitch</h3><div id="tiTw"></div>
+ <h3 style="margin:16px 0 4px;font-size:15px">Twitch</h3>
+ <label>Twitch-Kanalname – reicht ohne Client-ID für Chat im Stream und Live-Zeit</label>
+ <input type="text" id="tiChan" placeholder="z. B. ximjxstinn_offline" onchange="api('/api/config',{chat_channel:this.value}).then(refresh)">
+ <div id="tiTw"></div>
+ <details id="tiTwDet" class="adv"><summary>🔗 Mit Twitch verbinden (Client-ID) – nur nötig für Titel, Kategorie & Chat-Bot</summary>
  <label>Twitch Client-ID</label><input type="text" id="ti_tw_cid" placeholder="aus dev.twitch.tv/console">
  <label>Twitch Client-Secret (nur nötig, wenn deine App „Vertraulich“ ist)</label><input type="password" id="ti_tw_sec" placeholder="">
- <div class="btns"><button id="bTiTw">🔗 Mit Twitch verbinden</button></div>
+ <div class="btns"><button id="bTiTw">🔗 Mit Twitch verbinden</button></div></details>
  <h3 style="margin:16px 0 4px;font-size:15px">YouTube</h3><div id="tiYt"></div>
  <label>YouTube Client-ID</label><input type="text" id="ti_yt_cid" placeholder="…apps.googleusercontent.com">
  <label>YouTube Client-Secret</label><input type="password" id="ti_yt_sec" placeholder="">
@@ -4316,6 +4321,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
 <section class="card"><h2>Einstellungen</h2>
  <div data-area="platforms"><h3 style="margin:4px 0 0;font-size:16px">🟣 Twitch</h3>
  <label class="chk"><input type="checkbox" id="tw_enabled"> An Twitch senden</label>
+ <label>Twitch-Kanalname (ohne Client-ID – für Chat & Live-Zeit)</label><input type="text" id="twChan" placeholder="z. B. ximjxstinn_offline" onchange="api('/api/config',{chat_channel:this.value}).then(refresh)">
  <label>Twitch Stream-Key <span id="keyinfo"></span></label>
  <input type="password" id="key" placeholder="live_xxxxxxxx (leer lassen = nicht ändern)">
  <label>Twitch Ingest-Server</label><input type="text" id="server">
@@ -4387,6 +4393,9 @@ async function refresh(){
   $('gNext').innerHTML='<option value="">Automatisch: das nächste nach Datum</option>'+up.map(g=>`<option value="${g.id}">${esc(g.name)} (${new Date(g.target).toLocaleDateString('de-DE')})</option>`).join('');$('gNext').value=up.some(g=>g.id==G.next)?G.next:''}
  $('gList').innerHTML=(G.list||[]).filter(g=>!g.past||g.id==G.current).map(g=>`<div class="vid"><div class="t">${g.id==G.current?'▶ ':''}<b>${esc(g.name)}</b><br><small>${new Date(g.target).toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})} Uhr${g.id==G.current?' · läuft gerade':''}${g.custom?' · eigenes':''}</small></div><div style="display:flex;gap:6px">${g.id!=G.current&&!g.past?`<button onclick="api('/api/game_switch',{id:'${g.id}'}).then(refresh)">Jetzt zeigen</button>`:''}${g.custom?`<button onclick="api('/api/game_remove',{id:'${g.id}'}).then(refresh)">✕</button>`:''}</div></div>`).join('');
  if(document.activeElement!==$('chVodPos'))$('chVodPos').value=s.chat_vod_pos||'tr';
+ for(const k of['tiChan','twChan'])if(document.activeElement!==$(k))$(k).value=(s.chat&&s.chat.channel)||'';
+ if(document.activeElement!==$('chChan')&&s.chat)$('chChan').value=s.chat.channel||'';
+ if(!window.tiDetInit&&TI.twitch){window.tiDetInit=1;if(TI.twitch.connected||TI.twitch.login||TI.twitch.expired)$('tiTwDet').open=true}
  const BO=s.bot||{};$('botOn').checked=BO.bot_enabled;$('botGreet').checked=BO.bot_greet;$('botFollow').checked=BO.bot_follow;$('botBan').checked=BO.bot_ban_scam;
  for(const[k,f]of[['botGreetMsg','bot_greet_msg'],['botFollowMsg','bot_follow_msg'],['botHours','bot_greet_hours'],['botWords','bot_scam_words']])if(document.activeElement!==$(k))$(k).value=BO[f]??'';
  $('botInfo').innerHTML=!BO.bot_enabled?'Aus':!BO.connected?'<span style="color:#ff6b6b">Erst Twitch unter „📝 Stream-Titel“ verbinden</span>':!BO.scopes_ok?'<span style="color:#ffc400">Bitte Twitch unter „📝 Stream-Titel“ einmal trennen und neu verbinden – der Bot braucht zusätzliche Rechte (Chat schreiben, bannen, Follower sehen).</span>':BO.status?'<span style="color:#ff6b6b">'+esc(BO.status)+'</span>':'<span style="color:#4ade80">✅ Bot läuft</span>';
