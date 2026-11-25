@@ -213,6 +213,8 @@ def get_cfg():
         stored["cfg_version"] = 5
         save_json(CFG_PATH, {**cfg, **stored})
     cfg.update(stored)
+    if IS_PROFILE and "chat_channel" not in stored:
+        cfg["chat_channel"] = ""             # weiterer Kanal: Chat erst, wenn sein eigener Twitch-Kanal eingetragen ist
     return cfg
 
 
