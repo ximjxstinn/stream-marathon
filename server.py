@@ -4065,6 +4065,22 @@ input{background:#0e0e10;color:#fff;margin-bottom:12px}button{background:#9147ff
 <input type="password" name="password" placeholder="Passwort" autofocus autocomplete="current-password">
 <button>Einloggen</button></form></body></html>"""
 
+NO_ACCESS_HTML = """<!doctype html><html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>24/7 Stream – Kein Zugriff</title><style>
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(ellipse at 50% 30%,#2a1450 0%,#0e0e10 60%);
+color:#efeff1;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+.box{background:#18181b;border:1px solid #2a2a30;padding:34px 30px;border-radius:18px;width:min(380px,88vw);text-align:center;
+box-shadow:0 20px 60px rgba(0,0,0,.5),0 0 0 1px rgba(145,71,255,.15)}
+.ic{width:64px;height:64px;margin:0 auto 14px;border-radius:50%;display:grid;place-items:center;font-size:30px;
+background:rgba(145,71,255,.15);border:1px solid rgba(145,71,255,.45)}
+h1{font-size:20px;margin:0 0 8px}p{color:#adadb8;font-size:15px;line-height:1.5;margin:0 0 22px}b{color:#efeff1}
+a{display:block;padding:12px;border-radius:10px;background:#9147ff;color:#fff;text-decoration:none;font-weight:600}
+a:hover{background:#a970ff}</style></head><body><div class="box"><div class="ic">🔒</div>
+<h1>Noch kein Kanal freigeschaltet</h1>
+<p>Hey <b>__NAME__</b>, dein Konto ist angelegt, aber du hast noch keinen Zugriff auf einen Kanal.<br>Sag dem Admin Bescheid – sobald er dich freischaltet, einfach die Seite neu laden.</p>
+<a href="/logout">Abmelden</a></div></body></html>"""
+
 PANEL_HTML = r"""<!doctype html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -4718,8 +4734,9 @@ class Handler(BaseHTTPRequestHandler):
         if self._authed() and not IS_PROFILE and path != "/logout" and not may_channel(self._user(), self._profile()):
             if path.startswith("/api/"):
                 return self._send(403, {"error": "Kein Zugriff auf einen Kanal – frag den Admin"})
-            return self._send(403, "<p style='font-family:sans-serif'>Dein Konto hat noch keinen Kanal freigeschaltet. "
-                                   "<a href='/logout'>Abmelden</a></p>", "text/html")
+            import html as _h
+            name = _h.escape((self._user() or {}).get("name", ""))
+            return self._send(403, NO_ACCESS_HTML.replace("__NAME__", name), "text/html")
         if path == "/api/users" and self._authed() and not IS_PROFILE:
             if not (self._user() or {}).get("admin"):
                 return self._send(200, {"error": "Keine Berechtigung"})
