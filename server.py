@@ -1639,12 +1639,17 @@ def profile_delete(pid):
     log_line(f"Kanal/Stream gelöscht: {pid}")
 
 
-def profiles_status(current):
-    out = [{"id": "", "title": get_cfg().get("profile_title") or "Haupt-Stream", "running": bool(streamer and streamer.want)}]
+def profiles_status(current, info=None):
+    info = info or user_info("")
+    out = []
+    if may_channel(info, ""):
+        out.append({"id": "", "title": get_cfg().get("profile_title") or "Haupt-Stream", "running": bool(streamer and streamer.want)})
     for pid, p in profiles().items():
-        st = load_json(os.path.join(PROFILES_DIR, pid, "state.json"), {})
-        out.append({"id": pid, "title": p["title"], "running": bool(st.get("want"))})
-    return {"current": current, "list": out}
+        if may_channel(info, pid):
+            st = load_json(os.path.join(PROFILES_DIR, pid, "state.json"), {})
+            out.append({"id": pid, "title": p["title"], "running": bool(st.get("want"))})
+    return {"current": current, "list": out,
+            "me": {"name": info["name"], "admin": info["admin"], "rights": info["rights"]}}
 
 
 def restart_panel():
@@ -3876,6 +3881,76 @@ streamer = None  # wird in main() erstellt
 # ------------------------------------------------------------------- Web ----
 SESSIONS_PATH = os.path.join(BASE, "sessions.json")
 SESSIONS = set(load_json(SESSIONS_PATH, []))
+SESSION_USERS_PATH = os.path.join(BASE, "session_users.json")
+SESSION_USERS = load_json(SESSION_USERS_PATH, {})          # Sitzung -> Benutzername ("" = Admin)
+USERS_PATH = os.path.join(BASE, "users.json")
+RIGHTS = {
+    "control": "Stream starten/stoppen & Kurze Pause",
+    "content": "Inhalte: VODs, Musik, Countdown, Bilder, Spiele",
+    "settings": "Einstellungen: Stream-Schlüssel, Qualität, Titel & Kategorie",
+    "bot": "Chat & Chat-Bot",
+    "update": "Updates & Sender neu starten",
+}
+
+
+def users():
+    return load_json(USERS_PATH, {})
+
+
+def user_info(name):
+    """Rechte eines Benutzers. "" = Admin (das bisherige Passwort) darf alles."""
+    if not name:
+        return {"name": "Admin", "admin": True, "channels": ["*"], "rights": list(RIGHTS)}
+    u = users().get(name)
+    if not u:
+        return None
+    return {"name": name, "admin": False, "channels": u.get("channels") or [], "rights": u.get("rights") or []}
+
+
+def may_channel(info, pid):
+    return bool(info) and ("*" in info["channels"] or pid in info["channels"])
+
+
+CONFIG_RIGHTS = [   # Einstellung -> nötiges Recht (Anfang des Namens)
+    (("pause_",), "control"),
+    (("bot_", "chat_", "discord_link", "tiktok_link"), "bot"),
+    (("cd_", "mode", "vod_", "game_", "games_", "shuffle", "tw_order", "runtime_", "show_runtime", "slate_",
+      "music"), "content"),
+    (("profile_title",), "admin"),
+]
+PATH_RIGHTS = [
+    (("/api/start", "/api/stop", "/api/platform", "/api/session_start", "/api/stats_reset"), "control"),
+    (("/api/twpl_", "/api/vod", "/api/music", "/api/asset_chunk", "/api/default_cover", "/api/game_",
+      "/api/cookies_delete", "/api/video", "/api/delete", "/api/convert"), "content"),
+    (("/api/bot_",), "bot"),
+    (("/api/update", "/api/restart_sender"), "update"),
+    (("/api/title_",), "settings"),
+]
+
+
+def needed_rights(path, data):
+    """Welche Rechte eine Änderung braucht (Lesen ist immer erlaubt)."""
+    if path == "/api/config":
+        need = set()
+        for k in data:
+            r = next((r for pre, r in CONFIG_RIGHTS if k.startswith(pre)), "settings")
+            need.add(r)
+        return need
+    for pre, r in PATH_RIGHTS:
+        if path.startswith(pre):
+            return {r}
+    return {"settings"}
+
+
+def check_rights(info, path, data):
+    """None = erlaubt, sonst Fehlertext."""
+    if info and info["admin"]:
+        return None
+    need = needed_rights(path, data)
+    if "admin" in need:
+        return "Keine Berechtigung (nur Admin)"
+    missing = [RIGHTS[r] for r in need if r not in (info or {}).get("rights", [])]
+    return f"Keine Berechtigung: {missing[0]}" if missing else None
 
 LOGIN_HTML = """<!doctype html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -3886,7 +3961,8 @@ h1{font-size:20px;margin:0 0 16px}input,button{width:100%;box-sizing:border-box;
 input{background:#0e0e10;color:#fff;margin-bottom:12px}button{background:#9147ff;color:#fff;border:0;font-weight:600}
 .err{color:#ff6b6b;font-size:14px;margin-bottom:10px}</style></head><body>
 <form method="post" action="/login"><h1>📺 24/7 Stream</h1>__ERR__
-<input type="password" name="password" placeholder="Passwort" autofocus>
+<input type="text" name="user" placeholder="Benutzername (leer = Admin)" autocapitalize="off" autocomplete="username">
+<input type="password" name="password" placeholder="Passwort" autofocus autocomplete="current-password">
 <button>Einloggen</button></form></body></html>"""
 
 PANEL_HTML = r"""<!doctype html><html lang="de"><head><meta charset="utf-8">
@@ -3920,7 +3996,7 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
 .profbar{display:flex;gap:8px;align-items:center;margin:0 0 12px}.profbar select{flex:1}.profbar .mut{color:var(--mut);font-size:14px}
 </style></head><body>
 <header><h1>📺 24/7 Stream</h1><a href="/logout">Logout</a></header>
-<div class="profbar"><span class="mut">Kanal</span><select id="profSel" onchange="profGo(this.value)"></select>
+<div class="profbar"><span class="mut" id="profMe">Kanal</span><select id="profSel" onchange="profGo(this.value)"></select>
  <button id="profNew" onclick="profNew()">＋ Neu</button><button id="profRen" onclick="profRen()" title="Umbenennen">✏</button><button id="profDel" onclick="profDel()" title="Diesen Kanal löschen">🗑</button></div>
 <main>
 <section class="card"><h2>Status</h2>
@@ -4043,6 +4119,16 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
  <div style="display:flex;gap:8px;flex-wrap:wrap"><input type="text" id="gName" placeholder="Name, z. B. Fable" style="flex:2;min-width:140px"><input type="text" id="gShort" placeholder="Kurz, z. B. Fable" style="flex:1;min-width:90px"><input type="datetime-local" id="gWhen" style="flex:1;min-width:170px"></div>
  <div class="btns"><button class="go" id="bGAdd">＋ Hinzufügen</button></div>
  <div class="hint">Die Liste großer Releases pflege ich zentral und sie kommt automatisch per Update. Wechsel passieren live – ohne Neustart.</div>
+</section>
+<section class="card" id="usersCard" style="display:none"><h2>👥 Benutzer & Rechte</h2>
+ <div class="hint">Jeder bekommt einen eigenen Login. Du (Admin) loggst dich wie bisher nur mit deinem Passwort ein.</div>
+ <div id="usList" style="margin-top:8px"></div>
+ <label>Benutzername</label><input type="text" id="usName" autocapitalize="off" placeholder="z. B. max">
+ <label>Passwort <span class="mut" id="usPwHint"></span></label><input type="password" id="usPw" autocomplete="new-password">
+ <label>Zugriff auf Kanäle</label><div id="usChans"></div>
+ <label>Rechte</label><div id="usRights"></div>
+ <div class="btns"><button class="go" id="bUsSave">💾 Benutzer speichern</button><button id="bUsClear">Neu</button></div>
+ <div class="hint">Ohne Rechte kann der Benutzer alles nur ansehen. Kanäle anlegen/löschen und Benutzer verwalten kann nur der Admin.</div>
 </section>
 <section class="card"><h2>🤖 Chat-Bot</h2>
  <label class="chk" style="margin-top:0"><input type="checkbox" id="botOn" onchange="api('/api/config',{bot_enabled:this.checked}).then(refresh)"> Chat-Bot einschalten</label>
@@ -4244,7 +4330,22 @@ function tmEdit(b){tmEditId=b.parentNode.dataset.id;$('tmText').value=b.dataset.
 let PROF={current:'',list:[]};
 async function profLoad(){try{PROF=await (await fetch('/api/profiles')).json()}catch(e){return}
  $('profSel').innerHTML=PROF.list.map(p=>`<option value="${p.id}">${p.running?'🟢':'⚪'} ${esc(p.title)}</option>`).join('');
- $('profSel').value=PROF.current;$('profDel').style.display=PROF.current?'':'none'}
+ $('profSel').value=PROF.current;const adm=PROF.me&&PROF.me.admin;
+ $('profDel').style.display=PROF.current&&adm?'':'none';$('profNew').style.display=adm?'':'none';$('profRen').style.display=adm?'':'none';
+ $('profMe').textContent=PROF.me?(adm?'Kanal':PROF.me.name+' · Kanal'):'Kanal';
+ $('usersCard').style.display=adm?'':'none';if(adm&&!window.usLoaded){window.usLoaded=1;usLoad()}}
+let US={users:[],rights:{},channels:[]};
+async function usLoad(){US=await (await fetch('/api/users')).json();if(US.error)return;
+ $('usList').innerHTML=US.users.length?US.users.map(u=>`<div class="vid"><div class="t"><b>${esc(u.name)}</b><br><small>${u.channels.includes('*')?'alle Kanäle':u.channels.map(c=>esc((US.channels.find(x=>x.id==c)||{title:c}).title)).join(', ')||'kein Kanal'} · ${u.rights.length?u.rights.map(r=>esc((US.rights[r]||r).split(':')[0].split(' &')[0])).join(', '):'nur ansehen'}</small></div><div style="display:flex;gap:4px" data-n="${esc(u.name)}"><button onclick="usEdit(this.parentNode.dataset.n)">✏</button><button onclick="usDel(this.parentNode.dataset.n)">✕</button></div></div>`).join(''):'<div class="empty">Noch keine weiteren Benutzer.</div>';
+ $('usChans').innerHTML=[{id:'*',title:'Alle Kanäle (auch neue)'}].concat(US.channels).map(c=>`<label class="chk"><input type="checkbox" class="usC" value="${esc(c.id)}"> ${esc(c.title)}</label>`).join('');
+ $('usRights').innerHTML=Object.entries(US.rights).map(([k,v])=>`<label class="chk"><input type="checkbox" class="usR" value="${k}"> ${esc(v)}</label>`).join('');usClear()}
+function usClear(){$('usName').value='';$('usName').disabled=false;$('usPw').value='';$('usPwHint').textContent='';document.querySelectorAll('.usC,.usR').forEach(x=>x.checked=false)}
+function usEdit(n){const u=US.users.find(x=>x.name==n);if(!u)return;$('usName').value=u.name;$('usName').disabled=true;$('usPw').value='';$('usPwHint').textContent='(leer lassen = bleibt gleich)';
+ document.querySelectorAll('.usC').forEach(x=>x.checked=u.channels.includes(x.value));document.querySelectorAll('.usR').forEach(x=>x.checked=u.rights.includes(x.value));$('usName').scrollIntoView({block:'center'})}
+async function usDel(n){if(!confirm(`Benutzer „${n}“ löschen?`))return;await api('/api/user_delete',{name:n});usLoad()}
+$('bUsClear').onclick=usClear;
+$('bUsSave').onclick=async()=>{const ch=[...document.querySelectorAll('.usC:checked')].map(x=>x.value),r=[...document.querySelectorAll('.usR:checked')].map(x=>x.value);
+ const j=await api('/api/user_save',{name:$('usName').value,password:$('usPw').value,channels:ch.includes('*')?['*']:ch,rights:r});if(j.ok){alert('Gespeichert ✅');usLoad()}};
 async function profGo(id){await fetch('/api/profile_select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});location.reload()}
 async function profNew(){const t=prompt('Name für den neuen Kanal/Stream (z. B. Fortnite VODs):');if(!t)return;
  const j=await (await fetch('/api/profile_create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t})})).json();
@@ -4346,16 +4447,46 @@ class Handler(BaseHTTPRequestHandler):
         c = cookies.SimpleCookie(self.headers.get("Cookie", ""))
         return "s24" in c and c["s24"].value in SESSIONS
 
+    def _user(self):
+        """Rechte des eingeloggten Benutzers (Profil-Panels: alles, geprüft wird im Haupt-Panel)."""
+        if IS_PROFILE:
+            return user_info("")
+        c = cookies.SimpleCookie(self.headers.get("Cookie", ""))
+        tok = c["s24"].value if "s24" in c else ""
+        name = SESSION_USERS.get(tok, "")
+        info = user_info(name)
+        if info is None:                               # Benutzer wurde gelöscht
+            SESSIONS.discard(tok)
+        return info
+
     def _profile(self):
         """Gewähltes Profil (nur im Haupt-Panel), sonst ""."""
         if IS_PROFILE:
             return ""
         c = cookies.SimpleCookie(self.headers.get("Cookie", ""))
         pid = c["s24p"].value if "s24p" in c else ""
-        return pid if pid and pid in profiles() else ""
+        pid = pid if pid and pid in profiles() else ""
+        info = self._user()
+        if info and not may_channel(info, pid):         # kein Zugriff -> ersten erlaubten Kanal nehmen
+            allowed = [p for p in [""] + list(profiles()) if may_channel(info, p)]
+            pid = allowed[0] if allowed else ""
+        return pid
 
     MAIN_ONLY = ("/logout", "/login", "/api/profiles", "/api/profile_select", "/api/profile_create",
-                 "/api/profile_delete", "/api/profile_rename")
+                 "/api/profile_delete", "/api/profile_rename", "/api/users", "/api/user_save", "/api/user_delete")
+
+    def _rights_error(self, path, body):
+        """Prüft Änderungen gegen die Rechte des Benutzers. Gibt Fehlertext oder None zurück."""
+        info = self._user()
+        if info and info["admin"]:
+            return None
+        if info is None or not may_channel(info, self._profile()):
+            return "Kein Zugriff auf diesen Kanal"
+        try:
+            data = json.loads(body or b"{}") if path == "/api/config" else {}
+        except ValueError:
+            data = {}
+        return check_rights(info, path, data if isinstance(data, dict) else {})
 
     def _maybe_proxy(self, method):
         """Anfragen fürs gewählte Profil an dessen Panel-Prozess weitergeben. True = erledigt."""
@@ -4365,6 +4496,10 @@ class Handler(BaseHTTPRequestHandler):
             return False
         import http.client
         body = self._body() if method in ("POST", "PUT") else None
+        if method in ("POST", "PUT"):
+            err = self._rights_error(path, body)
+            if err:
+                return self._send(200, {"error": err}) or True
         hd = {"X-S24-Key": internal_key(), "Content-Type": self.headers.get("Content-Type", "application/octet-stream")}
         for h in ("X-Kind", "X-Name", "X-Index", "X-Total", "X-Id", "X-Upload", "X-Filename", "X-Chunk", "X-Size"):
             if self.headers.get(h):
@@ -4411,6 +4546,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _body(self):
+        if hasattr(self, "_cached_body"):
+            return self._cached_body
         n = int(self.headers.get("Content-Length") or 0)
         return self.rfile.read(n) if n else b""
 
@@ -4420,7 +4557,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         if path == "/api/profiles" and self._authed():
-            return self._send(200, profiles_status(self._profile()))
+            return self._send(200, profiles_status(self._profile(), self._user()))
+        if self._authed() and not IS_PROFILE and path != "/logout" and not may_channel(self._user(), self._profile()):
+            if path.startswith("/api/"):
+                return self._send(403, {"error": "Kein Zugriff auf einen Kanal – frag den Admin"})
+            return self._send(403, "<p style='font-family:sans-serif'>Dein Konto hat noch keinen Kanal freigeschaltet. "
+                                   "<a href='/logout'>Abmelden</a></p>", "text/html")
+        if path == "/api/users" and self._authed() and not IS_PROFILE:
+            if not (self._user() or {}).get("admin"):
+                return self._send(200, {"error": "Keine Berechtigung"})
+            return self._send(200, {"users": [{"name": n, "channels": u.get("channels", []), "rights": u.get("rights", [])}
+                                              for n, u in sorted(users().items())], "rights": RIGHTS,
+                                    "channels": [{"id": "", "title": get_cfg().get("profile_title") or "Haupt-Stream"}]
+                                    + [{"id": k, "title": v["title"]} for k, v in profiles().items()]})
         if path == "/logout":
             c = cookies.SimpleCookie(self.headers.get("Cookie", ""))
             if "s24" in c:
@@ -4481,9 +4630,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self._maybe_proxy("POST"):
             return
-        if urlparse(self.path).path in ("/api/profile_select", "/api/profile_create", "/api/profile_delete",
-                                        "/api/profile_rename") and self._authed() and not IS_PROFILE:
+        path = urlparse(self.path).path
+        if path in ("/api/profile_select", "/api/profile_create", "/api/profile_delete", "/api/profile_rename",
+                    "/api/user_save", "/api/user_delete") and self._authed() and not IS_PROFILE:
             return self._profile_api()
+        if path.startswith("/api/") and self._authed() and not IS_PROFILE:
+            body = self._body()
+            err = self._rights_error(path, body)
+            if err:
+                return self._send(200, {"error": err})
+            self._cached_body = body
         return self._do_post()
 
     def _profile_api(self):
@@ -4492,10 +4648,49 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self._body() or b"{}")
         except ValueError:
             data = {}
+        info = self._user()
+        if path != "/api/profile_select" and not (info and info["admin"]):
+            return self._send(200, {"error": "Keine Berechtigung (nur Admin)"})
+        if path == "/api/user_save":
+            name = re.sub(r"[^a-z0-9_.-]", "", str(data.get("name", "")).lower())[:30]
+            if not name or name == "admin":
+                return self._send(200, {"error": "Ungültiger Benutzername"})
+            us = users()
+            u = us.get(name, {})
+            pw = str(data.get("password") or "")
+            if not u and len(pw) < 4:
+                return self._send(200, {"error": "Passwort mit mindestens 4 Zeichen eingeben"})
+            if pw:
+                if len(pw) < 4:
+                    return self._send(200, {"error": "Passwort zu kurz"})
+                salt = secrets.token_hex(16)
+                u.update(salt=salt, hash=hash_pw(pw, salt))
+            chans = [c for c in (data.get("channels") or []) if c == "*" or c == "" or c in profiles()]
+            u["channels"] = chans
+            u["rights"] = [r for r in (data.get("rights") or []) if r in RIGHTS]
+            us[name] = u
+            save_json(USERS_PATH, us)
+            os.chmod(USERS_PATH, 0o600)
+            log_line(f"Benutzer gespeichert: {name}")
+            return self._send(200, {"ok": True})
+        if path == "/api/user_delete":
+            name = str(data.get("name", ""))
+            us = users()
+            if us.pop(name, None) is not None:
+                save_json(USERS_PATH, us)
+                for t in [t for t, n in SESSION_USERS.items() if n == name]:
+                    SESSIONS.discard(t)
+                    SESSION_USERS.pop(t, None)
+                save_json(SESSIONS_PATH, list(SESSIONS))
+                save_json(SESSION_USERS_PATH, SESSION_USERS)
+                log_line(f"Benutzer gelöscht: {name}")
+            return self._send(200, {"ok": True})
         if path == "/api/profile_select":
             pid = str(data.get("id") or "")
             if pid and pid not in profiles():
                 return self._send(200, {"error": "Profil gibt es nicht"})
+            if not may_channel(info, pid):
+                return self._send(200, {"error": "Kein Zugriff auf diesen Kanal"})
             return self._send(200, {"ok": True}, headers={"Set-Cookie": f"s24p={pid}; Path=/; Max-Age=31536000; SameSite=Lax"})
         if path == "/api/profile_create":
             try:
@@ -4522,10 +4717,19 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/login":
             form = parse_qs(self._body().decode(errors="replace"))
             pw = (form.get("password") or [""])[0]
-            if check_pw(pw):
+            uname = (form.get("user") or [""])[0].strip().lower()
+            if uname == "admin":
+                uname = ""
+            u = users().get(uname) if uname else None
+            ok = check_pw(pw) if not uname else bool(u) and hmac.compare_digest(hash_pw(pw, u["salt"]), u["hash"])
+            if ok:
                 tok = secrets.token_urlsafe(32)
                 SESSIONS.add(tok)
-                save_json(SESSIONS_PATH, list(SESSIONS)[-50:])
+                save_json(SESSIONS_PATH, list(SESSIONS)[-200:])
+                SESSION_USERS[tok] = uname
+                for old in [t for t in SESSION_USERS if t not in SESSIONS]:
+                    SESSION_USERS.pop(old, None)
+                save_json(SESSION_USERS_PATH, SESSION_USERS)
                 return self._redirect("/", f"s24={tok}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000")
             time.sleep(1)
             return self._send(200, LOGIN_HTML.replace("__ERR__", '<div class="err">Falsches Passwort</div>'), "text/html")
@@ -4977,6 +5181,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         if self._maybe_proxy("PUT"):
             return
+        if self._authed() and not IS_PROFILE:
+            err = self._rights_error(urlparse(self.path).path, b"")
+            if err:
+                return self._send(200, {"error": err})
         return self._do_put()
 
     def _do_put(self):
