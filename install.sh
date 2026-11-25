@@ -78,6 +78,10 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
+# Mehrere Kanäle (Profile) erlauben
+if [ -f "$SRC/profiles.sh" ]; then bash "$SRC/profiles.sh" >/dev/null; else
+  curl -fsSL "https://raw.githubusercontent.com/ximjxstinn/stream-marathon/stream24/profiles.sh" | bash >/dev/null; fi
+
 systemctl daemon-reload
 systemctl enable --now stream24-sender stream24
 systemctl restart stream24-sender stream24

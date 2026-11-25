@@ -31,6 +31,17 @@ VIDEO_DIR = os.path.join(BASE, "videos")
 LOG_PATH = os.path.join(BASE, "stream.log")
 PLAYLIST_PATH = os.path.join(BASE, "playlist.txt")
 PORT = int(os.environ.get("STREAM24_PORT", "8090"))
+# Mehrere Kanäle: jeder weitere Stream ist ein "Profil" mit eigenem Ordner unter profiles/<name>,
+# eigenem Panel-Prozess (nur intern erreichbar) und eigenem Sender. Das Haupt-Panel leitet weiter.
+CODE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROFILES_DIR = os.path.join(CODE_DIR, "profiles")
+IS_PROFILE = os.path.abspath(BASE) != CODE_DIR
+PROFILE_ID = os.path.basename(os.path.abspath(BASE)) if IS_PROFILE else ""
+try:
+    PORT = int(open(os.path.join(BASE, "port")).read().strip()) if IS_PROFILE else PORT
+except (OSError, ValueError):
+    pass
+INTERNAL_KEY_PATH = os.path.join(CODE_DIR, "internal.key")
 
 # Name: (Breite, Höhe, FPS, Video-Bitrate)
 QUALITIES = {
@@ -1553,6 +1564,89 @@ def do_update(sha=None):
     return True, sender_changed
 
 
+def internal_key():
+    try:
+        return open(INTERNAL_KEY_PATH).read().strip()
+    except OSError:
+        if IS_PROFILE:
+            return ""
+        k = secrets.token_hex(24)
+        with open(INTERNAL_KEY_PATH, "w") as fh:
+            fh.write(k)
+        os.chmod(INTERNAL_KEY_PATH, 0o600)
+        return k
+
+
+def profiles():
+    """Alle weiteren Streams (Profile): id -> {title, port}."""
+    out = {}
+    try:
+        names = sorted(os.listdir(PROFILES_DIR))
+    except OSError:
+        return out
+    for n in names:
+        d = os.path.join(PROFILES_DIR, n)
+        try:
+            port = int(open(os.path.join(d, "port")).read().strip())
+        except (OSError, ValueError):
+            continue
+        out[n] = {"title": load_json(os.path.join(d, "meta.json"), {}).get("title") or n, "port": port}
+    return out
+
+
+def _systemctl(*args):
+    r = subprocess.run(["sudo", "-n", "systemctl", *args], capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        raise RuntimeError("Mehrere Kanäle sind auf dem Server noch nicht eingerichtet – bitte einmal den "
+                           "Einrichtungs-Befehl aus der Anleitung ausführen. (" + (r.stderr.strip() or "sudo")[-120:] + ")")
+
+
+def profile_create(title):
+    title = clean_text(title)[:40]
+    if not title:
+        raise RuntimeError("Name fehlt")
+    pid = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:24] or "kanal"
+    base_pid, i = pid, 2
+    while pid in profiles() or os.path.exists(os.path.join(PROFILES_DIR, pid)):
+        pid, i = f"{base_pid}-{i}", i + 1
+    used = {p["port"] for p in profiles().values()} | {PORT}
+    port = next(p for p in range(8101, 8200) if p not in used)
+    d = os.path.join(PROFILES_DIR, pid)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "port"), "w") as fh:
+        fh.write(str(port))
+    save_json(os.path.join(d, "meta.json"), {"title": title})
+    # Startwerte: gleiche Optik, aber eigene Schlüssel/Kanäle (leer) und gestoppt
+    base_cfg = {k: v for k, v in get_cfg().items() if not k.startswith(("stream_key", "yt_key", "tw_client", "yt_client",
+                                                                       "password", "chat_channel", "tw_playlist",
+                                                                       "bot_", "games_custom"))}
+    save_json(os.path.join(d, "config.json"), {**base_cfg, "tw_enabled": False, "yt_enabled": False,
+                                               "title_auto": False, "bot_enabled": False})
+    try:
+        _systemctl("enable", "--now", f"stream24-sender@{pid}", f"stream24@{pid}")
+    except Exception:
+        shutil.rmtree(d, ignore_errors=True)
+        raise
+    log_line(f"Neuer Kanal/Stream angelegt: {title} ({pid}, intern Port {port})")
+    return pid
+
+
+def profile_delete(pid):
+    if pid not in profiles():
+        raise RuntimeError("Profil gibt es nicht")
+    _systemctl("disable", "--now", f"stream24@{pid}", f"stream24-sender@{pid}")
+    shutil.rmtree(os.path.join(PROFILES_DIR, pid), ignore_errors=True)
+    log_line(f"Kanal/Stream gelöscht: {pid}")
+
+
+def profiles_status(current):
+    out = [{"id": "", "title": get_cfg().get("profile_title") or "Haupt-Stream", "running": bool(streamer and streamer.want)}]
+    for pid, p in profiles().items():
+        st = load_json(os.path.join(PROFILES_DIR, pid, "state.json"), {})
+        out.append({"id": pid, "title": p["title"], "running": bool(st.get("want"))})
+    return {"current": current, "list": out}
+
+
 def restart_panel():
     try:
         stats.save()
@@ -1616,6 +1710,18 @@ class AutoUpdater(threading.Thread):
         self.last_result = ""
 
     def run(self):
+        if IS_PROFILE:                                # Profile: Update kommt über das Haupt-Panel
+            code = os.path.join(CODE_DIR, "server.py")
+            t0 = os.path.getmtime(code)
+            while True:
+                time.sleep(5)
+                try:
+                    if os.path.getmtime(code) != t0:
+                        time.sleep(3)
+                        log_line("Neue Version vom Haupt-Panel – wird übernommen")
+                        restart_panel()
+                except OSError:
+                    pass
         time.sleep(30)                                # nach dem Start kurz in Ruhe laufen lassen
         while True:
             wait = 20
@@ -3811,8 +3917,11 @@ pre{background:#000;color:#9f9;padding:12px;border-radius:8px;font-size:12px;max
 .hint{color:var(--mut);font-size:13px;margin-top:8px}.empty{color:var(--mut)}
 .mixer{background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin-top:6px}
 .mxrow{display:flex;align-items:center;gap:8px;margin:6px 0}.mxrow input{flex:1}.mxl{min-width:78px;font-weight:600}
+.profbar{display:flex;gap:8px;align-items:center;margin:0 0 12px}.profbar select{flex:1}.profbar .mut{color:var(--mut);font-size:14px}
 </style></head><body>
 <header><h1>📺 24/7 Stream</h1><a href="/logout">Logout</a></header>
+<div class="profbar"><span class="mut">Kanal</span><select id="profSel" onchange="profGo(this.value)"></select>
+ <button id="profNew" onclick="profNew()">＋ Neu</button><button id="profRen" onclick="profRen()" title="Umbenennen">✏</button><button id="profDel" onclick="profDel()" title="Diesen Kanal löschen">🗑</button></div>
 <main>
 <section class="card"><h2>Status</h2>
  <div class="status"><span class="dot" id="dot"></span><span id="st">…</span></div>
@@ -4132,6 +4241,21 @@ async function cmDo(a,b){if(a=='remove'&&!confirm('Befehl löschen?'))return;awa
 function cmEdit(b){cmEditId=b.parentNode.dataset.id;$('cmName').value=b.dataset.cmd;$('cmText').value=b.dataset.text;$('bCmAdd').textContent='💾 Speichern';$('cmText').focus()}
 async function tmDo(a,b){const id=b.parentNode.dataset.id;if(a=='remove'&&!confirm('Timer löschen?'))return;await api('/api/bot_timer_'+a,{id});refresh()}
 function tmEdit(b){tmEditId=b.parentNode.dataset.id;$('tmText').value=b.dataset.text;$('tmMin').value=b.dataset.min;$('bTmAdd').textContent='💾 Speichern';$('tmText').focus()}
+let PROF={current:'',list:[]};
+async function profLoad(){try{PROF=await (await fetch('/api/profiles')).json()}catch(e){return}
+ $('profSel').innerHTML=PROF.list.map(p=>`<option value="${p.id}">${p.running?'🟢':'⚪'} ${esc(p.title)}</option>`).join('');
+ $('profSel').value=PROF.current;$('profDel').style.display=PROF.current?'':'none'}
+async function profGo(id){await fetch('/api/profile_select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});location.reload()}
+async function profNew(){const t=prompt('Name für den neuen Kanal/Stream (z. B. Fortnite VODs):');if(!t)return;
+ const j=await (await fetch('/api/profile_create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t})})).json();
+ if(j.error)return alert(j.error);alert('Angelegt ✅ – trag jetzt in den Einstellungen den Stream-Schlüssel dieses Kanals ein.');setTimeout(()=>location.reload(),2500)}
+async function profRen(){const cur=PROF.list.find(p=>p.id==PROF.current)||{};const t=prompt('Neuer Name:',cur.title||'');if(!t)return;
+ if(!PROF.current){await api('/api/config',{profile_title:t})}else{await fetch('/api/profile_rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:PROF.current,title:t})})}profLoad()}
+async function profDel(){const cur=PROF.list.find(p=>p.id==PROF.current);if(!cur)return;
+ if(!confirm(`Kanal „${cur.title}“ wirklich löschen? Der Stream dort wird beendet und alle Einstellungen dieses Kanals gelöscht.`))return;
+ const j=await (await fetch('/api/profile_delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:PROF.current})})).json();
+ if(j.error)return alert(j.error);location.reload()}
+profLoad();setInterval(profLoad,15000);
 async function twMv(b,to){await api('/api/twpl_move',{url:b.parentNode.dataset.u,to});refresh()}
 async function twPlay(b,now){b.disabled=true;await api('/api/twpl_play',{url:b.parentNode.dataset.u,now:!!now});setTimeout(refresh,now?1500:200)}
 async function twRemove(u){if(confirm('VOD aus der Playlist entfernen?')){await api('/api/twpl_remove',{url:u});refresh()}}
@@ -4216,8 +4340,53 @@ class Handler(BaseHTTPRequestHandler):
 
     # helpers
     def _authed(self):
+        if IS_PROFILE:            # Profil-Panel: nur über das Haupt-Panel (mit internem Schlüssel)
+            k = self.headers.get("X-S24-Key", "")
+            return bool(k) and secrets.compare_digest(k, internal_key())
         c = cookies.SimpleCookie(self.headers.get("Cookie", ""))
         return "s24" in c and c["s24"].value in SESSIONS
+
+    def _profile(self):
+        """Gewähltes Profil (nur im Haupt-Panel), sonst ""."""
+        if IS_PROFILE:
+            return ""
+        c = cookies.SimpleCookie(self.headers.get("Cookie", ""))
+        pid = c["s24p"].value if "s24p" in c else ""
+        return pid if pid and pid in profiles() else ""
+
+    MAIN_ONLY = ("/logout", "/login", "/api/profiles", "/api/profile_select", "/api/profile_create",
+                 "/api/profile_delete", "/api/profile_rename")
+
+    def _maybe_proxy(self, method):
+        """Anfragen fürs gewählte Profil an dessen Panel-Prozess weitergeben. True = erledigt."""
+        path = urlparse(self.path).path
+        pid = self._profile()
+        if not pid or path in self.MAIN_ONLY or not self._authed():
+            return False
+        import http.client
+        body = self._body() if method in ("POST", "PUT") else None
+        hd = {"X-S24-Key": internal_key(), "Content-Type": self.headers.get("Content-Type", "application/octet-stream")}
+        for h in ("X-Kind", "X-Name", "X-Index", "X-Total", "X-Id", "X-Upload", "X-Filename", "X-Chunk", "X-Size"):
+            if self.headers.get(h):
+                hd[h] = self.headers[h]
+        for h, v in self.headers.items():
+            if h.lower().startswith("x-") and h not in hd:
+                hd[h] = v
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", profiles()[pid]["port"], timeout=600)
+            conn.request(method, self.path, body=body, headers=hd)
+            r = conn.getresponse()
+            data = r.read()
+        except Exception as e:  # noqa
+            return self._send(502, {"error": f"Profil „{profiles()[pid]['title']}“ startet gerade oder läuft nicht ({e})"}) or True
+        self.send_response(r.status)
+        for h in ("Content-Type", "Cache-Control", "Location", "Content-Disposition"):
+            if r.getheader(h):
+                self.send_header(h, r.getheader(h))
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        return True
 
     def _send(self, code, body, ctype="application/json", headers=None):
         if isinstance(body, (dict, list)):
@@ -4247,7 +4416,11 @@ class Handler(BaseHTTPRequestHandler):
 
     # GET
     def do_GET(self):
+        if self._maybe_proxy("GET"):
+            return
         path = urlparse(self.path).path
+        if path == "/api/profiles" and self._authed():
+            return self._send(200, profiles_status(self._profile()))
         if path == "/logout":
             c = cookies.SimpleCookie(self.headers.get("Cookie", ""))
             if "s24" in c:
@@ -4306,6 +4479,45 @@ class Handler(BaseHTTPRequestHandler):
 
     # POST
     def do_POST(self):
+        if self._maybe_proxy("POST"):
+            return
+        if urlparse(self.path).path in ("/api/profile_select", "/api/profile_create", "/api/profile_delete",
+                                        "/api/profile_rename") and self._authed() and not IS_PROFILE:
+            return self._profile_api()
+        return self._do_post()
+
+    def _profile_api(self):
+        path = urlparse(self.path).path
+        try:
+            data = json.loads(self._body() or b"{}")
+        except ValueError:
+            data = {}
+        if path == "/api/profile_select":
+            pid = str(data.get("id") or "")
+            if pid and pid not in profiles():
+                return self._send(200, {"error": "Profil gibt es nicht"})
+            return self._send(200, {"ok": True}, headers={"Set-Cookie": f"s24p={pid}; Path=/; Max-Age=31536000; SameSite=Lax"})
+        if path == "/api/profile_create":
+            try:
+                pid = profile_create(str(data.get("title") or ""))
+            except Exception as e:  # noqa
+                return self._send(200, {"error": str(e)})
+            return self._send(200, {"ok": True, "id": pid}, headers={"Set-Cookie": f"s24p={pid}; Path=/; Max-Age=31536000; SameSite=Lax"})
+        if path == "/api/profile_delete":
+            try:
+                profile_delete(str(data.get("id") or ""))
+            except Exception as e:  # noqa
+                return self._send(200, {"error": str(e)})
+            return self._send(200, {"ok": True}, headers={"Set-Cookie": "s24p=; Path=/; Max-Age=0"})
+        if path == "/api/profile_rename":
+            pid = str(data.get("id") or "")
+            if pid in profiles():
+                meta = os.path.join(PROFILES_DIR, pid, "meta.json")
+                save_json(meta, {**load_json(meta, {}), "title": clean_text(str(data.get("title") or ""))[:40] or pid})
+            return self._send(200, {"ok": True})
+        return self._send(404, {"error": "?"})
+
+    def _do_post(self):
         path = urlparse(self.path).path
         if path == "/login":
             form = parse_qs(self._body().decode(errors="replace"))
@@ -4486,6 +4698,8 @@ class Handler(BaseHTTPRequestHandler):
             for k in ("pause_text", "pause_sub"):
                 if k in data:
                     upd[k] = re.sub(r"\s+", " ", "".join(c for c in str(data[k]) if c.isprintable())).strip()[:60]
+            if "profile_title" in data:
+                upd["profile_title"] = clean_text(str(data["profile_title"]))[:40]
             if "runtime_alltime" in data:
                 upd["runtime_alltime"] = bool(data["runtime_alltime"])
             if "show_runtime" in data:
@@ -4761,6 +4975,11 @@ class Handler(BaseHTTPRequestHandler):
 
     # PUT (Upload, roh im Body – funktioniert auch mit großen Dateien)
     def do_PUT(self):
+        if self._maybe_proxy("PUT"):
+            return
+        return self._do_put()
+
+    def _do_put(self):
         u = urlparse(self.path)
         if not self._authed():
             return self._send(401, {"error": "Nicht eingeloggt"})
@@ -5031,7 +5250,7 @@ def main():
         set_cfg(password_salt=salt, password_hash=hash_pw(sys.argv[2], salt))
         print("Passwort gesetzt.")
         return
-    if not get_cfg()["password_hash"]:
+    if not get_cfg()["password_hash"] and not IS_PROFILE:
         print("Kein Passwort gesetzt! Erst: python3 server.py --set-password DEINPASSWORT")
         sys.exit(1)
     if _HANDOFF.get("pid"):
@@ -5081,7 +5300,10 @@ def main():
         os._exit(0)
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
-    srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    if not IS_PROFILE:
+        internal_key()
+        os.makedirs(PROFILES_DIR, exist_ok=True)
+    srv = ThreadingHTTPServer(("127.0.0.1" if IS_PROFILE else "0.0.0.0", PORT), Handler)
     print(f"24/7 Stream Panel läuft auf Port {PORT}")
     srv.serve_forever()
 

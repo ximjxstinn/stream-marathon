@@ -148,3 +148,11 @@ Unter Modus → Twitch-VODs → „Ton bei VODs“: VOD stumm + eigene Musik (St
 
 ## ⏱ YouTube alle 11:50 h neu
 YouTube speichert Livestreams nur bis 12 h. Kurz vor 11:50 h beendet der Server den YouTube-Livestream sauber (dafür muss YouTube unter „Stream-Titel“ verbunden sein) und startet sofort einen neuen – Titel und Kategorie werden danach automatisch gesetzt.
+
+## 📺 Mehrere Kanäle (jeder mit eigenem Stream)
+Einmalig auf dem Server (per PowerShell `ssh root@2.31.94.25`), der laufende Stream bleibt dabei online:
+```
+curl -fsSL https://raw.githubusercontent.com/ximjxstinn/stream-marathon/stream24/profiles.sh -o p.sh && bash p.sh
+```
+Danach im Panel oben bei „Kanal“ → „＋ Neu“. Jeder Kanal hat eigene Einstellungen, Stream-Schlüssel, VODs, Musik, Bot usw. Umschalten über das Auswahlfeld (🟢 = läuft).
+Achtung: Jeder laufende Stream braucht die volle Rechenleistung eines Streams – für zwei Streams in 1080p reicht ein kleiner Server nicht (dann 720p nehmen oder größeren Server).
