@@ -571,7 +571,7 @@ class Ticker(threading.Thread):
             "pause": (cfg.get("pause_text") or "Kurze Pause") if cfg.get("pause_on") else " ",
             "pause_sub": (cfg.get("pause_sub") or " ") if cfg.get("pause_on") else " ",
             **self._chat_files(cfg),
-            **info_files(cfg, bool(self._runtime(cfg).strip())),
+            **texts_files(cfg),
             "k_sub": hide("Vorgeladen · Spielbar in"),
             "k_btn": "Spielen" if done else "Vorbestellt",
             "pct": f"{int(frac * 100)} %",
@@ -580,11 +580,15 @@ class Ticker(threading.Thread):
         }
         for name, text in files.items():
             atomic_write(os.path.join(RUN_DIR, name + ".txt"), text)
+        lk = texts_layout_key(cfg)
+        if getattr(self, "text_layout", None) not in (None, lk):
+            relayout_texts(0.2)
+        self.text_layout = lk
         self.n += 1
 
 
 HANDOFF_PATH = os.path.join(RUN_DIR, "handoff.json")
-SOURCE_VERSION = 4   # erhöhen, wenn sich das Bild (Qualität, Einblendungen) ändert -> nach Update nahtlos neu laden
+SOURCE_VERSION = 5   # erhöhen, wenn sich das Bild (Qualität, Einblendungen) ändert -> nach Update nahtlos neu laden
 _HANDOFF = {}
 try:   # nach einem Update (exec) die laufenden Pipes/Prozesse übernehmen
     _h = load_json(HANDOFF_PATH, {})
@@ -949,54 +953,112 @@ INFO_SIZES = {"s": 0.026, "m": 0.036, "l": 0.05, "xl": 0.07}
 INFO_STYLE = ("info_size", "info_color", "info_bg", "info_box", "info_font", "info_scroll")
 
 
-def info_files(cfg, timer_shown=True):
-    """Eigener Text: nur die gewählte Stelle bekommt Text, sonst Leerzeichen (= unsichtbar)."""
-    on = cfg.get("info_on") and (cfg.get("info_text") or "").strip()
-    if on and cfg.get("info_until") and time.time() > cfg["info_until"]:
-        on = False
-    pos = INFO_OLD.get(cfg.get("info_pos"), cfg.get("info_pos") or "bc")
-    if pos == "under":                       # unter (bzw. unten: über) der Live-Zeit
+MAX_TEXTS = 8
+TEXT_KEYS = ("pos", "size", "color", "bg", "box", "font", "scroll")
+
+
+def get_texts(cfg):
+    """Liste der eigenen Texte. Alte Einzel-Einstellung (info_*) wird zum ersten Text."""
+    t = cfg.get("texts")
+    if isinstance(t, list):
+        return t
+    if (cfg.get("info_text") or "").strip():
+        return [{"id": "x1", "text": cfg["info_text"], "on": bool(cfg.get("info_on")), "until": cfg.get("info_until", 0),
+                 "pos": INFO_OLD.get(cfg.get("info_pos"), cfg.get("info_pos") or "bc"),
+                 **{k: cfg.get("info_" + k, DEFAULT_CFG.get("info_" + k)) for k in TEXT_KEYS if k != "pos"}}]
+    return []
+
+
+def _text_on(t):
+    return bool(t.get("on") and (t.get("text") or "").strip() and not (t.get("until") and time.time() > t["until"]))
+
+
+def _text_slot(t, cfg):
+    pos = INFO_OLD.get(t.get("pos"), t.get("pos") or "bc")
+    if pos == "under":
         rp = cfg.get("runtime_pos", "tr")
-        slot = ("u_" + rp) if timer_shown else rp
-    else:
-        slot = pos if pos in INFO_SLOTS else "bc"
-    return {f"info_{p}": (cfg["info_text"] if on and p == slot else " ") for p in INFO_SLOTS}
+        return ("u_" + rp) if cfg.get("show_runtime", True) else rp
+    return pos if pos in INFO_SLOTS else "bc"
+
+
+def texts_files(cfg):
+    return {f"text_{t['id']}": (t["text"] if _text_on(t) else " ") for t in get_texts(cfg)}
+
+
+def texts_layout_key(cfg):
+    """Alles, was die Anordnung im Bild bestimmt – ändert sich das, wird das Bild nahtlos neu aufgebaut."""
+    ts = [t for t in get_texts(cfg) if (t.get("text") or "").strip()]
+    slots = [_text_slot(t, cfg) for t in ts]
+    # an/aus zählt nur, wenn sich mehrere Texte eine Stelle teilen (Stapel) – sonst geht an/aus sofort ohne Neuaufbau
+    return json.dumps([[t["id"], sl, _text_on(t) if slots.count(sl) > 1 else None] + [t.get(k) for k in TEXT_KEYS]
+                       for t, sl in zip(ts, slots)])
 
 
 def info_filters(h, cfg=None, top="h*0.04"):
+    """Alle eigenen Texte. Mehrere an derselben Stelle werden untereinander gestapelt."""
     cfg = cfg or get_cfg()
     q = lambda p: "'" + p.replace("'", "") + "'"   # noqa
-    fnt = q(font("regular" if cfg.get("info_font") == "normal" else "bold"))
-    fs = INFO_SIZES.get(cfg.get("info_size"), 0.036)
-    col = "0x" + (cfg.get("info_color") or "#ffffff").lstrip("#")
-    bg = "0x" + (cfg.get("info_bg") or "#9147ff").lstrip("#")
-    box = cfg.get("info_box", True)
-    pad = int(h * fs * 0.45) if box else 0
-    tp, gap = int(h * 0.012), int(h * 0.012)            # Kasten der Live-Zeit / Abstand
+    tp, gap = int(h * 0.012), int(h * 0.012)
     by = "h*0.955-h*0.026*1.25"
-    xs = {"l": f"w*0.035+{pad}", "c": "(w-text_w)/2", "r": f"w*0.965-text_w-{pad}"}
-    ys = {"t": f"{top}+{pad}", "b": f"h*0.955-text_h-{pad}",
-          "ut": f"{top}+h*0.026+{2 * tp + gap + pad}", "ub": f"{by}-{tp + gap + pad}-text_h"}
-    pos = {"mid": ("(w-text_w)/2", "(h-text_h)/2")}
-    for k in INFO_SLOTS:
-        if k == "mid":
-            continue
-        u = k.startswith("u_")
-        v, hz = k[-2], k[-1]
-        pos[k] = (xs[hz], ys[("u" if u else "") + v])
-    hide = f"alpha='if(lt(text_w,h*{fs * 0.5:.4f}),0,1)'"
+    groups = {}
+    ts = [t for t in get_texts(cfg) if (t.get("text") or "").strip()]
+    # an einer Stelle: eingeschaltete zuerst (ohne Lücken), ausgeschaltete danach
+    for t in sorted(ts, key=lambda t: not _text_on(t)):
+        groups.setdefault(_text_slot(t, cfg), []).append(t)
     out = []
-    for k in INFO_SLOTS:
-        f = os.path.join(RUN_DIR, f"info_{k}.txt")
-        if not os.path.exists(f):
-            atomic_write(f, " ")
-        x, y = pos[k]
-        if cfg.get("info_scroll"):
-            x = "'w-mod(t*w/12,w+text_w)'"
-        out.append(f"drawtext=fontfile={fnt}:textfile={q(f)}:reload=1:expansion=none:fontsize=h*{fs:.4f}:fontcolor={col}:"
-                   f"x={x}:y={y}" + (f":box=1:boxcolor={bg}@0.88:boxborderw={pad}" if box else "")
-                   + f":shadowcolor=black@0.6:shadowx=2:shadowy=2:{hide}")
-    return out
+    for slot, items in groups.items():
+        dims = []
+        for t in items:
+            fs = INFO_SIZES.get(t.get("size"), 0.036)
+            pad = int(h * fs * 0.45) if t.get("box", True) else 0
+            dims.append((fs, pad, int(h * fs * 1.2) + 2 * pad + gap))
+        total = sum(d[2] for d in dims) - gap
+        acc = 0
+        for t, (fs, pad, step) in zip(items, dims):
+            hz = "c" if slot == "mid" else slot[-1]
+            x = {"l": f"w*0.035+{pad}", "c": "(w-text_w)/2", "r": f"w*0.965-text_w-{pad}"}[hz]
+            if slot == "mid":
+                y = f"(h-{total})/2+{acc + pad}"
+            elif slot.startswith("u_"):
+                y = (f"{top}+h*0.026+{2 * tp + gap + pad + acc}" if slot[2] == "t"
+                     else f"{by}-{tp + gap + pad + acc}-text_h")
+            else:
+                y = f"{top}+{pad + acc}" if slot[0] == "t" else f"h*0.955-text_h-{pad + acc}"
+            acc += step
+            if t.get("scroll"):
+                x = "'w-mod(t*w/12,w+text_w)'"
+            f = os.path.join(RUN_DIR, f"text_{t['id']}.txt")
+            if not os.path.exists(f):
+                atomic_write(f, " ")
+            fnt = q(font("regular" if t.get("font") == "normal" else "bold"))
+            col = "0x" + (t.get("color") or "#ffffff").lstrip("#")
+            bg = "0x" + (t.get("bg") or "#9147ff").lstrip("#")
+            out.append(f"drawtext=fontfile={fnt}:textfile={q(f)}:reload=1:expansion=none:fontsize=h*{fs:.4f}:"
+                       f"fontcolor={col}:x={x}:y={y}"
+                       + (f":box=1:boxcolor={bg}@0.88:boxborderw={pad}" if t.get("box", True) else "")
+                       + f":shadowcolor=black@0.6:shadowx=2:shadowy=2:alpha='if(lt(text_w,h*{fs * 0.5:.4f}),0,1)'")
+    return out or ["null"]
+
+
+_relayout_t = [None]
+
+
+def relayout_texts(delay=1.0):
+    """Texte neu anordnen: Bild nahtlos neu aufbauen (VOD läuft an derselben Stelle weiter)."""
+    if _relayout_t[0]:
+        _relayout_t[0].cancel()
+
+    def go():
+        st = streamer
+        if not (st and st.want):
+            return
+        if st.kind and st.kind.startswith("vod"):
+            cur = st._vod_now()
+            st.request_swap(lambda: st.vod.__setitem__("seek", cur))
+        else:
+            st.request_swap(lambda: None)
+    _relayout_t[0] = threading.Timer(delay, go)
+    _relayout_t[0].start()
 
 
 def pause_filters(h):
@@ -4141,6 +4203,7 @@ PATH_AREAS = [
     (("/api/game_",), "games"),
     (("/api/default_cover",), "countdown"),
     (("/api/bot_",), "bot"),
+    (("/api/text_",), "text"),
     (("/api/title_",), "titles"),
     (("/api/video", "/api/delete", "/api/convert", "/api/upload"), "videos"),
 ]
@@ -4281,24 +4344,24 @@ details.adv{margin-top:10px;border:1px solid var(--line);border-radius:10px;padd
   <label class="filebtn">🖼 Pause-Bild<input type="file" id="pauseFile" accept="image/png,image/jpeg,image/webp"></label>
   <input type="text" id="pauseSub" maxlength="60" placeholder="Gleich geht's weiter!" style="flex:1;min-width:140px" onchange="api('/api/config',{pause_sub:this.value})"></div>
  <div data-area="text" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
-  <label style="margin-top:0">💬 Text im Stream einblenden</label>
-  <input type="text" id="infoText" maxlength="90" placeholder="z. B. Heute Abend 20 Uhr live auf xImJxstinn!">
-  <div class="btns" style="margin-top:6px"><select id="infoPos" style="flex:1;min-width:130px" onchange="api('/api/config',{info_pos:this.value}).then(refresh)">
+  <label style="margin-top:0">💬 Texte im Stream</label>
+  <div id="txList"></div>
+  <details id="txForm" style="margin-top:6px"><summary style="cursor:pointer;color:var(--acc);font-weight:600" id="txSum">＋ Neuen Text hinzufügen</summary>
+  <input type="text" id="infoText" maxlength="90" placeholder="z. B. Heute Abend 20 Uhr live auf xImJxstinn!" style="margin-top:6px">
+  <div class="btns" style="margin-top:6px"><select id="infoPos" style="flex:1;min-width:130px">
    <option value="under">⏱ Unter dem Timer</option><option value="tl">↖ Oben links</option><option value="tc">⬆ Oben Mitte</option><option value="tr">↗ Oben rechts</option><option value="mid">⏺ Mitte</option><option value="bl">↙ Unten links</option><option value="bc">⬇ Unten Mitte</option><option value="br">↘ Unten rechts</option></select>
-   <select id="infoMin" style="flex:1;min-width:110px"><option value="0">bis ich ausmache</option><option value="1">1 Minute</option><option value="5">5 Minuten</option><option value="15">15 Minuten</option><option value="30">30 Minuten</option><option value="60">1 Stunde</option></select></div>
-  <details id="infoStyle" style="margin-top:6px"><summary style="cursor:pointer;color:var(--mut)">🎨 Aussehen anpassen</summary>
+   <select id="infoMin" style="flex:1;min-width:110px"><option value="">Dauer: so lassen</option><option value="0">bis ich ausmache</option><option value="1">1 Minute</option><option value="5">5 Minuten</option><option value="15">15 Minuten</option><option value="30">30 Minuten</option><option value="60">1 Stunde</option></select></div>
    <div class="btns" style="margin-top:6px;align-items:center">
-    <select id="infoSize" style="flex:1;min-width:100px" onchange="infoSet({info_size:this.value})"><option value="s">Klein (wie Timer)</option><option value="m">Mittel</option><option value="l">Groß</option><option value="xl">Sehr groß</option></select>
-    <select id="infoFont" style="flex:1;min-width:100px" onchange="infoSet({info_font:this.value})"><option value="bold">Fett</option><option value="normal">Normal</option></select></div>
-   <div class="rowline" style="margin:6px 0"><span>Textfarbe</span><input type="color" id="infoColor" onchange="infoSet({info_color:this.value})"></div>
-   <div class="rowline" style="margin:6px 0"><span>Kasten dahinter</span><input type="checkbox" class="tg" id="infoBox" onchange="infoSet({info_box:this.checked})"></div>
-   <div class="rowline" style="margin:6px 0"><span>Kastenfarbe</span><input type="color" id="infoBg" onchange="infoSet({info_bg:this.value})"></div>
-   <div class="rowline" style="margin:6px 0"><span>Laufschrift (läuft von rechts nach links durch)</span><input type="checkbox" class="tg" id="infoScroll" onchange="infoSet({info_scroll:this.checked})"></div>
-   <div class="hint">Aussehen ändern = das Bild wird kurz nahtlos neu aufgebaut, das VOD läuft weiter. Text und Stelle ändern sich sofort.</div>
+    <select id="infoSize" style="flex:1;min-width:100px" onchange="infoPrev()"><option value="s">Klein (wie Timer)</option><option value="m" selected>Mittel</option><option value="l">Groß</option><option value="xl">Sehr groß</option></select>
+    <select id="infoFont" style="flex:1;min-width:100px" onchange="infoPrev()"><option value="bold">Fett</option><option value="normal">Normal</option></select></div>
+   <div class="rowline" style="margin:6px 0"><span>Textfarbe</span><input type="color" id="infoColor" value="#ffffff" oninput="infoPrev()"></div>
+   <div class="rowline" style="margin:6px 0"><span>Kasten dahinter</span><input type="checkbox" class="tg" id="infoBox" checked onchange="infoPrev()"></div>
+   <div class="rowline" style="margin:6px 0"><span>Kastenfarbe</span><input type="color" id="infoBg" value="#9147ff" oninput="infoPrev()"></div>
+   <div class="rowline" style="margin:6px 0"><span>Laufschrift (läuft von rechts nach links durch)</span><input type="checkbox" class="tg" id="infoScroll" onchange="infoPrev()"></div>
+   <div id="infoPrev" style="margin-top:8px;padding:10px;border-radius:8px;background:#1f2937;text-align:center;overflow:hidden"><span id="infoPrevT">Vorschau</span></div>
+   <div class="btns"><button class="go" id="bInfo">💬 Einblenden</button><button id="bInfoCancel" style="display:none" onclick="txReset()">Abbrechen</button></div>
   </details>
-  <div id="infoPrev" style="margin-top:8px;padding:10px;border-radius:8px;background:#1f2937;text-align:center;overflow:hidden"><span id="infoPrevT">Vorschau</span></div>
-  <div class="btns"><button class="go" id="bInfo">💬 Einblenden</button><button class="stop" id="bInfoOff" onclick="api('/api/config',{info_on:false}).then(refresh)">Ausblenden</button></div>
-  <div class="hint" id="infoInfo"></div>
+  <div class="hint">Mehrere Texte an derselben Stelle stehen untereinander. Text ein-/ausblenden geht sofort – beim Hinzufügen, Verschieben oder neuem Aussehen wird das Bild kurz nahtlos neu aufgebaut, das VOD läuft weiter.</div>
  </div>
  <div id="platBtns" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
   <div data-do="platform_twitch" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"><b style="min-width:80px">Twitch</b><button class="go" id="pTwStart" onclick="plat('twitch','start')">▶ Start</button><button class="stop" id="pTwStop" onclick="plat('twitch','stop')">■ Stop</button><button id="pTwRe" onclick="plat('twitch','restart')">↻ Neu</button></div>
@@ -4539,9 +4602,9 @@ async function refresh(){
  $('bStart').disabled=s.running;$('bStop').disabled=!s.running;$('bRe').disabled=!s.running;
  for(const[p,k,en]of[['Tw','twitch',s.tw_enabled],['Yt','youtube',s.yt_enabled]]){const on=en&&s.running;$('p'+p+'Start').disabled=on;$('p'+p+'Stop').disabled=!en;$('p'+p+'Re').disabled=!on}
  $('bPause').dataset.on=s.pause_on?'1':'';$('bPause').textContent=s.pause_on?'▶ Pause ausblenden':'☕ Kurze Pause einblenden';$('bPause').className=s.pause_on?'stop':'';
- if(document.activeElement!==$('infoText')&&!$('infoText').dataset.dirty)$('infoText').value=s.info_text||'';if(document.activeElement!==$('infoPos'))$('infoPos').value=s.info_pos||'bc';
- if(!window.infoBusy){$('infoSize').value=s.info_size;$('infoFont').value=s.info_font;$('infoColor').value=s.info_color;$('infoBg').value=s.info_bg;$('infoBox').checked=s.info_box;$('infoScroll').checked=s.info_scroll}infoPrev();
- $('bInfoOff').disabled=!s.info_on;$('infoInfo').textContent=s.info_on?'✅ Wird gerade im Stream gezeigt'+(s.info_left?` · geht in ${Math.ceil(s.info_left/60)} Min. aus`:''):'';
+ TXS=s.texts||[];const PL={under:'⏱ unter dem Timer',tl:'↖ oben links',tc:'⬆ oben Mitte',tr:'↗ oben rechts',mid:'⏺ Mitte',bl:'↙ unten links',bc:'⬇ unten Mitte',br:'↘ unten rechts',top:'⬆ oben Mitte',bot:'⬇ unten Mitte'};
+ $('txList').innerHTML=TXS.length?TXS.map((t,i)=>`<div class="vid"${t.shown?'':' style="opacity:.55"'}><div class="t" style="white-space:normal;min-width:0"><span style="display:inline-block;padding:1px 6px;border-radius:4px;font-weight:${t.font=='normal'?400:700};color:${t.color};background:${t.box?t.bg:'transparent'}">${esc(t.text)}</span><br><small>${PL[t.pos]||''}${t.scroll?' · Laufschrift':''} · ${t.shown?'✅ im Stream'+(t.left?` · noch ${Math.ceil(t.left/60)} Min.`:''):'aus'}</small></div>
+  <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end"><button onclick="txDo('toggle','${t.id}')">${t.shown?'Aus':'An'}</button><button onclick="txEdit('${t.id}')" title="Bearbeiten">✏</button>${i?`<button onclick="txDo('move','${t.id}','up')" title="Nach oben">▲</button>`:''}<button onclick="if(confirm('Text löschen?'))txDo('remove','${t.id}')">✕</button></div></div>`).join(''):'<div class="empty">Noch keine Texte.</div>';
  if(document.activeElement!==$('pauseText'))$('pauseText').value=s.pause_text||'';if(document.activeElement!==$('pauseSub'))$('pauseSub').value=s.pause_sub||'';
  for(const k of['tw_enabled','yt_enabled'])if(document.activeElement!==$(k))$(k).checked=s[k];
  $('vids').innerHTML=s.videos.length?s.videos.map(v=>`<div class="vid"><div class="t">${esc(v.title)}<br><small>${fmt(v.duration)} · ${mb(v.size)}${v.quality&&v.quality!=s.quality?' · ⚠ andere Qualität, wird übersprungen':''}</small></div><button onclick="del('${v.name}')">Löschen</button></div>`).join(''):'<div class="empty">Noch keine Videos.</div>';
@@ -4623,12 +4686,20 @@ $('bRe').onclick=async()=>{await api('/api/restart');refresh()};
 const hrs=id=>parseFloat($(id).value.replace(',','.'))||0;
 async function saveCfg(b,clear){const j=await api('/api/config',b);if(j.ok){clear.forEach(k=>$(k).value='');alert('Gespeichert ✅')}refresh()}
 $('bSave').onclick=()=>saveCfg({shuffle:$('shuffle').checked,quality:$('quality').value},[]);
-$('infoText').oninput=()=>{$('infoText').dataset.dirty=1;infoPrev()};
+let TXS=[],txId='';
+$('infoText').oninput=()=>infoPrev();
 function infoPrev(){const t=$('infoPrevT'),sz={s:13,m:17,l:23,xl:30}[$('infoSize').value]||17;t.textContent=$('infoText').value||'Vorschau';
  Object.assign(t.style,{fontSize:sz+'px',fontWeight:$('infoFont').value=='bold'?'700':'400',color:$('infoColor').value,background:$('infoBox').checked?$('infoBg').value+'e0':'transparent',padding:$('infoBox').checked?'4px 10px':'0',textShadow:'2px 2px 2px rgba(0,0,0,.6)',display:'inline-block'})}
-async function infoSet(b){window.infoBusy=1;infoPrev();await api('/api/config',b);window.infoBusy=0;refresh()}
+function txReset(){txId='';$('infoText').value='';$('txSum').textContent='＋ Neuen Text hinzufügen';$('bInfo').textContent='💬 Einblenden';$('bInfoCancel').style.display='none';$('infoMin').value='0';$('txForm').open=false;infoPrev()}
+function txEdit(id){const t=TXS.find(x=>x.id==id);if(!t)return;txId=id;$('infoText').value=t.text;$('infoPos').value=({top:'tc',bot:'bc'})[t.pos]||t.pos;$('infoSize').value=t.size||'m';$('infoFont').value=t.font||'bold';
+ $('infoColor').value=t.color||'#ffffff';$('infoBg').value=t.bg||'#9147ff';$('infoBox').checked=t.box!==false;$('infoScroll').checked=!!t.scroll;$('infoMin').value='';
+ $('txSum').textContent='✏ Text bearbeiten';$('bInfo').textContent='💾 Speichern';$('bInfoCancel').style.display='';$('txForm').open=true;infoPrev();$('txForm').scrollIntoView({block:'nearest'})}
+async function txDo(a,id,dir){await api('/api/text_'+a,{id,dir});refresh()}
 $('bInfo').onclick=async()=>{const t=$('infoText').value.trim();if(!t)return alert('Erst einen Text eingeben');
- const j=await api('/api/config',{info_text:t,info_pos:$('infoPos').value,info_on:true,info_minutes:+$('infoMin').value});if(j.ok)delete $('infoText').dataset.dirty;refresh()};
+ const b={id:txId,text:t,pos:$('infoPos').value,size:$('infoSize').value,font:$('infoFont').value,color:$('infoColor').value,bg:$('infoBg').value,box:$('infoBox').checked,scroll:$('infoScroll').checked};
+ if($('infoMin').value!=='')b.minutes=+$('infoMin').value;if(!txId)b.on=true;
+ const j=await api('/api/text_save',b);if(j.ok){txReset();refresh()}};
+$('infoMin').value='0';
 $('bSaveTw').onclick=()=>{const b={server:$('server').value,tw_enabled:$('tw_enabled').checked,tw_max_hours:hrs('tw_max_hours')};
  if($('key').value.trim())b.stream_key=$('key').value.trim();saveCfg(b,['key'])};
 $('bSaveYt').onclick=()=>{const b={yt_server:$('yt_server').value,yt_enabled:$('yt_enabled').checked,yt_max_hours:hrs('yt_max_hours')};
@@ -5348,16 +5419,7 @@ class Handler(BaseHTTPRequestHandler):
             for k in ("info_box", "info_scroll"):
                 if k in data:
                     upd[k] = bool(data[k])
-            if any(k in upd and upd[k] != get_cfg().get(k) for k in INFO_STYLE) and streamer.want:
-                st = streamer                     # Aussehen geändert -> Bild nahtlos neu aufbauen (VOD läuft weiter)
 
-                def _restyle():
-                    if st.kind and st.kind.startswith("vod"):
-                        cur = st._vod_now()
-                        st.request_swap(lambda: st.vod.__setitem__("seek", cur))
-                    else:
-                        st.request_swap(lambda: None)
-                threading.Timer(0.5, _restyle).start()
             if "info_on" in data:
                 upd["info_on"] = bool(data["info_on"])
                 if upd["info_on"]:
@@ -5519,6 +5581,63 @@ class Handler(BaseHTTPRequestHandler):
                 if c["id"] == data.get("id"):
                     c["on"] = not c.get("on", True)
             set_cfg(bot_commands=cmds)
+        elif path == "/api/text_save":
+            ts = [dict(t) for t in get_texts(get_cfg())]
+            tid = str(data.get("id") or "")
+            old = next((t for t in ts if t["id"] == tid), None)
+            if not old:
+                if len(ts) >= MAX_TEXTS:
+                    return self._send(200, {"error": f"Höchstens {MAX_TEXTS} Texte"})
+                old = {"id": "x" + secrets.token_hex(3), "on": True, "until": 0, "pos": "bc", "size": "m",
+                       "color": "#ffffff", "bg": "#9147ff", "box": True, "font": "bold", "scroll": False}
+                ts.append(old)
+            if "text" in data:
+                txt = re.sub(r"\s+", " ", "".join(c for c in str(data["text"]) if c.isprintable())).strip()[:90]
+                if not txt:
+                    return self._send(200, {"error": "Text fehlt"})
+                old["text"] = txt
+            if data.get("pos") in INFO_POS:
+                old["pos"] = data["pos"]
+            if data.get("size") in INFO_SIZES:
+                old["size"] = data["size"]
+            for k in ("color", "bg"):
+                if k in data and re.fullmatch(r"#[0-9a-fA-F]{6}", str(data[k])):
+                    old[k] = data[k]
+            if data.get("font") in ("bold", "normal"):
+                old["font"] = data["font"]
+            for k in ("box", "scroll"):
+                if k in data:
+                    old[k] = bool(data[k])
+            if "on" in data:
+                old["on"] = bool(data["on"])
+            if "minutes" in data:
+                try:
+                    mins = float(data.get("minutes") or 0)
+                except (TypeError, ValueError):
+                    mins = 0
+                old["until"] = time.time() + mins * 60 if mins > 0 else 0
+            if not (old.get("text") or "").strip():
+                return self._send(200, {"error": "Text fehlt"})
+            set_cfg(texts=ts)
+            return self._send(200, {"ok": True, "id": old["id"]})
+        elif path == "/api/text_toggle":
+            ts = [dict(t) for t in get_texts(get_cfg())]
+            for t in ts:
+                if t["id"] == data.get("id"):
+                    t["on"] = not _text_on(t)
+                    if t["on"]:
+                        t["until"] = 0
+                    log_line(f"Text {'eingeblendet' if t['on'] else 'ausgeblendet'}: {t['text']}")
+            set_cfg(texts=ts)
+        elif path == "/api/text_remove":
+            set_cfg(texts=[t for t in get_texts(get_cfg()) if t["id"] != data.get("id")])
+        elif path == "/api/text_move":
+            ts = list(get_texts(get_cfg()))
+            i = next((n for n, t in enumerate(ts) if t["id"] == data.get("id")), None)
+            j = None if i is None else i + (-1 if data.get("dir") == "up" else 1)
+            if i is not None and 0 <= j < len(ts):
+                ts[i], ts[j] = ts[j], ts[i]
+                set_cfg(texts=ts)
         elif path == "/api/bot_timer_save":
             text = re.sub(r"[\r\n]+", " ", str(data.get("text", ""))).strip()[:450]
             if not text:
@@ -5898,10 +6017,8 @@ def status():
         "session_secs": time.time() - streamer.session_started if streamer.session_started else 0,
         "stats": stats.data["dest"], "alltime": stats.data.get("alltime", 0),
         "runtime_alltime": cfg.get("runtime_alltime", True),
-        "info_on": bool(cfg.get("info_on")) and not (cfg.get("info_until") and time.time() > cfg["info_until"]),
-        "info_text": cfg.get("info_text", ""), "info_pos": INFO_OLD.get(cfg.get("info_pos"), cfg.get("info_pos") or "bc"),
-        **{k: cfg.get(k, DEFAULT_CFG[k]) for k in INFO_STYLE},
-        "info_left": max(0, int(cfg["info_until"] - time.time())) if cfg.get("info_on") and cfg.get("info_until") else 0,
+        "texts": [{**t, "shown": _text_on(t), "left": max(0, int(t["until"] - time.time())) if _text_on(t) and t.get("until") else 0}
+                  for t in get_texts(cfg)],
         "pause_on": cfg.get("pause_on", False), "pause_text": cfg.get("pause_text", ""), "pause_sub": cfg.get("pause_sub", ""),
         "show_runtime": cfg.get("show_runtime", True), "runtime_label": cfg.get("runtime_label", "LIVE seit"),
         "runtime_mode": cfg.get("runtime_mode", "start"),
