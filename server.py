@@ -219,8 +219,10 @@ def get_cfg():
         stored["cfg_version"] = 5
         save_json(CFG_PATH, {**cfg, **stored})
     cfg.update(stored)
-    if IS_PROFILE and "chat_channel" not in stored:
-        cfg["chat_channel"] = ""             # weiterer Kanal: Chat erst, wenn sein eigener Twitch-Kanal eingetragen ist
+    if IS_PROFILE:                           # weiterer Kanal: nichts vom Haupt-Kanal vorbelegt
+        for k in ("chat_channel", "vod_channel"):
+            if k not in stored:
+                cfg[k] = ""
     return cfg
 
 
@@ -565,7 +567,7 @@ class Ticker(threading.Thread):
             "head2": cfg["cd_head2"], "sub": cfg["cd_sub"].replace("\\n", "\n"),
             "game": cfg["cd_game"], "boxlabel": hide(cfg["cd_boxlabel"]),
             # Konsolen-Design
-            "k_games": "Spiele", "k_media": "Medien", "k_user": "xImJxstinn",
+            "k_games": "Spiele", "k_media": "Medien", "k_user": brand_name(),
             "clock": datetime.now(ZoneInfo(TZ_NAME)).strftime("%H:%M"),
             **self._runtime_files(cfg),
             "pause": (cfg.get("pause_text") or "Kurze Pause") if cfg.get("pause_on") else " ",
@@ -1075,6 +1077,48 @@ def pause_filters(h):
             f"x=(w-text_w)/2:y=h*0.54:box=1:boxcolor=black@0.6:boxborderw={int(h * 0.018)}:alpha='if(lt(text_w,h*0.05),0,1)'"]
 
 
+def brand_name():
+    """Name, der im Bild steht: Haupt-Kanal = xImJxstinn, weitere Kanäle = ihr eigener Kanal-/Profilname."""
+    if not IS_PROFILE:
+        return "xImJxstinn"
+    cfg = get_cfg()
+    return (cfg.get("chat_channel") or load_json(os.path.join(BASE, "meta.json"), {}).get("title") or "24/7").strip()
+
+
+PAUSE_DEFAULT_SHA = "e85f9c9c8aa7d88ee79a2ef788a2d4943b4968b919f9004136d43b6ca511f557"
+# Diese Einstellungen dürfen neue Kanäle vom Haupt-Kanal übernehmen (Technik, nichts Persönliches)
+PROFILE_COPY = ("quality", "perf_preset", "perf_auto", "auto_update", "show_runtime", "runtime_pos", "runtime_mode",
+                "runtime_alltime", "vod_audio", "vod_mix_volume", "vod_music_volume", "cfg_version")
+
+
+def profile_clean_once():
+    """Einmalig in weiteren Kanälen: alles entfernen, was vom Haupt-Kanal kopiert wurde (Name, Texte, Pause-Bild …)."""
+    if not IS_PROFILE:
+        return
+    stored = load_json(CFG_PATH, {})
+    if stored.get("brand_clean_v1"):
+        return
+    keep_secret = ("stream_key", "yt_key", "tw_client", "yt_client", "password", "tw_secret", "yt_secret", "tw_token",
+                   "yt_token")
+    for k in list(stored):
+        if k.startswith(keep_secret):
+            continue
+        if "ximjxstinn" in json.dumps(stored[k], ensure_ascii=False).lower():
+            if k in DEFAULT_CFG and "ximjxstinn" not in json.dumps(DEFAULT_CFG[k]).lower():
+                stored[k] = DEFAULT_CFG[k]
+            else:
+                stored[k] = "" if isinstance(stored[k], str) else ([] if isinstance(stored[k], list) else stored.pop(k))
+    stored = {k: v for k, v in stored.items() if v is not None}
+    stored["brand_clean_v1"] = True
+    save_json(CFG_PATH, stored)
+    try:                                         # Haupt-Pause-Design ("Kurze Pause xImJxstinn") entfernen
+        if os.path.exists(PAUSE_ORIG) and hashlib.sha256(open(PAUSE_ORIG, "rb").read()).hexdigest() == PAUSE_DEFAULT_SHA:
+            os.remove(PAUSE_ORIG)
+    except OSError:
+        pass
+    log_line("Kanal aufgeräumt: Einstellungen vom Haupt-Kanal entfernt")
+
+
 def ensure_pause_image():
     """Ohne eigenes Pause-Bild: das Standard-Design aus dem Update-Paket verwenden.
     Einmalig wird ein älteres Bild durch das neue "Kurze Pause"-Design ersetzt."""
@@ -1082,7 +1126,7 @@ def ensure_pause_image():
         os.replace(PAUSE_ORIG, PAUSE_ORIG + ".alt.png")
     if not get_cfg().get("pause_design_v1"):
         set_cfg(pause_design_v1=True)
-    if os.path.exists(PAUSE_ORIG):
+    if os.path.exists(PAUSE_ORIG) or IS_PROFILE:    # weitere Kanäle: kein Design mit meinem Namen
         return
     try:
         import urllib.request
@@ -1468,7 +1512,7 @@ def build_slate_loop(cfg=None, force=False, bg_image=None):
     B, R = q(font("bold")), q(font("regular"))
     for name, text in (("sl_title", "Neu verbinden"), ("sl_t1", "Neu verbinden."), ("sl_t2", "Neu verbinden.."),
                        ("sl_t3", "Neu verbinden..."),
-                       ("sl_sub", "Der Stream geht gleich weiter"), ("sl_brand", "xImJxstinn · 24/7")):
+                       ("sl_sub", "Der Stream geht gleich weiter"), ("sl_brand", brand_name() + " · 24/7")):
         atomic_write(os.path.join(RUN_DIR, name + ".txt"), text)
     tf = lambda n: q(os.path.join(RUN_DIR, n + ".txt"))   # noqa
     ring = int(h * 0.30) // 2 * 2          # Größe des Lade-Rings
@@ -1802,11 +1846,11 @@ def profile_create(title):
         fh.write(str(port))
     save_json(os.path.join(d, "meta.json"), {"title": title})
     # Startwerte: gleiche Optik, aber eigene Schlüssel/Kanäle (leer) und gestoppt
-    base_cfg = {k: v for k, v in get_cfg().items() if not k.startswith(("stream_key", "yt_key", "tw_client", "yt_client",
-                                                                       "password", "chat_channel", "tw_playlist",
-                                                                       "bot_", "games_custom"))}
+    base_cfg = {k: v for k, v in get_cfg().items() if k in PROFILE_COPY}
     save_json(os.path.join(d, "config.json"), {**base_cfg, "tw_enabled": False, "yt_enabled": False,
-                                               "title_auto": False, "bot_enabled": False})
+                                               "title_auto": False, "bot_enabled": False, "texts": [],
+                                               "pause_design_v1": True, "brand_clean_v1": True,
+                                               "chat_channel": "", "vod_channel": ""})
     try:
         _profile_ctl("enable", pid)
     except Exception:
@@ -4347,7 +4391,7 @@ details.adv{margin-top:10px;border:1px solid var(--line);border-radius:10px;padd
   <label style="margin-top:0">💬 Texte im Stream</label>
   <div id="txList"></div>
   <details id="txForm" style="margin-top:6px"><summary style="cursor:pointer;color:var(--acc);font-weight:600" id="txSum">＋ Neuen Text hinzufügen</summary>
-  <input type="text" id="infoText" maxlength="90" placeholder="z. B. Heute Abend 20 Uhr live auf xImJxstinn!" style="margin-top:6px">
+  <input type="text" id="infoText" maxlength="90" placeholder="z. B. Heute Abend 20 Uhr live!" style="margin-top:6px">
   <div class="btns" style="margin-top:6px"><select id="infoPos" style="flex:1;min-width:130px">
    <option value="under">⏱ Unter dem Timer</option><option value="tl">↖ Oben links</option><option value="tc">⬆ Oben Mitte</option><option value="tr">↗ Oben rechts</option><option value="mid">⏺ Mitte</option><option value="bl">↙ Unten links</option><option value="bc">⬇ Unten Mitte</option><option value="br">↘ Unten rechts</option></select>
    <select id="infoMin" style="flex:1;min-width:110px"><option value="">Dauer: so lassen</option><option value="0">bis ich ausmache</option><option value="1">1 Minute</option><option value="5">5 Minuten</option><option value="15">15 Minuten</option><option value="30">30 Minuten</option><option value="60">1 Stunde</option></select></div>
@@ -4450,7 +4494,7 @@ details.adv{margin-top:10px;border:1px solid var(--line);border-radius:10px;padd
  <div class="btns"><button class="go" id="bTiSave">💾 Titel &amp; Kategorie speichern</button><button id="bTiNow">↻ Jetzt setzen</button></div>
  <h3 style="margin:16px 0 4px;font-size:15px">Twitch</h3>
  <label>Twitch-Kanalname – reicht ohne Client-ID für Chat im Stream und Live-Zeit</label>
- <input type="text" id="tiChan" placeholder="z. B. ximjxstinn_offline" onchange="api('/api/config',{chat_channel:this.value}).then(refresh)">
+ <input type="text" id="tiChan" placeholder="z. B. dein_kanalname" onchange="api('/api/config',{chat_channel:this.value}).then(refresh)">
  <div id="tiTw"></div>
  <details id="tiTwDet" class="adv"><summary>🔗 Mit Twitch verbinden (Client-ID) – nur nötig für Titel, Kategorie & Chat-Bot</summary>
  <label>Twitch Client-ID</label><input type="text" id="ti_tw_cid" placeholder="aus dev.twitch.tv/console">
@@ -4547,7 +4591,7 @@ details.adv{margin-top:10px;border:1px solid var(--line);border-radius:10px;padd
 <section class="card"><h2>Einstellungen</h2>
  <div data-area="twitch"><h3 style="margin:4px 0 0;font-size:16px">🟣 Twitch</h3>
  <label class="chk"><input type="checkbox" id="tw_enabled"> An Twitch senden</label>
- <label>Twitch-Kanalname (ohne Client-ID – für Chat & Live-Zeit)</label><input type="text" id="twChan" placeholder="z. B. ximjxstinn_offline" onchange="api('/api/config',{chat_channel:this.value}).then(refresh)">
+ <label>Twitch-Kanalname (ohne Client-ID – für Chat & Live-Zeit)</label><input type="text" id="twChan" placeholder="z. B. dein_kanalname" onchange="api('/api/config',{chat_channel:this.value}).then(refresh)">
  <label>Twitch Stream-Key <span id="keyinfo"></span></label>
  <input type="password" id="key" placeholder="live_xxxxxxxx (leer lassen = nicht ändern)">
  <label>Twitch Ingest-Server</label><input type="text" id="server">
@@ -4874,7 +4918,7 @@ async function playVod(i,b){const v=VODS[i];b.disabled=true;const j=await api('/
 async function playAll(b){b.disabled=true;const j=await api('/api/twpl_add',{items:VODS});b.textContent=j.ok?'✅ alle drin':'Fehler';refresh()}
 async function impVod(i,b){const v=VODS[i];b.disabled=true;const j=await api('/api/vod_import',{url:v.url,title:v.title,duration:v.duration});
  b.textContent=j.ok?'✅ läuft':'Fehler';refresh()}
-fetch('/api/status').then(r=>r.json()).then(s=>{$('vodCh').value=s.vod_channel||'xImJxstinn'});
+fetch('/api/status').then(r=>r.json()).then(s=>{$('vodCh').value=s.vod_channel||''});
 refresh();setInterval(refresh,3000);
 </script></body></html>"""
 
@@ -6041,6 +6085,11 @@ def status():
 
 def main():
     global streamer
+    if not (len(sys.argv) >= 2 and sys.argv[1].startswith("--")):
+        try:
+            profile_clean_once()
+        except Exception as e:  # noqa
+            print("Aufräumen:", e, flush=True)
     if len(sys.argv) >= 3 and sys.argv[1] == "--set-password":
         salt = secrets.token_hex(16)
         set_cfg(password_salt=salt, password_hash=hash_pw(sys.argv[2], salt))
