@@ -1594,11 +1594,14 @@ def profiles():
     return out
 
 
-def _systemctl(*args):
-    r = subprocess.run(["sudo", "-n", "systemctl", *args], capture_output=True, text=True, timeout=60)
+def _profile_ctl(action, pid):
+    """Kanal-Dienste an-/ausschalten über das kleine Hilfsprogramm (per profiles.sh eingerichtet)."""
+    r = subprocess.run(["sudo", "-n", "/usr/local/sbin/stream24-profile", action, pid],
+                       capture_output=True, text=True, timeout=90)
     if r.returncode != 0:
-        raise RuntimeError("Mehrere Kanäle sind auf dem Server noch nicht eingerichtet – bitte einmal den "
-                           "Einrichtungs-Befehl aus der Anleitung ausführen. (" + (r.stderr.strip() or "sudo")[-120:] + ")")
+        err = " ".join(l.strip() for l in (r.stderr or r.stdout or "").splitlines() if l.strip() and "^" not in l)
+        raise RuntimeError("Mehrere Kanäle sind auf dem Server noch nicht (richtig) eingerichtet – bitte einmal den "
+                           f"Einrichtungs-Befehl ausführen. Meldung: {err[:300] or 'unbekannt'}")
 
 
 def profile_create(title):
@@ -1623,7 +1626,7 @@ def profile_create(title):
     save_json(os.path.join(d, "config.json"), {**base_cfg, "tw_enabled": False, "yt_enabled": False,
                                                "title_auto": False, "bot_enabled": False})
     try:
-        _systemctl("enable", "--now", f"stream24-sender@{pid}", f"stream24@{pid}")
+        _profile_ctl("enable", pid)
     except Exception:
         shutil.rmtree(d, ignore_errors=True)
         raise
@@ -1634,7 +1637,7 @@ def profile_create(title):
 def profile_delete(pid):
     if pid not in profiles():
         raise RuntimeError("Profil gibt es nicht")
-    _systemctl("disable", "--now", f"stream24@{pid}", f"stream24-sender@{pid}")
+    _profile_ctl("disable", pid)
     shutil.rmtree(os.path.join(PROFILES_DIR, pid), ignore_errors=True)
     log_line(f"Kanal/Stream gelöscht: {pid}")
 

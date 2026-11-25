@@ -3,7 +3,6 @@
 set -e
 if [ "$EUID" -ne 0 ]; then echo "Bitte als root ausführen:  sudo bash profiles.sh"; exit 1; fi
 DIR=/opt/stream24
-SC=$(command -v systemctl)
 
 cat > /etc/systemd/system/stream24@.service <<EOF
 [Unit]
@@ -39,14 +38,39 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-# Das Panel darf (nur) diese Kanal-Dienste an- und ausschalten
-cat > /etc/sudoers.d/stream24 <<EOF
-stream24 ALL=(root) NOPASSWD: $SC enable --now stream24-sender@* stream24@*, $SC disable --now stream24@* stream24-sender@*
-EOF
-chmod 440 /etc/sudoers.d/stream24
-visudo -cf /etc/sudoers.d/stream24 >/dev/null
+# Kleines Hilfsprogramm: darf nur Kanal-Dienste an-/ausschalten (sonst nichts)
+cat > /usr/local/sbin/stream24-profile <<'HELPER'
+#!/bin/sh
+set -e
+case "$1" in enable|disable) ;; *) echo "nur enable/disable"; exit 2;; esac
+echo "$2" | grep -Eq '^[a-z0-9-]{1,40}$' || { echo "ungültiger Name"; exit 2; }
+if [ "$1" = enable ]; then
+  systemctl enable --now "stream24-sender@$2" "stream24@$2"
+else
+  systemctl disable --now "stream24@$2" "stream24-sender@$2"
+fi
+HELPER
+chmod 755 /usr/local/sbin/stream24-profile
+chown root:root /usr/local/sbin/stream24-profile
+
+# Sudo-Regel: das Panel darf genau dieses Hilfsprogramm ausführen
+TMP=$(mktemp)
+echo "stream24 ALL=(root) NOPASSWD: /usr/local/sbin/stream24-profile" > "$TMP"
+if visudo -cf "$TMP" >/dev/null; then
+  install -m 440 -o root -g root "$TMP" /etc/sudoers.d/stream24
+else
+  echo "⚠ Sudo-Regel ungültig – nichts geändert"; rm -f "$TMP"; exit 1
+fi
+rm -f "$TMP"
+if ! visudo -c >/dev/null 2>&1; then
+  echo "⚠ In einer anderen Sudo-Datei ist ein Fehler – Ausgabe:"; visudo -c || true
+fi
 
 mkdir -p "$DIR/profiles"
 chown stream24:stream24 "$DIR/profiles"
 systemctl daemon-reload
-echo "✅ Fertig – im Panel kannst du jetzt oben bei „Kanal“ mit „＋ Neu“ weitere Streams anlegen."
+if sudo -u stream24 sudo -n /usr/local/sbin/stream24-profile check x 2>&1 | grep -q "nur enable/disable"; then
+  echo "✅ Fertig – im Panel kannst du jetzt oben bei „Kanal“ mit „＋ Neu“ weitere Streams anlegen."
+else
+  echo "⚠ Test fehlgeschlagen:"; sudo -u stream24 sudo -n /usr/local/sbin/stream24-profile check x || true
+fi
