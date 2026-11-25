@@ -4524,7 +4524,10 @@ function applyRights(){const P=PROF.me&&PROF.me.perm;if(!P||PROF.me.admin)return
  document.querySelectorAll('[data-area]').forEach(el=>{const v=P.a[el.dataset.area]??0;el.style.display=v==0?'none':'';
   if(v==1)el.querySelectorAll('input,select,textarea,button,label.filebtn').forEach(x=>{if(!x.classList.contains('keep')){x.disabled=true;x.classList.add('ro')}})});
  document.querySelectorAll('[data-do]').forEach(el=>{if(!P.do.includes(el.dataset.do))el.querySelectorAll('button,input').forEach(x=>{x.disabled=true;x.classList.add('ro')})});
- document.querySelectorAll('[data-see]').forEach(el=>{el.style.display=P.see.includes(el.dataset.see)?'':'none'})}
+ document.querySelectorAll('[data-see]').forEach(el=>{el.style.display=P.see.includes(el.dataset.see)?'':'none'});
+ // Karten, in denen nichts mehr sichtbar ist, ganz ausblenden (z. B. „Einstellungen“ ohne Rechte)
+ document.querySelectorAll('section.card:not([data-area]):not(#usersCard)').forEach(c=>{c.style.display='';
+  const vis=[...c.children].filter(x=>x.tagName!='H2'&&getComputedStyle(x).display!='none');if(!vis.length)c.style.display='none'})}
 async function profGo(id){await fetch('/api/profile_select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});location.reload()}
 async function profNew(){const t=prompt('Name für den neuen Kanal/Stream (z. B. Fortnite VODs):');if(!t)return;
  const j=await (await fetch('/api/profile_create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t})})).json();
