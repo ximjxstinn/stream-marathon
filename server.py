@@ -3899,10 +3899,12 @@ RIGHTS = {   # alte, grobe Rechte (werden automatisch ins neue Modell übernomme
 AREAS = [("countdown", "Countdown"), ("games", "Nächste Spiele"), ("vods", "Twitch-VODs"),
          ("videos", "Gespeicherte Videos"), ("music", "Musik"), ("pause", "Kurze Pause"),
          ("overlay", "Einblendungen (Live-Zeit)"), ("chat", "Chat im Stream"), ("bot", "Chat-Bot"),
-         ("titles", "Stream-Titel & Kategorie"), ("platforms", "Twitch & YouTube (Schlüssel)"),
+         ("titles", "Stream-Titel & Kategorie"), ("twitch", "Twitch (Schlüssel & Senden)"),
+         ("youtube", "YouTube (Schlüssel & Senden)"),
          ("quality", "Qualität & Leistung"), ("stats", "Statistik"), ("updates", "Updates")]
 SEE = [("log", "Log lesen")]
-DO = [("startstop", "Starten und stoppen"), ("platform", "Twitch/YouTube einzeln starten & stoppen"),
+DO = [("startstop", "Starten und stoppen"), ("platform_twitch", "Twitch einzeln starten & stoppen"),
+      ("platform_youtube", "YouTube einzeln starten & stoppen"),
       ("mode", "Modus wechseln (Countdown / VODs / Videos)"), ("sender", "Sender neu starten")]
 AREA_IDS = [a for a, _ in AREAS]
 
@@ -3913,8 +3915,8 @@ def _perm(areas, see, do):
 
 RIGHT_PRESETS = {
     "view": _perm({a: 1 for a in AREA_IDS}, [x for x, _ in SEE], []),
-    "normal": _perm({**{a: 2 for a in AREA_IDS}, "titles": 1, "platforms": 0, "quality": 1, "stats": 1, "updates": 0},
-                    [x for x, _ in SEE], ["startstop", "platform", "mode"]),
+    "normal": _perm({**{a: 2 for a in AREA_IDS}, "titles": 1, "twitch": 0, "youtube": 0, "quality": 1, "stats": 1,
+                     "updates": 0}, [x for x, _ in SEE], ["startstop", "platform_twitch", "platform_youtube", "mode"]),
     "full": _perm({a: 2 for a in AREA_IDS}, [x for x, _ in SEE], [x for x, _ in DO]),
 }
 
@@ -3924,13 +3926,13 @@ def perm_from_old(rights):
     areas = {a: 1 for a in AREA_IDS}
     do = []
     if "control" in rights:
-        do += ["startstop", "platform"]
+        do += ["startstop", "platform_twitch", "platform_youtube"]
         areas["pause"] = 2
     if "content" in rights:
         areas.update({a: 2 for a in ("countdown", "games", "vods", "videos", "music", "overlay")})
         do.append("mode")
     if "settings" in rights:
-        areas.update({a: 2 for a in ("titles", "platforms", "quality")})
+        areas.update({a: 2 for a in ("titles", "twitch", "youtube", "quality")})
     if "bot" in rights:
         areas.update(chat=2, bot=2)
     if "update" in rights:
@@ -3943,7 +3945,14 @@ def norm_perm(p):
     if isinstance(p, list):
         return perm_from_old(p)
     p = p or {}
-    a = p.get("a") or {}
+    a = dict(p.get("a") or {})
+    if "platforms" in a:                     # früher ein gemeinsamer Bereich für beide
+        a.setdefault("twitch", a["platforms"])
+        a.setdefault("youtube", a["platforms"])
+    do = list(p.get("do") or [])
+    if "platform" in do:
+        do += ["platform_twitch", "platform_youtube"]
+    p = {**p, "do": do}
     return {"a": {k: max(0, min(2, int(a.get(k, 0)))) for k in AREA_IDS},
             "see": [x for x in (p.get("see") or []) if x in dict(SEE)],
             "do": [x for x in (p.get("do") or []) if x in dict(DO)]}
@@ -3993,13 +4002,15 @@ CONFIG_AREAS = [
     (("bot_", "discord_link", "tiktok_link"), "bot"),
     (("title_", "cat_", "yt_category", "tw_client", "yt_client"), "titles"),
     (("quality", "perf_"), "quality"),
+    (("yt_key", "yt_server", "yt_enabled", "yt_max_hours"), "youtube"),
+    (("stream_key", "server", "tw_enabled", "tw_max_hours"), "twitch"),
     (("auto_update",), "updates"),
     (("shuffle",), "videos"),
     (("mode",), "do:mode"),
 ]
 PATH_AREAS = [
     (("/api/start", "/api/stop"), "do:startstop"),
-    (("/api/platform",), "do:platform"),
+
     (("/api/restart_sender",), "do:sender"),
     (("/api/update",), "updates"),
     (("/api/session_start", "/api/stats_reset"), "stats"),
@@ -4015,20 +4026,22 @@ ASSET_AREAS = {"bg": "countdown", "cover": "countdown", "music": "music", "cooki
 
 
 def config_area(key):
-    return next((r for pre, r in CONFIG_AREAS if key.startswith(pre)), "platforms")
+    return next((r for pre, r in CONFIG_AREAS if key.startswith(pre)), "twitch")
 
 
 def needed_rights(path, data, query=None):
     """Was eine Änderung braucht: Menge aus Bereichen (Stufe "Ändern"), "do:…" oder "admin"."""
     if path == "/api/config":
         return {config_area(k) for k in data}
+    if path == "/api/platform":
+        return {"do:platform_youtube" if data.get("platform") == "youtube" else "do:platform_twitch"}
     if path == "/api/asset_chunk":
         kind = ((query or {}).get("kind") or [""])[0]
         return {ASSET_AREAS.get(kind, "videos")}
     for pre, r in PATH_AREAS:
         if path.startswith(pre):
             return {r}
-    return {"platforms"}
+    return {"twitch"}
 
 
 def _label(r):
@@ -4145,9 +4158,9 @@ details.adv{margin-top:10px;border:1px solid var(--line);border-radius:10px;padd
   <input type="text" id="pauseText" maxlength="60" placeholder="☕ Kurze Pause" style="flex:1;min-width:140px" onchange="api('/api/config',{pause_text:this.value})">
   <label class="filebtn">🖼 Pause-Bild<input type="file" id="pauseFile" accept="image/png,image/jpeg,image/webp"></label>
   <input type="text" id="pauseSub" maxlength="60" placeholder="Gleich geht's weiter!" style="flex:1;min-width:140px" onchange="api('/api/config',{pause_sub:this.value})"></div>
- <div id="platBtns" data-do="platform" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
-  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"><b style="min-width:80px">Twitch</b><button class="go" id="pTwStart" onclick="plat('twitch','start')">▶ Start</button><button class="stop" id="pTwStop" onclick="plat('twitch','stop')">■ Stop</button><button id="pTwRe" onclick="plat('twitch','restart')">↻ Neu</button></div>
-  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"><b style="min-width:80px">YouTube</b><button class="go" id="pYtStart" onclick="plat('youtube','start')">▶ Start</button><button class="stop" id="pYtStop" onclick="plat('youtube','stop')">■ Stop</button><button id="pYtRe" onclick="plat('youtube','restart')">↻ Neu</button></div>
+ <div id="platBtns" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+  <div data-do="platform_twitch" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"><b style="min-width:80px">Twitch</b><button class="go" id="pTwStart" onclick="plat('twitch','start')">▶ Start</button><button class="stop" id="pTwStop" onclick="plat('twitch','stop')">■ Stop</button><button id="pTwRe" onclick="plat('twitch','restart')">↻ Neu</button></div>
+  <div data-do="platform_youtube" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"><b style="min-width:80px">YouTube</b><button class="go" id="pYtStart" onclick="plat('youtube','start')">▶ Start</button><button class="stop" id="pYtStop" onclick="plat('youtube','stop')">■ Stop</button><button id="pYtRe" onclick="plat('youtube','restart')">↻ Neu</button></div>
  </div>
 </section>
 <section class="card"><h2>Modus</h2>
@@ -4319,14 +4332,14 @@ details.adv{margin-top:10px;border:1px solid var(--line);border-radius:10px;padd
  <div id="uploads"></div><div id="jobs"></div><div id="vids" style="margin-top:10px"></div>
 </section>
 <section class="card"><h2>Einstellungen</h2>
- <div data-area="platforms"><h3 style="margin:4px 0 0;font-size:16px">🟣 Twitch</h3>
+ <div data-area="twitch"><h3 style="margin:4px 0 0;font-size:16px">🟣 Twitch</h3>
  <label class="chk"><input type="checkbox" id="tw_enabled"> An Twitch senden</label>
  <label>Twitch-Kanalname (ohne Client-ID – für Chat & Live-Zeit)</label><input type="text" id="twChan" placeholder="z. B. ximjxstinn_offline" onchange="api('/api/config',{chat_channel:this.value}).then(refresh)">
  <label>Twitch Stream-Key <span id="keyinfo"></span></label>
  <input type="password" id="key" placeholder="live_xxxxxxxx (leer lassen = nicht ändern)">
  <label>Twitch Ingest-Server</label><input type="text" id="server">
  <label>Geplant neu verbinden nach (Stunden) – Twitch-Limit 48 h</label><input type="text" id="tw_max_hours" inputmode="decimal">
- <h3 style="margin:22px 0 0;font-size:16px">🔴 YouTube</h3>
+ </div><div data-area="youtube"><h3 style="margin:22px 0 0;font-size:16px">🔴 YouTube</h3>
  <label class="chk"><input type="checkbox" id="yt_enabled"> An YouTube senden</label>
  <label>YouTube Stream-Schlüssel <span id="ytkeyinfo"></span></label>
  <input type="password" id="yt_key" placeholder="xxxx-xxxx-xxxx-xxxx (leer lassen = nicht ändern)">
@@ -4665,7 +4678,7 @@ class Handler(BaseHTTPRequestHandler):
         if info is None or not may_channel(info, self._profile()):
             return "Kein Zugriff auf diesen Kanal"
         try:
-            data = json.loads(body or b"{}") if path == "/api/config" else {}
+            data = json.loads(body or b"{}") if path in ("/api/config", "/api/platform") else {}
         except ValueError:
             data = {}
         pid = self._profile()
