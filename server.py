@@ -167,7 +167,9 @@ DEFAULT_CFG = {
     "runtime_alltime": True,
     "info_on": False,                 # eigener Text im Stream (Banner)
     "info_text": "",
-    "info_pos": "bot",                # top / mid / bot
+    "info_pos": "bc",                 # under (unter der Live-Zeit), tl/tc/tr, mid, bl/bc/br
+    "info_size": "m", "info_color": "#ffffff", "info_bg": "#9147ff", "info_box": True,
+    "info_font": "bold", "info_scroll": False,
     "info_until": 0,                  # Zeitpunkt, an dem der Text automatisch ausgeht (0 = nie)
     "pause_on": False,                # "Kurze Pause" im Stream einblenden
     "pause_text": "☕ Kurze Pause",
@@ -569,7 +571,7 @@ class Ticker(threading.Thread):
             "pause": (cfg.get("pause_text") or "Kurze Pause") if cfg.get("pause_on") else " ",
             "pause_sub": (cfg.get("pause_sub") or " ") if cfg.get("pause_on") else " ",
             **self._chat_files(cfg),
-            **info_files(cfg),
+            **info_files(cfg, bool(self._runtime(cfg).strip())),
             "k_sub": hide("Vorgeladen · Spielbar in"),
             "k_btn": "Spielen" if done else "Vorbestellt",
             "pct": f"{int(frac * 100)} %",
@@ -582,7 +584,7 @@ class Ticker(threading.Thread):
 
 
 HANDOFF_PATH = os.path.join(RUN_DIR, "handoff.json")
-SOURCE_VERSION = 3   # erhöhen, wenn sich das Bild (Qualität, Einblendungen) ändert -> nach Update nahtlos neu laden
+SOURCE_VERSION = 4   # erhöhen, wenn sich das Bild (Qualität, Einblendungen) ändert -> nach Update nahtlos neu laden
 _HANDOFF = {}
 try:   # nach einem Update (exec) die laufenden Pipes/Prozesse übernehmen
     _h = load_json(HANDOFF_PATH, {})
@@ -940,29 +942,60 @@ def runtime_filters(top="h*0.04"):
     return out
 
 
-INFO_POS = {"top": "h*0.12", "mid": "(h-text_h)/2", "bot": "h*0.84"}
+INFO_SLOTS = ["tl", "tc", "tr", "mid", "bl", "bc", "br", "u_tl", "u_tc", "u_tr", "u_bl", "u_bc", "u_br"]
+INFO_POS = ["under", "tl", "tc", "tr", "mid", "bl", "bc", "br"]
+INFO_OLD = {"top": "tc", "bot": "bc"}
+INFO_SIZES = {"s": 0.026, "m": 0.036, "l": 0.05, "xl": 0.07}
+INFO_STYLE = ("info_size", "info_color", "info_bg", "info_box", "info_font", "info_scroll")
 
 
-def info_files(cfg):
-    """Eigener Text: nur die gewählte Position bekommt Text, sonst Leerzeichen (= unsichtbar)."""
+def info_files(cfg, timer_shown=True):
+    """Eigener Text: nur die gewählte Stelle bekommt Text, sonst Leerzeichen (= unsichtbar)."""
     on = cfg.get("info_on") and (cfg.get("info_text") or "").strip()
     if on and cfg.get("info_until") and time.time() > cfg["info_until"]:
         on = False
-    pos = cfg.get("info_pos", "bot")
-    return {f"info_{p}": (cfg["info_text"] if on and p == pos else " ") for p in INFO_POS}
+    pos = INFO_OLD.get(cfg.get("info_pos"), cfg.get("info_pos") or "bc")
+    if pos == "under":                       # unter (bzw. unten: über) der Live-Zeit
+        rp = cfg.get("runtime_pos", "tr")
+        slot = ("u_" + rp) if timer_shown else rp
+    else:
+        slot = pos if pos in INFO_SLOTS else "bc"
+    return {f"info_{p}": (cfg["info_text"] if on and p == slot else " ") for p in INFO_SLOTS}
 
 
-def info_filters(h, color="0x9147ff"):
+def info_filters(h, cfg=None, top="h*0.04"):
+    cfg = cfg or get_cfg()
     q = lambda p: "'" + p.replace("'", "") + "'"   # noqa
-    B = q(font("bold"))
+    fnt = q(font("regular" if cfg.get("info_font") == "normal" else "bold"))
+    fs = INFO_SIZES.get(cfg.get("info_size"), 0.036)
+    col = "0x" + (cfg.get("info_color") or "#ffffff").lstrip("#")
+    bg = "0x" + (cfg.get("info_bg") or "#9147ff").lstrip("#")
+    box = cfg.get("info_box", True)
+    pad = int(h * fs * 0.45) if box else 0
+    tp, gap = int(h * 0.012), int(h * 0.012)            # Kasten der Live-Zeit / Abstand
+    by = "h*0.955-h*0.026*1.25"
+    xs = {"l": f"w*0.035+{pad}", "c": "(w-text_w)/2", "r": f"w*0.965-text_w-{pad}"}
+    ys = {"t": f"{top}+{pad}", "b": f"h*0.955-text_h-{pad}",
+          "ut": f"{top}+h*0.026+{2 * tp + gap + pad}", "ub": f"{by}-{tp + gap + pad}-text_h"}
+    pos = {"mid": ("(w-text_w)/2", "(h-text_h)/2")}
+    for k in INFO_SLOTS:
+        if k == "mid":
+            continue
+        u = k.startswith("u_")
+        v, hz = k[-2], k[-1]
+        pos[k] = (xs[hz], ys[("u" if u else "") + v])
+    hide = f"alpha='if(lt(text_w,h*{fs * 0.5:.4f}),0,1)'"
     out = []
-    for p, y in INFO_POS.items():
-        f = os.path.join(RUN_DIR, f"info_{p}.txt")
+    for k in INFO_SLOTS:
+        f = os.path.join(RUN_DIR, f"info_{k}.txt")
         if not os.path.exists(f):
             atomic_write(f, " ")
-        out.append(f"drawtext=fontfile={B}:textfile={q(f)}:reload=1:expansion=none:fontsize=h*0.045:fontcolor=white:"
-                   f"x=(w-text_w)/2:y={y}:box=1:boxcolor={color}@0.88:boxborderw={int(h * 0.018)}:"
-                   f"shadowcolor=black@0.6:shadowx=2:shadowy=2:alpha='if(lt(text_w,h*0.05),0,1)'")
+        x, y = pos[k]
+        if cfg.get("info_scroll"):
+            x = "'w-mod(t*w/12,w+text_w)'"
+        out.append(f"drawtext=fontfile={fnt}:textfile={q(f)}:reload=1:expansion=none:fontsize=h*{fs:.4f}:fontcolor={col}:"
+                   f"x={x}:y={y}" + (f":box=1:boxcolor={bg}@0.88:boxborderw={pad}" if box else "")
+                   + f":shadowcolor=black@0.6:shadowx=2:shadowy=2:{hide}")
     return out
 
 
@@ -1066,7 +1099,7 @@ def build_pause_cmd(cfg, output, audio_path=None):
           f"drawtext=fontfile={R}:textfile={tf('pause_sub')}:reload=1:expansion=none:fontsize=h*0.04:fontcolor=white@0.92:"
           f"x=(w-text_w)/2:y=h*{top + 0.115:.3f},")
     vf += (",".join(runtime_filters()).replace("boxborderw=0", f"boxborderw={int(h * 0.012)}")
-          + "," + ",".join(info_filters(h)) + ",format=yuv420p")
+          + "," + ",".join(info_filters(h, cfg)) + ",format=yuv420p")
     apath = audio_path or (audio_feeder.path if audio_feeder else AUDIO_FIFO)
     return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-re", "-loop", "1", "-framerate", str(fps), "-i", frame,
@@ -1192,7 +1225,7 @@ def theme_filters(cfg, w, h):
     bx_, by_ = CHAT_BANNER.get(theme) or (cx, f"h*{cy + lh * (CHAT_LINES + 1.6):.4f}")
     chat.append(T("chat_banner", B, f"h*{max(cfs, 0.024) * 1.35:.3f}", "white", bx_, by_,
                   f":box=1:boxcolor={col}@0.92:boxborderw={int(h * cfs * 0.6)}:alpha='if(lt(text_w,h*0.1),0,1)'"))
-    return f + runtime + chat + info_filters(h, col)
+    return f + runtime + chat + info_filters(h, cfg, ry)
 
 
 def build_countdown_cmd(cfg, output, preview=False, fmt="flv", audio_path=None):
@@ -3942,7 +3975,7 @@ def build_vod_cmd(cfg, stream_url, start_pos, output, progress=None, audio_path=
             *vod_audio_args(cfg, audio_path),
             "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
                    f"fps={fps},setsar=1," + ",".join(runtime_filters()).replace("boxborderw=0", f"boxborderw={int(h * 0.012)}")
-                   + "," + ",".join(vod_chat_filters(cfg, h)) + "," + ",".join(info_filters(h))
+                   + "," + ",".join(vod_chat_filters(cfg, h)) + "," + ",".join(info_filters(h, cfg))
 
                    + ",format=yuv420p",
             "-c:v", "libx264", "-preset", live_preset(cfg), "-b:v", vb, "-maxrate", vb, "-bufsize", vb,
@@ -4250,8 +4283,20 @@ details.adv{margin-top:10px;border:1px solid var(--line);border-radius:10px;padd
  <div data-area="text" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
   <label style="margin-top:0">💬 Text im Stream einblenden</label>
   <input type="text" id="infoText" maxlength="90" placeholder="z. B. Heute Abend 20 Uhr live auf xImJxstinn!">
-  <div class="btns" style="margin-top:6px"><select id="infoPos" style="flex:1;min-width:110px" onchange="api('/api/config',{info_pos:this.value})"><option value="top">Oben</option><option value="mid">Mitte</option><option value="bot">Unten</option></select>
+  <div class="btns" style="margin-top:6px"><select id="infoPos" style="flex:1;min-width:130px" onchange="api('/api/config',{info_pos:this.value}).then(refresh)">
+   <option value="under">⏱ Unter dem Timer</option><option value="tl">↖ Oben links</option><option value="tc">⬆ Oben Mitte</option><option value="tr">↗ Oben rechts</option><option value="mid">⏺ Mitte</option><option value="bl">↙ Unten links</option><option value="bc">⬇ Unten Mitte</option><option value="br">↘ Unten rechts</option></select>
    <select id="infoMin" style="flex:1;min-width:110px"><option value="0">bis ich ausmache</option><option value="1">1 Minute</option><option value="5">5 Minuten</option><option value="15">15 Minuten</option><option value="30">30 Minuten</option><option value="60">1 Stunde</option></select></div>
+  <details id="infoStyle" style="margin-top:6px"><summary style="cursor:pointer;color:var(--mut)">🎨 Aussehen anpassen</summary>
+   <div class="btns" style="margin-top:6px;align-items:center">
+    <select id="infoSize" style="flex:1;min-width:100px" onchange="infoSet({info_size:this.value})"><option value="s">Klein (wie Timer)</option><option value="m">Mittel</option><option value="l">Groß</option><option value="xl">Sehr groß</option></select>
+    <select id="infoFont" style="flex:1;min-width:100px" onchange="infoSet({info_font:this.value})"><option value="bold">Fett</option><option value="normal">Normal</option></select></div>
+   <div class="rowline" style="margin:6px 0"><span>Textfarbe</span><input type="color" id="infoColor" onchange="infoSet({info_color:this.value})"></div>
+   <div class="rowline" style="margin:6px 0"><span>Kasten dahinter</span><input type="checkbox" class="tg" id="infoBox" onchange="infoSet({info_box:this.checked})"></div>
+   <div class="rowline" style="margin:6px 0"><span>Kastenfarbe</span><input type="color" id="infoBg" onchange="infoSet({info_bg:this.value})"></div>
+   <div class="rowline" style="margin:6px 0"><span>Laufschrift (läuft von rechts nach links durch)</span><input type="checkbox" class="tg" id="infoScroll" onchange="infoSet({info_scroll:this.checked})"></div>
+   <div class="hint">Aussehen ändern = das Bild wird kurz nahtlos neu aufgebaut, das VOD läuft weiter. Text und Stelle ändern sich sofort.</div>
+  </details>
+  <div id="infoPrev" style="margin-top:8px;padding:10px;border-radius:8px;background:#1f2937;text-align:center;overflow:hidden"><span id="infoPrevT">Vorschau</span></div>
   <div class="btns"><button class="go" id="bInfo">💬 Einblenden</button><button class="stop" id="bInfoOff" onclick="api('/api/config',{info_on:false}).then(refresh)">Ausblenden</button></div>
   <div class="hint" id="infoInfo"></div>
  </div>
@@ -4494,7 +4539,8 @@ async function refresh(){
  $('bStart').disabled=s.running;$('bStop').disabled=!s.running;$('bRe').disabled=!s.running;
  for(const[p,k,en]of[['Tw','twitch',s.tw_enabled],['Yt','youtube',s.yt_enabled]]){const on=en&&s.running;$('p'+p+'Start').disabled=on;$('p'+p+'Stop').disabled=!en;$('p'+p+'Re').disabled=!on}
  $('bPause').dataset.on=s.pause_on?'1':'';$('bPause').textContent=s.pause_on?'▶ Pause ausblenden':'☕ Kurze Pause einblenden';$('bPause').className=s.pause_on?'stop':'';
- if(document.activeElement!==$('infoText')&&!$('infoText').dataset.dirty)$('infoText').value=s.info_text||'';if(document.activeElement!==$('infoPos'))$('infoPos').value=s.info_pos||'bot';
+ if(document.activeElement!==$('infoText')&&!$('infoText').dataset.dirty)$('infoText').value=s.info_text||'';if(document.activeElement!==$('infoPos'))$('infoPos').value=s.info_pos||'bc';
+ if(!window.infoBusy){$('infoSize').value=s.info_size;$('infoFont').value=s.info_font;$('infoColor').value=s.info_color;$('infoBg').value=s.info_bg;$('infoBox').checked=s.info_box;$('infoScroll').checked=s.info_scroll}infoPrev();
  $('bInfoOff').disabled=!s.info_on;$('infoInfo').textContent=s.info_on?'✅ Wird gerade im Stream gezeigt'+(s.info_left?` · geht in ${Math.ceil(s.info_left/60)} Min. aus`:''):'';
  if(document.activeElement!==$('pauseText'))$('pauseText').value=s.pause_text||'';if(document.activeElement!==$('pauseSub'))$('pauseSub').value=s.pause_sub||'';
  for(const k of['tw_enabled','yt_enabled'])if(document.activeElement!==$(k))$(k).checked=s[k];
@@ -4577,7 +4623,10 @@ $('bRe').onclick=async()=>{await api('/api/restart');refresh()};
 const hrs=id=>parseFloat($(id).value.replace(',','.'))||0;
 async function saveCfg(b,clear){const j=await api('/api/config',b);if(j.ok){clear.forEach(k=>$(k).value='');alert('Gespeichert ✅')}refresh()}
 $('bSave').onclick=()=>saveCfg({shuffle:$('shuffle').checked,quality:$('quality').value},[]);
-$('infoText').oninput=()=>$('infoText').dataset.dirty=1;
+$('infoText').oninput=()=>{$('infoText').dataset.dirty=1;infoPrev()};
+function infoPrev(){const t=$('infoPrevT'),sz={s:13,m:17,l:23,xl:30}[$('infoSize').value]||17;t.textContent=$('infoText').value||'Vorschau';
+ Object.assign(t.style,{fontSize:sz+'px',fontWeight:$('infoFont').value=='bold'?'700':'400',color:$('infoColor').value,background:$('infoBox').checked?$('infoBg').value+'e0':'transparent',padding:$('infoBox').checked?'4px 10px':'0',textShadow:'2px 2px 2px rgba(0,0,0,.6)',display:'inline-block'})}
+async function infoSet(b){window.infoBusy=1;infoPrev();await api('/api/config',b);window.infoBusy=0;refresh()}
 $('bInfo').onclick=async()=>{const t=$('infoText').value.trim();if(!t)return alert('Erst einen Text eingeben');
  const j=await api('/api/config',{info_text:t,info_pos:$('infoPos').value,info_on:true,info_minutes:+$('infoMin').value});if(j.ok)delete $('infoText').dataset.dirty;refresh()};
 $('bSaveTw').onclick=()=>{const b={server:$('server').value,tw_enabled:$('tw_enabled').checked,tw_max_hours:hrs('tw_max_hours')};
@@ -5289,6 +5338,26 @@ class Handler(BaseHTTPRequestHandler):
                 upd["info_text"] = re.sub(r"\s+", " ", "".join(c for c in str(data["info_text"]) if c.isprintable())).strip()[:90]
             if data.get("info_pos") in INFO_POS:
                 upd["info_pos"] = data["info_pos"]
+            if data.get("info_size") in INFO_SIZES:
+                upd["info_size"] = data["info_size"]
+            for k in ("info_color", "info_bg"):
+                if k in data and re.fullmatch(r"#[0-9a-fA-F]{6}", str(data[k])):
+                    upd[k] = data[k]
+            if data.get("info_font") in ("bold", "normal"):
+                upd["info_font"] = data["info_font"]
+            for k in ("info_box", "info_scroll"):
+                if k in data:
+                    upd[k] = bool(data[k])
+            if any(k in upd and upd[k] != get_cfg().get(k) for k in INFO_STYLE) and streamer.want:
+                st = streamer                     # Aussehen geändert -> Bild nahtlos neu aufbauen (VOD läuft weiter)
+
+                def _restyle():
+                    if st.kind and st.kind.startswith("vod"):
+                        cur = st._vod_now()
+                        st.request_swap(lambda: st.vod.__setitem__("seek", cur))
+                    else:
+                        st.request_swap(lambda: None)
+                threading.Timer(0.5, _restyle).start()
             if "info_on" in data:
                 upd["info_on"] = bool(data["info_on"])
                 if upd["info_on"]:
@@ -5830,7 +5899,8 @@ def status():
         "stats": stats.data["dest"], "alltime": stats.data.get("alltime", 0),
         "runtime_alltime": cfg.get("runtime_alltime", True),
         "info_on": bool(cfg.get("info_on")) and not (cfg.get("info_until") and time.time() > cfg["info_until"]),
-        "info_text": cfg.get("info_text", ""), "info_pos": cfg.get("info_pos", "bot"),
+        "info_text": cfg.get("info_text", ""), "info_pos": INFO_OLD.get(cfg.get("info_pos"), cfg.get("info_pos") or "bc"),
+        **{k: cfg.get(k, DEFAULT_CFG[k]) for k in INFO_STYLE},
         "info_left": max(0, int(cfg["info_until"] - time.time())) if cfg.get("info_on") and cfg.get("info_until") else 0,
         "pause_on": cfg.get("pause_on", False), "pause_text": cfg.get("pause_text", ""), "pause_sub": cfg.get("pause_sub", ""),
         "show_runtime": cfg.get("show_runtime", True), "runtime_label": cfg.get("runtime_label", "LIVE seit"),
